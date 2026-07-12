@@ -1,0 +1,29 @@
+/* ============================================================
+   RESTORED: Cards (7 selectors)
+   ============================================================ */
+.cardGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 196px), 216px)); grid-auto-rows: 1fr; gap: 12px; align-items: stretch; justify-content: start; }
+.cardMeta { display: flex; flex-wrap: wrap; gap: 5px; }
+.documentCard, .resultItem, .detailHeader, .stateMessage { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: 16px; display: grid; gap: 10px; }
+.documentCard:hover, .resultItem:hover { border-color: var(--border); background: var(--surface-2); }
+.documentCard.selected, .resultItem.selected { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.documentCard { position: relative; grid-template-rows: 236px 56px 52px 34px; min-height: 388px; height: 100%; padding: 10px; gap: 7px; align-content: start; overflow: hidden; contain: paint; transition: border-color 0.14s, background 0.14s; cursor: pointer; }
+.documentCardCoverSlot { position: relative; min-height: 0; overflow: hidden; border-radius: var(--radius-md); background: linear-gradient(180deg, var(--surface-2), var(--bg)); }
+.documentCardCoverSlot .documentCover { height: 100%; min-height: 0; max-height: none; aspect-ratio: 3 / 4; background: linear-gradient(180deg, #eef1f4 0%, #d8dde3 100%); border-color: color-mix(in srgb, var(--border) 82%, #111827); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.36), 0 8px 20px rgba(0,0,0,0.24); }
+.documentCardCoverSlot .documentCover > canvas,
+.documentCardCoverSlot .documentCover > img { inset: 8px; width: calc(100% - 16px) !important; height: calc(100% - 16px) !important; max-width: calc(100% - 16px); max-height: calc(100% - 16px); object-fit: contain; border: 1px solid rgba(14,17,23,0.22); border-radius: calc(var(--radius-md) - 2px); background: #f8fafc; box-shadow: 0 2px 12px rgba(14,17,23,0.22); }
+.documentCardTitleBlock { min-height: 0; display: grid; align-items: start; overflow: hidden; }
+.documentCard .cardTitle { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; margin: 0; font-size: 14px; line-height: 1.3; color: var(--text); overflow-wrap: anywhere; }
+.documentCardMeta { display: flex; align-content: flex-start; flex-wrap: wrap; gap: 4px 6px; min-height: 0; overflow: hidden; color: var(--text-muted); font-size: 11px; line-height: 1.3; }
+.documentCardMeta span { padding: 2px 6px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--surface-2); }
+.documentCard.duplicateDocument { border-color: color-mix(in srgb, var(--warning) 42%, var(--border-soft)); }
+.documentCardMeta .duplicateBadge { border-color: color-mix(in srgb, var(--warning) 55%, var(--border-soft)); color: var(--warning); background: rgba(179,146,86,0.1); }
+.duplicateDocumentNotice { min-height: 34px; margin: 0; color: var(--text-subtle); font-size: 11px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.pageHeader { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px; border: 1px solid var(--border-soft); border-radius: var(--radius-lg); background: var(--surface); }
+.pageHeader h3 { margin: 0; color: var(--text); }
+.pageHeader p { margin: 4px 0 0; color: var(--text-muted); line-height: 1.45; }
+.pageHeaderActions { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.readShelfWorkspaceButton { position: absolute; right: 10px; bottom: 10px; min-height: 30px; padding: 0 9px; border-radius: 999px; background: rgba(124,163,213,0.12); color: var(--accent-strong); }
+.detailHeader h3 { font-size: 20px; color: var(--text); margin: 0; }
+.resultItem { cursor: default; }
+.resultItem[role="button"] { cursor: pointer; }
+.pageStack, .searchPage, .detailStack { display: grid; gap: 16px; }

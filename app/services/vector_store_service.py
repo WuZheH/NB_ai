@@ -1,0 +1,1312 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import time
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import undefer
+
+from app.core.paths import PROJECT_ROOT
+from app.db.session import SessionLocal
+from app.models import BookChapter, Document, KnowledgeChunk
+from app.services import local_embedding_service, object_semantic_search_service
+from app.services.library_service import READ_LIBRARY_STATUSES, is_metadata_chunk_text
+
+
+BACKEND = "lancedb"
+EMBEDDING_MODEL = local_embedding_service.MODEL_NAME
+EMBEDDING_MODEL_PATH = str(local_embedding_service.DEFAULT_MODEL_PATH)
+PASSAGE_PROFILE_VERSION = "passage_profile_v1"
+OBJECT_PROFILE_VERSION = "object_profile_v1"
+VECTOR_STORE_ROOT = PROJECT_ROOT / "data" / "vector_store"
+LANCEDB_DIR = VECTOR_STORE_ROOT / "lancedb"
+MANIFEST_PATH = VECTOR_STORE_ROOT / "vector_manifest.json"
+PASSAGE_TABLE = "passage_embeddings"
+OBJECT_TABLE = "object_embeddings"
+SOURCE_TYPES = {"passage", "object", "note", "inspiration", "relation"}
+LIFECYCLE_FIELDS = {
+    "vector_id",
+    "source_type",
+    "source_id",
+    "source_hash",
+    "profile_version",
+    "embedding_model",
+    "embedding_model_path",
+    "embedding_dim",
+    "created_at",
+    "updated_at",
+}
+PASSAGE_EXPECTED_RECORD_FIELDS = {
+    "vector_id",
+    "record_id",
+    "source_type",
+    "source_kind",
+    "source_id",
+    "source_hash",
+    "document_id",
+    "document_title",
+    "document_type",
+    "object_import_mode",
+    "chunk_id",
+    "chapter_id",
+    "chapter_title",
+    "title",
+    "heading_path",
+    "passage_text",
+    "text_for_embedding",
+    "text_hash",
+    "pdf_page",
+    "page",
+    "pdf_page_start",
+    "pdf_page_end",
+    "embedding_model",
+    "embedding_model_path",
+    "embedding_dim",
+    "profile_version",
+    "source_updated_at",
+    "created_at",
+    "updated_at",
+    "vector",
+}
+OBJECT_EXPECTED_RECORD_FIELDS = {
+    "vector_id",
+    "source_type",
+    "source_id",
+    "source_hash",
+    "object_key",
+    "object_id",
+    "canonical_name",
+    "object_type",
+    "object_type_label",
+    "document_id",
+    "document_title",
+    "evidence_count",
+    "object_profile_text",
+    "text_for_embedding",
+    "profile_hash",
+    "embedding_model",
+    "embedding_model_path",
+    "embedding_dim",
+    "profile_version",
+    "created_at",
+    "updated_at",
+    "vector",
+}
+
+
+class VectorStoreUnavailable(RuntimeError):
+    pass
+
+
+class VectorStoreSchemaMismatch(RuntimeError):
+    pass
+
+
+def open_vector_store(path: Path | None = None) -> Any:
+    lancedb = _import_lancedb()
+    target = path or LANCEDB_DIR
+    target.mkdir(parents=True, exist_ok=True)
+    return lancedb.connect(str(target))
+
+
+def get_vector_manifest(path: Path | None = None) -> dict[str, Any] | None:
+    manifest_path = path or MANIFEST_PATH
+    if not manifest_path.exists():
+        return None
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def write_vector_manifest(manifest: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+    manifest_path = path or MANIFEST_PATH
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    current = dict(manifest)
+    now = _utc_now()
+    current.setdefault("created_at", now)
+    current["updated_at"] = now
+    manifest_path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+    return current
+
+
+def check_vector_store_status(
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    try:
+        _import_lancedb()
+    except VectorStoreUnavailable as exc:
+        return _status_payload(available=False, reason=str(exc), stale=False, manifest=None, tables={})
+
+    actual_store_path = store_path or LANCEDB_DIR
+    actual_manifest_path = manifest_path or MANIFEST_PATH
+    if not actual_store_path.exists():
+        return _status_payload(available=False, reason="vector_store_missing", stale=False, manifest=None, tables={})
+    manifest = get_vector_manifest(actual_manifest_path)
+    if manifest is None:
+        return _status_payload(available=False, reason="vector_manifest_missing", stale=False, manifest=None, tables={})
+
+    db = open_vector_store(actual_store_path)
+    tables = {
+        PASSAGE_TABLE: _table_status(db, PASSAGE_TABLE),
+        OBJECT_TABLE: _table_status(db, OBJECT_TABLE),
+    }
+    sync = {
+        "passages": _sync_status(PASSAGE_TABLE, collect_passage_sources(), db),
+        "objects": _sync_status(OBJECT_TABLE, collect_object_sources(), db),
+    }
+    manifest_reason = _stale_reason(manifest)
+    freshness = evaluate_vector_store_freshness(
+        sync,
+        available=True,
+        manifest_reason=manifest_reason,
+    )
+    return _status_payload(
+        available=True,
+        reason=freshness["reason"],
+        stale=not freshness["complete"],
+        manifest=manifest,
+        tables=tables,
+        sync=sync,
+        freshness=freshness,
+    )
+
+
+def build_passage_embeddings(
+    *,
+    model_path: str | None = None,
+    reset: bool = False,
+    limit: int | None = None,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    model = local_embedding_service._load_model({})
+    rows = _passage_source_rows(limit=limit)
+    records = [build_passage_record(document, chunk, model=model, model_path=model_path) for document, chunk in rows]
+    _write_table(PASSAGE_TABLE, records, reset=reset, store_path=store_path)
+    manifest = _updated_manifest(
+        manifest_path=manifest_path,
+        embedding_dim=_embedding_dim(records),
+        passage_count=len(records),
+    )
+    return {
+        "kind": "passages",
+        "count": len(records),
+        "embedding_dim": _embedding_dim(records),
+        "manifest": manifest,
+        "elapsed_ms": round(_elapsed_ms(started), 2),
+    }
+
+
+def build_object_embeddings(
+    *,
+    model_path: str | None = None,
+    reset: bool = False,
+    limit: int | None = None,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    model = local_embedding_service._load_model({})
+    objects = object_semantic_search_service._load_all_objects()
+    if limit is not None:
+        objects = objects[: max(0, int(limit))]
+    records = [record for obj in objects for record in [build_object_record(obj, model=model, model_path=model_path)] if record]
+    _write_table(OBJECT_TABLE, records, reset=reset, store_path=store_path)
+    manifest = _updated_manifest(
+        manifest_path=manifest_path,
+        embedding_dim=_embedding_dim(records),
+        object_count=len(records),
+    )
+    return {
+        "kind": "objects",
+        "count": len(records),
+        "embedding_dim": _embedding_dim(records),
+        "manifest": manifest,
+        "elapsed_ms": round(_elapsed_ms(started), 2),
+    }
+
+
+def build_passage_record(document: Document, chunk: KnowledgeChunk, *, model: Any, model_path: str | None = None) -> dict[str, Any]:
+    passage_text = _compact_text(chunk.chunk_text)
+    source_id = make_passage_source_id(document.id, chunk.id)
+    document_title = str(_safe_attr(document, "title", "") or "")
+    heading_path = str(_safe_attr(chunk, "heading_path", "") or "")
+    text_for_embedding = " ".join([document_title, heading_path, passage_text])
+    source_hash = compute_source_hash(
+        _safe_attr(chunk, "content_hash", None) or f"{passage_text}\n{heading_path}\n{document.id}\n{chunk.id}"
+    )
+    vector = local_embedding_service._encode_text(model, text_for_embedding)
+    return _passage_record_from_parts(
+        document=document,
+        chunk=chunk,
+        passage_text=passage_text,
+        source_id=source_id,
+        source_hash=source_hash,
+        text_for_embedding=text_for_embedding,
+        vector=vector,
+        model_path=model_path,
+        now=_utc_now(),
+    )
+
+
+def build_passage_schema_record(document: Document, chunk: KnowledgeChunk, *, model_path: str | None = None) -> dict[str, Any]:
+    passage_text = _compact_text(_safe_attr(chunk, "chunk_text", ""))
+    source_id = make_passage_source_id(int(_safe_attr(document, "id", 0) or 0), int(_safe_attr(chunk, "id", 0) or 0))
+    document_title = str(_safe_attr(document, "title", "") or "")
+    heading_path = str(_safe_attr(chunk, "heading_path", "") or "")
+    text_for_embedding = " ".join([document_title, heading_path, passage_text])
+    source_hash = compute_source_hash(
+        _safe_attr(chunk, "content_hash", None) or f"{passage_text}\n{heading_path}\n{_safe_attr(document, 'id', 0)}\n{_safe_attr(chunk, 'id', 0)}"
+    )
+    return _passage_record_from_parts(
+        document=document,
+        chunk=chunk,
+        passage_text=passage_text,
+        source_id=source_id,
+        source_hash=source_hash,
+        text_for_embedding=text_for_embedding,
+        vector=[0.0] * _expected_embedding_dim(),
+        model_path=model_path,
+        now=_utc_now(),
+    )
+
+
+def _passage_record_from_parts(
+    *,
+    document: Document,
+    chunk: KnowledgeChunk,
+    passage_text: str,
+    source_id: str,
+    source_hash: str,
+    text_for_embedding: str,
+    vector: list[float],
+    model_path: str | None,
+    now: str,
+) -> dict[str, Any]:
+    pdf_page_start = _safe_int(_safe_attr(chunk, "pdf_page_start", None))
+    pdf_page_end = _safe_int(_safe_attr(chunk, "pdf_page_end", None))
+    chapter_id = _safe_int(_safe_attr(chunk, "chapter_id", None))
+    now = _utc_now()
+    return {
+        "vector_id": source_id,
+        "record_id": source_id,
+        "source_type": "passage",
+        "source_kind": "passage",
+        "source_id": source_id,
+        "source_hash": source_hash,
+        "document_id": int(document.id),
+        "document_title": str(_safe_attr(document, "title", "") or ""),
+        "document_type": str(_safe_attr(document, "document_type", "") or ""),
+        "object_import_mode": _safe_attr(document, "object_import_mode", None),
+        "chunk_id": int(chunk.id),
+        "chapter_id": chapter_id,
+        "chapter_title": _safe_attr(chunk, "_vector_chapter_title", None) or "",
+        "title": str(_safe_attr(document, "title", "") or ""),
+        "heading_path": str(_safe_attr(chunk, "heading_path", "") or ""),
+        "passage_text": passage_text,
+        "text_for_embedding": text_for_embedding,
+        "text_hash": source_hash,
+        "pdf_page": pdf_page_start,
+        "page": pdf_page_start,
+        "pdf_page_start": pdf_page_start,
+        "pdf_page_end": pdf_page_end,
+        "embedding_model": EMBEDDING_MODEL,
+        "embedding_model_path": model_path or EMBEDDING_MODEL_PATH,
+        "embedding_dim": len(vector),
+        "profile_version": PASSAGE_PROFILE_VERSION,
+        "source_updated_at": _format_datetime(_safe_attr(chunk, "updated_at", None)),
+        "created_at": now,
+        "updated_at": now,
+        "vector": vector,
+    }
+
+
+def load_chunk_page_metadata(chunk_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Batch query DB for pdf_page_start/pdf_page_end by chunk_id.
+
+    Returns a dict keyed by chunk_id with pdf_page_start, pdf_page_end, document_id.
+    Chunks with null page are included but with null values.
+    """
+    if not chunk_ids:
+        return {}
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(KnowledgeChunk.id, KnowledgeChunk.pdf_page_start, KnowledgeChunk.pdf_page_end, KnowledgeChunk.document_id)
+            .where(KnowledgeChunk.id.in_(chunk_ids))
+        ).all()
+    return {
+        row.id: {
+            "pdf_page_start": int(row.pdf_page_start) if row.pdf_page_start is not None else None,
+            "pdf_page_end": int(row.pdf_page_end) if row.pdf_page_end is not None else None,
+            "document_id": int(row.document_id) if row.document_id is not None else None,
+        }
+        for row in rows
+    }
+
+
+def build_object_record(obj: dict[str, Any], *, model: Any, model_path: str | None = None) -> dict[str, Any] | None:
+    profile_text = object_semantic_search_service._build_object_profile(obj)
+    if not profile_text:
+        return None
+    vector = local_embedding_service._encode_text(model, profile_text)
+    return _object_record_from_parts(obj=obj, profile_text=profile_text, vector=vector, model_path=model_path, now=_utc_now())
+
+
+def build_object_schema_record(obj: dict[str, Any], *, model_path: str | None = None) -> dict[str, Any] | None:
+    profile_text = object_semantic_search_service._build_object_profile(obj)
+    if not profile_text:
+        return None
+    return _object_record_from_parts(
+        obj=obj,
+        profile_text=profile_text,
+        vector=[0.0] * _expected_embedding_dim(),
+        model_path=model_path,
+        now=_utc_now(),
+    )
+
+
+def _object_record_from_parts(
+    *,
+    obj: dict[str, Any],
+    profile_text: str,
+    vector: list[float],
+    model_path: str | None,
+    now: str,
+) -> dict[str, Any]:
+    obj_type = str(obj.get("object_type") or "other")
+    object_key = str(obj.get("object_key") or obj.get("object_name") or "").strip()
+    source_id = make_object_source_id(object_key)
+    source_hash = compute_source_hash(profile_text)
+    return {
+        "vector_id": source_id,
+        "source_type": "object",
+        "source_id": source_id,
+        "source_hash": source_hash,
+        "object_key": object_key,
+        "object_id": obj.get("id"),
+        "canonical_name": obj.get("object_name") or "",
+        "object_type": obj_type,
+        "object_type_label": object_semantic_search_service._object_type_label(obj_type),
+        "document_id": obj.get("document_id"),
+        "document_title": object_semantic_search_service._primary_document_title(obj),
+        "evidence_count": len(obj.get("evidence_refs") or []),
+        "object_profile_text": profile_text,
+        "text_for_embedding": profile_text,
+        "profile_hash": source_hash,
+        "embedding_model": EMBEDDING_MODEL,
+        "embedding_model_path": model_path or EMBEDDING_MODEL_PATH,
+        "embedding_dim": len(vector),
+        "profile_version": OBJECT_PROFILE_VERSION,
+        "created_at": now,
+        "updated_at": now,
+        "vector": vector,
+    }
+
+
+def compute_source_hash(text: str) -> str:
+    return _hash_text(text)
+
+
+def make_passage_source_id(document_id: int, chunk_id: int) -> str:
+    return f"chunk:{int(document_id)}:{int(chunk_id)}"
+
+
+def make_object_source_id(object_key: str) -> str:
+    return f"object:{str(object_key).strip()}"
+
+
+def collect_passage_sources(limit: int | None = None, source_ids: list[str] | None = None) -> list[dict[str, Any]]:
+    sources = []
+    for document, chunk in _passage_source_rows(limit=limit, source_ids=source_ids):
+        passage_text = _compact_text(chunk.chunk_text)
+        source_id = make_passage_source_id(document.id, chunk.id)
+        source_hash = compute_source_hash(
+            getattr(chunk, "content_hash", None) or f"{passage_text}\n{chunk.heading_path}\n{document.id}\n{chunk.id}"
+        )
+        sources.append({
+            "source_type": "passage",
+            "source_id": source_id,
+            "vector_id": source_id,
+            "source_hash": source_hash,
+            "profile_version": PASSAGE_PROFILE_VERSION,
+            "embedding_model": EMBEDDING_MODEL,
+            "document": document,
+            "chunk": chunk,
+        })
+    return sources
+
+
+def collect_object_sources(limit: int | None = None) -> list[dict[str, Any]]:
+    objects = object_semantic_search_service._load_all_objects()
+    if limit is not None:
+        objects = objects[: max(0, int(limit))]
+    sources = []
+    for obj in objects:
+        object_key = str(obj.get("object_key") or obj.get("object_name") or "").strip()
+        if not object_key:
+            continue
+        profile_text = object_semantic_search_service._build_object_profile(obj)
+        if not profile_text:
+            continue
+        source_id = make_object_source_id(object_key)
+        sources.append({
+            "source_type": "object",
+            "source_id": source_id,
+            "vector_id": source_id,
+            "source_hash": compute_source_hash(profile_text),
+            "profile_version": OBJECT_PROFILE_VERSION,
+            "embedding_model": EMBEDDING_MODEL,
+            "object": obj,
+        })
+    return sources
+
+
+def sync_passage_embeddings(
+    *,
+    limit: int | None = None,
+    dry_run: bool = False,
+    delete_orphans: bool = False,
+    rebuild_if_schema_mismatch: bool = True,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    sources = collect_passage_sources(limit=limit)
+    return _sync_records(
+        kind="passages",
+        table_name=PASSAGE_TABLE,
+        sources=sources,
+        dry_run=dry_run,
+        delete_orphans=delete_orphans,
+        rebuild_if_schema_mismatch=rebuild_if_schema_mismatch,
+        store_path=store_path,
+        manifest_path=manifest_path,
+        record_builder=lambda source, model: build_passage_record(source["document"], source["chunk"], model=model),
+        schema_record_builder=lambda source: (
+            build_passage_schema_record(source["document"], source["chunk"])
+            if "document" in source and "chunk" in source
+            else None
+        ),
+        expected_record_fields=PASSAGE_EXPECTED_RECORD_FIELDS,
+    )
+
+
+def sync_affected_passage_embeddings(
+    source_ids: list[str],
+    *,
+    dry_run: bool = True,
+    apply: bool = False,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    if dry_run == apply:
+        raise ValueError("specify exactly one of dry_run or apply for affected passage sync")
+    requested = _validated_passage_source_ids(source_ids)
+    sources = collect_passage_sources(source_ids=requested)
+    source_by_id = {source["source_id"]: source for source in sources}
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    existing_by_id: dict[str, dict[str, Any]] = {}
+    indexed_lookup = "store_missing"
+    db = None
+    if actual_store_path.exists():
+        db = _connect_existing_vector_store(actual_store_path) if dry_run else open_vector_store(actual_store_path)
+        existing_by_id = _existing_records_by_source_ids(db, PASSAGE_TABLE, requested)
+        indexed_lookup = "source_id_filter"
+    items = []
+    changed_sources = []
+    for source_id in requested:
+        source = source_by_id.get(source_id)
+        indexed = existing_by_id.get(source_id)
+        if source and indexed:
+            stale = _record_stale(indexed, source)
+            status = "stale" if stale else "up_to_date"
+            planned_action = "upsert" if stale else "skip"
+        elif source:
+            status = "missing"
+            planned_action = "upsert"
+        elif indexed:
+            status = "orphan"
+            planned_action = "none"
+        else:
+            status = "missing"
+            planned_action = "none"
+        if planned_action == "upsert" and source:
+            changed_sources.append(source)
+        items.append(
+            {
+                "source_id": source_id,
+                "exists_in_db": source is not None,
+                "exists_in_lancedb": indexed is not None,
+                "source_hash_current": source.get("source_hash") if source else None,
+                "source_hash_indexed": indexed.get("source_hash") if indexed else None,
+                "status": status,
+                "planned_action": planned_action,
+            }
+        )
+    if apply:
+        if db is None:
+            db = open_vector_store(actual_store_path)
+        table_exists = PASSAGE_TABLE in _table_names(db)
+        if table_exists:
+            table_fields = _table_schema_fields(db, PASSAGE_TABLE)
+            missing_fields = PASSAGE_EXPECTED_RECORD_FIELDS - table_fields
+            if missing_fields:
+                raise VectorStoreSchemaMismatch(
+                    "affected-only apply forbids schema rebuild; missing fields: " + ", ".join(sorted(missing_fields))
+                )
+        model = local_embedding_service._load_model({}) if changed_sources else None
+        records = [
+            build_passage_record(source["document"], source["chunk"], model=model)
+            for source in changed_sources
+        ]
+        changed_ids = [source["source_id"] for source in changed_sources]
+        if records:
+            if table_exists:
+                table = db.open_table(PASSAGE_TABLE)
+                _delete_vector_ids(table, changed_ids)
+                table.add(records)
+            else:
+                db.create_table(PASSAGE_TABLE, data=records, mode="create")
+    return {
+        "kind": "passages",
+        "scope": "affected_source_ids_only",
+        "dry_run": dry_run,
+        "apply": apply,
+        "full_rebuild_allowed": False,
+        "delete_orphans_allowed": False,
+        "store_path": str(actual_store_path),
+        "manifest_path": str(Path(manifest_path or MANIFEST_PATH)),
+        "requested_source_ids": requested,
+        "scanned_count": len(requested),
+        "indexed_lookup": indexed_lookup,
+        "items": items,
+        "would_upsert": sum(1 for item in items if item["planned_action"] == "upsert"),
+        "upserted_count": len(changed_sources) if apply else 0,
+        "lancedb_writes_performed": apply and bool(changed_sources),
+    }
+
+
+def sync_object_embeddings(
+    *,
+    limit: int | None = None,
+    dry_run: bool = False,
+    delete_orphans: bool = False,
+    rebuild_if_schema_mismatch: bool = True,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    sources = collect_object_sources(limit=limit)
+    return _sync_records(
+        kind="objects",
+        table_name=OBJECT_TABLE,
+        sources=sources,
+        dry_run=dry_run,
+        delete_orphans=delete_orphans,
+        rebuild_if_schema_mismatch=rebuild_if_schema_mismatch,
+        store_path=store_path,
+        manifest_path=manifest_path,
+        record_builder=lambda source, model: build_object_record(source["object"], model=model),
+        schema_record_builder=lambda source: build_object_schema_record(source["object"]),
+        expected_record_fields=OBJECT_EXPECTED_RECORD_FIELDS,
+    )
+
+
+def sync_vector_store(
+    kind: str,
+    *,
+    limit: int | None = None,
+    dry_run: bool = False,
+    delete_orphans: bool = False,
+    rebuild_if_schema_mismatch: bool = True,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    if kind not in {"all", "passages", "objects"}:
+        raise ValueError("kind must be all, passages, or objects")
+    results = []
+    if kind in {"all", "objects"}:
+        results.append(sync_object_embeddings(limit=limit, dry_run=dry_run, delete_orphans=delete_orphans, rebuild_if_schema_mismatch=rebuild_if_schema_mismatch, store_path=store_path, manifest_path=manifest_path))
+    if kind in {"all", "passages"}:
+        results.append(sync_passage_embeddings(limit=limit, dry_run=dry_run, delete_orphans=delete_orphans, rebuild_if_schema_mismatch=rebuild_if_schema_mismatch, store_path=store_path, manifest_path=manifest_path))
+    return results
+
+
+def search_passage_vectors(
+    query: str,
+    limit: int = 10,
+    store_path: Path | None = None,
+    status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _search_table(
+        query=query,
+        table_name=PASSAGE_TABLE,
+        limit=limit,
+        store_path=store_path,
+        status=status,
+    )
+
+
+def search_object_vectors(
+    query: str,
+    limit: int = 10,
+    store_path: Path | None = None,
+    status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _search_table(
+        query=query,
+        table_name=OBJECT_TABLE,
+        limit=limit,
+        store_path=store_path,
+        status=status,
+    )
+
+
+def _search_table(
+    query: str,
+    table_name: str,
+    limit: int,
+    store_path: Path | None = None,
+    status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if store_path is None:
+        status = status or check_vector_store_status()
+        freshness = status.get("freshness") or {}
+        freshness_incomplete = bool(freshness) and not bool(freshness.get("complete"))
+        if not status.get("available") or status.get("stale") or freshness_incomplete:
+            reason = str(
+                status.get("reason")
+                or freshness.get("reason")
+                or "vector_store_unavailable"
+            )
+            return {
+                "status": reason,
+                "results": [],
+                "vector_store_status": {
+                    "available": bool(status.get("available")),
+                    "stale": bool(status.get("stale")),
+                    "reason": status.get("reason"),
+                    "freshness": status.get("freshness") or {},
+                },
+            }
+    db = open_vector_store(store_path)
+    if table_name not in _table_names(db):
+        return {"status": "vector_table_missing", "results": []}
+    model = local_embedding_service._load_model({})
+    query_vector = local_embedding_service._encode_text(model, query)
+    table = db.open_table(table_name)
+    results = table.search(query_vector).limit(max(1, min(limit, 50))).to_list()
+    return {"status": "ok", "results": [_json_safe(item) for item in results]}
+
+
+def _passage_source_rows(
+    limit: int | None = None,
+    source_ids: list[str] | None = None,
+) -> list[tuple[Document, KnowledgeChunk]]:
+    requested = set(source_ids or [])
+    scoped_ids = [_parse_passage_source_id(source_id) for source_id in requested]
+    with SessionLocal() as session:
+        statement = (
+            select(Document, KnowledgeChunk)
+            .options(undefer(Document.object_import_mode), undefer(KnowledgeChunk.chapter_id))
+            .join(KnowledgeChunk, KnowledgeChunk.document_id == Document.id)
+            .where(Document.read_status.in_(READ_LIBRARY_STATUSES))
+        )
+        if scoped_ids:
+            statement = statement.where(KnowledgeChunk.id.in_([chunk_id for _document_id, chunk_id in scoped_ids]))
+            statement = statement.where(Document.id.in_([document_id for document_id, _chunk_id in scoped_ids]))
+        if limit is not None:
+            statement = statement.limit(max(0, int(limit)))
+        rows = session.execute(statement).all()
+        chapter_ids = sorted({
+            int(chunk.chapter_id)
+            for _document, chunk in rows
+            if chunk.chapter_id is not None
+        })
+        chapter_titles: dict[int, str] = {}
+        if chapter_ids:
+            chapter_rows = session.execute(
+                select(BookChapter.id, BookChapter.title).where(BookChapter.id.in_(chapter_ids))
+            ).all()
+            chapter_titles = {int(chapter_id): str(title or "") for chapter_id, title in chapter_rows}
+        for _document, chunk in rows:
+            if chunk.chapter_id is not None:
+                setattr(chunk, "_vector_chapter_title", chapter_titles.get(int(chunk.chapter_id), ""))
+    filtered = [
+        (document, chunk)
+        for document, chunk in rows
+        if _compact_text(chunk.chunk_text)
+        and not is_metadata_chunk_text(chunk.chunk_text)
+        and (not requested or make_passage_source_id(document.id, chunk.id) in requested)
+    ]
+    filtered.sort(key=lambda item: (int(item[0].id), int(item[1].chunk_index), int(item[1].id)))
+    if limit is not None:
+        return filtered[: max(0, int(limit))]
+    return filtered
+
+
+def _validated_passage_source_ids(source_ids: list[str]) -> list[str]:
+    requested = []
+    seen = set()
+    for source_id in source_ids:
+        _parse_passage_source_id(source_id)
+        if source_id not in seen:
+            requested.append(source_id)
+            seen.add(source_id)
+    if not requested:
+        raise ValueError("affected passage sync requires at least one --source-id")
+    return requested
+
+
+def _parse_passage_source_id(source_id: str) -> tuple[int, int]:
+    parts = str(source_id).split(":")
+    if len(parts) != 3 or parts[0] != "chunk":
+        raise ValueError(f"invalid passage source id: {source_id}")
+    try:
+        document_id, chunk_id = int(parts[1]), int(parts[2])
+    except ValueError as exc:
+        raise ValueError(f"invalid passage source id: {source_id}") from exc
+    if document_id < 1 or chunk_id < 1:
+        raise ValueError(f"invalid passage source id: {source_id}")
+    return document_id, chunk_id
+
+
+def _write_table(table_name: str, records: list[dict[str, Any]], *, reset: bool, store_path: Path | None = None) -> None:
+    db = open_vector_store(store_path)
+    if reset and table_name in _table_names(db):
+        db.drop_table(table_name)
+    if not records:
+        return
+    mode = "overwrite" if reset or table_name not in _table_names(db) else "append"
+    db.create_table(table_name, data=records, mode=mode)
+
+
+def inspect_vector_store_schema(
+    *,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    db = open_vector_store(store_path)
+    table_names = _table_names(db)
+    passage_sample = _schema_sample_record(
+        collect_passage_sources(limit=1),
+        lambda source: build_passage_schema_record(source["document"], source["chunk"]),
+    )
+    object_sample = _schema_sample_record(
+        collect_object_sources(limit=1),
+        lambda source: build_object_schema_record(source["object"]),
+    )
+    return {
+        "store_path": str(Path(store_path or LANCEDB_DIR)),
+        "manifest_path": str(Path(manifest_path or MANIFEST_PATH)),
+        "table_names": table_names,
+        "passages": _schema_inspection_for_table(
+            db,
+            PASSAGE_TABLE,
+            set(passage_sample) if passage_sample else PASSAGE_EXPECTED_RECORD_FIELDS,
+        ),
+        "objects": _schema_inspection_for_table(
+            db,
+            OBJECT_TABLE,
+            set(object_sample) if object_sample else OBJECT_EXPECTED_RECORD_FIELDS,
+        ),
+    }
+
+
+def backup_vector_store(
+    *,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+    backup_root: Path | None = None,
+) -> Path:
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    actual_manifest_path = Path(manifest_path or MANIFEST_PATH)
+    target = _unique_backup_path(planned_schema_backup_path(store_path=actual_store_path, backup_root=backup_root))
+    target.mkdir(parents=True, exist_ok=False)
+    try:
+        if actual_store_path.exists():
+            shutil.copytree(actual_store_path, target / actual_store_path.name)
+        if actual_manifest_path.exists():
+            shutil.copy2(actual_manifest_path, target / actual_manifest_path.name)
+    except Exception:
+        raise
+    return target
+
+
+def planned_schema_backup_path(*, store_path: Path | None = None, backup_root: Path | None = None) -> Path:
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    root = Path(backup_root) if backup_root is not None else actual_store_path.parent / "backups"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return root / f"lancedb_before_schema_upgrade_{timestamp}"
+
+
+def _sync_records(
+    *,
+    kind: str,
+    table_name: str,
+    sources: list[dict[str, Any]],
+    dry_run: bool,
+    delete_orphans: bool,
+    rebuild_if_schema_mismatch: bool = True,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+    record_builder: Any = None,
+    schema_record_builder: Any = None,
+    expected_record_fields: set[str] | None = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    db = open_vector_store(store_path)
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    existing = _existing_records(db, table_name)
+    existing_by_id = {str(record.get("source_id") or record.get("vector_id")): record for record in existing}
+    source_by_id = {source["source_id"]: source for source in sources}
+    table_fields = _table_schema_fields(db, table_name)
+    sample_record = _schema_sample_record(sources, schema_record_builder) if schema_record_builder else None
+    expected_fields = set(sample_record) if sample_record else set(expected_record_fields or table_fields)
+    schema_missing_fields = sorted(expected_fields - table_fields) if table_fields else []
+    schema_extra_fields = sorted(table_fields - expected_fields) if table_fields else []
+    legacy_schema_needs_upgrade = bool(existing) and not LIFECYCLE_FIELDS.issubset(set(existing[0]))
+    schema_needs_upgrade = bool(schema_missing_fields) or legacy_schema_needs_upgrade
+
+    insert_ids: list[str] = []
+    update_ids: list[str] = []
+    skipped_ids: list[str] = []
+    for source_id, source in source_by_id.items():
+        current = existing_by_id.get(source_id)
+        if current is None:
+            insert_ids.append(source_id)
+        elif schema_needs_upgrade or _record_stale(current, source):
+            update_ids.append(source_id)
+        else:
+            skipped_ids.append(source_id)
+
+    orphan_ids = sorted(set(existing_by_id) - set(source_by_id))
+    stats = {
+        "kind": kind,
+        "table_name": table_name,
+        "store_path": str(actual_store_path),
+        "dry_run": dry_run,
+        "delete_orphans": delete_orphans,
+        "scanned_count": len(sources),
+        "inserted_count": 0 if dry_run else len(insert_ids),
+        "updated_count": 0 if dry_run else len(update_ids),
+        "skipped_count": len(skipped_ids),
+        "orphan_count": len(orphan_ids),
+        "deleted_orphan_count": 0 if dry_run or not delete_orphans else len(orphan_ids),
+        "would_insert": len(insert_ids),
+        "would_update": len(update_ids),
+        "would_delete": len(orphan_ids) if delete_orphans else 0,
+        "schema_needs_upgrade": schema_needs_upgrade,
+        "schema_upgrade": schema_needs_upgrade,
+        "schema_missing_fields": schema_missing_fields,
+        "schema_extra_fields": schema_extra_fields,
+        "legacy_schema_needs_upgrade": legacy_schema_needs_upgrade,
+        "table_schema_fields": sorted(table_fields),
+        "expected_record_fields": sorted(expected_fields),
+        "planned_backup_path": str(planned_schema_backup_path(store_path=actual_store_path)),
+        "backup_path": None,
+        "rebuilt_table": False,
+        "elapsed_ms": 0.0,
+    }
+
+    if dry_run:
+        stats["elapsed_ms"] = round(_elapsed_ms(started), 2)
+        return stats
+
+    changed_ids = insert_ids + update_ids
+    if schema_needs_upgrade:
+        if not rebuild_if_schema_mismatch:
+            raise VectorStoreSchemaMismatch(
+                f"{table_name} schema is missing fields: {', '.join(schema_missing_fields)}"
+            )
+        backup_path = backup_vector_store(store_path=actual_store_path, manifest_path=manifest_path)
+        stats["backup_path"] = str(backup_path)
+        model = local_embedding_service._load_model({}) if sources else None
+        records = [record for source in sources for record in [record_builder(source, model)] if record]
+        if table_name in _table_names(db):
+            db.drop_table(table_name)
+        if records:
+            db.create_table(table_name, data=records, mode="overwrite")
+        stats["inserted_count"] = len(records)
+        stats["updated_count"] = 0
+        stats["rebuilt_table"] = True
+    else:
+        model = local_embedding_service._load_model({}) if changed_ids else None
+        records = [record for source_id in changed_ids for record in [record_builder(source_by_id[source_id], model)] if record]
+        add_missing_fields = _records_missing_table_fields(records, table_fields)
+        if add_missing_fields:
+            raise VectorStoreSchemaMismatch(
+                f"{table_name} schema is missing fields before add: {', '.join(add_missing_fields)}"
+            )
+        if changed_ids and table_name in _table_names(db):
+            _delete_vector_ids(db.open_table(table_name), changed_ids)
+        if delete_orphans and orphan_ids and table_name in _table_names(db):
+            _delete_vector_ids(db.open_table(table_name), orphan_ids)
+        if records:
+            if table_name not in _table_names(db):
+                db.create_table(table_name, data=records, mode="overwrite")
+            else:
+                db.open_table(table_name).add(records)
+
+    final_count = _table_status(db, table_name)["count"] if table_name in _table_names(db) else 0
+    embedding_dim = _table_embedding_dim(records)
+    if not embedding_dim:
+        embedding_dim = 1024
+    if kind == "passages":
+        _updated_manifest(manifest_path=manifest_path, embedding_dim=embedding_dim, passage_count=final_count)
+    elif kind == "objects":
+        _updated_manifest(manifest_path=manifest_path, embedding_dim=embedding_dim, object_count=final_count)
+    stats["elapsed_ms"] = round(_elapsed_ms(started), 2)
+    return stats
+
+
+def _record_stale(record: dict[str, Any], source: dict[str, Any]) -> bool:
+    return (
+        record.get("source_hash") != source.get("source_hash")
+        or record.get("profile_version") != source.get("profile_version")
+        or record.get("embedding_model") != source.get("embedding_model")
+        or record.get("embedding_model_path") != EMBEDDING_MODEL_PATH
+    )
+
+
+def _schema_sample_record(sources: list[dict[str, Any]], schema_record_builder: Any) -> dict[str, Any] | None:
+    for source in sources[:1]:
+        record = schema_record_builder(source)
+        if record:
+            return record
+    return None
+
+
+def _schema_inspection_for_table(db: Any, table_name: str, expected_fields: set[str]) -> dict[str, Any]:
+    existing_fields = _table_schema_fields(db, table_name)
+    return {
+        "exists": table_name in _table_names(db),
+        "existing_schema_fields": sorted(existing_fields),
+        "expected_record_fields": sorted(expected_fields),
+        "missing_fields": sorted(expected_fields - existing_fields) if existing_fields else [],
+        "extra_fields": sorted(existing_fields - expected_fields) if existing_fields else [],
+        "schema_upgrade": bool(existing_fields and (expected_fields - existing_fields)),
+    }
+
+
+def _table_schema_fields(db: Any, table_name: str) -> set[str]:
+    if table_name not in _table_names(db):
+        return set()
+    table = db.open_table(table_name)
+    schema = getattr(table, "schema", None)
+    if callable(schema):
+        schema = schema()
+    if schema is None and hasattr(table, "to_arrow"):
+        schema = table.to_arrow().schema
+    if schema is None and hasattr(table, "to_pandas"):
+        return set(table.to_pandas().columns)
+    return {field.name for field in schema}
+
+
+def _records_missing_table_fields(records: list[dict[str, Any]], table_fields: set[str]) -> list[str]:
+    if not records or not table_fields:
+        return []
+    return sorted(set(records[0]) - table_fields)
+
+
+def _unique_backup_path(base_path: Path) -> Path:
+    candidate = base_path
+    suffix = 1
+    while candidate.exists():
+        candidate = base_path.with_name(f"{base_path.name}_{suffix}")
+        suffix += 1
+    return candidate
+
+
+def _existing_records(db: Any, table_name: str) -> list[dict[str, Any]]:
+    if table_name not in _table_names(db):
+        return []
+    table = db.open_table(table_name)
+    if hasattr(table, "to_list"):
+        return table.to_list()
+    if hasattr(table, "to_arrow"):
+        return table.to_arrow().to_pylist()
+    if hasattr(table, "to_pandas"):
+        return table.to_pandas().to_dict(orient="records")
+    raise VectorStoreUnavailable(f"cannot read LanceDB table records: {table_name}")
+
+
+def _connect_existing_vector_store(path: Path) -> Any:
+    if not path.exists():
+        raise VectorStoreUnavailable(f"vector store path missing: {path}")
+    return _import_lancedb().connect(str(path))
+
+
+def _existing_records_by_source_ids(db: Any, table_name: str, source_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if table_name not in _table_names(db):
+        return {}
+    table = db.open_table(table_name)
+    quoted = ", ".join(_sql_quote(value) for value in source_ids)
+    where_clause = f"source_id IN ({quoted})"
+    try:
+        records = table.search().where(where_clause).limit(len(source_ids)).to_list()
+    except Exception as exc:
+        raise VectorStoreUnavailable(f"affected-only source_id lookup failed: {exc}") from exc
+    return {str(record.get("source_id") or record.get("vector_id")): record for record in records}
+
+
+def _delete_vector_ids(table: Any, vector_ids: list[str]) -> None:
+    if not vector_ids:
+        return
+    quoted = ", ".join(_sql_quote(value) for value in vector_ids)
+    table.delete(f"vector_id IN ({quoted})")
+
+
+def _sql_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _sync_status(table_name: str, sources: list[dict[str, Any]], db: Any) -> dict[str, int]:
+    existing = _existing_records(db, table_name)
+    existing_by_id = {str(record.get("source_id") or record.get("vector_id")): record for record in existing}
+    source_by_id = {source["source_id"]: source for source in sources}
+    stale_count = 0
+    for source_id, source in source_by_id.items():
+        current = existing_by_id.get(source_id)
+        if current is not None and _record_stale(current, source):
+            stale_count += 1
+    return {
+        "source_count": len(source_by_id),
+        "indexed_count": len(existing_by_id),
+        "stale_count": stale_count,
+        "missing_count": len(set(source_by_id) - set(existing_by_id)),
+        "orphan_count": len(set(existing_by_id) - set(source_by_id)),
+    }
+
+
+def _updated_manifest(
+    *,
+    manifest_path: Path | None,
+    embedding_dim: int,
+    passage_count: int | None = None,
+    object_count: int | None = None,
+) -> dict[str, Any]:
+    current = get_vector_manifest(manifest_path) or {}
+    manifest = {
+        "backend": BACKEND,
+        "embedding_model": EMBEDDING_MODEL,
+        "embedding_model_path": EMBEDDING_MODEL_PATH,
+        "embedding_dim": embedding_dim or current.get("embedding_dim"),
+        "passage_profile_version": PASSAGE_PROFILE_VERSION,
+        "object_profile_version": OBJECT_PROFILE_VERSION,
+        "passage_count": current.get("passage_count", 0),
+        "object_count": current.get("object_count", 0),
+        "created_at": current.get("created_at") or _utc_now(),
+    }
+    if passage_count is not None:
+        manifest["passage_count"] = passage_count
+    if object_count is not None:
+        manifest["object_count"] = object_count
+    return write_vector_manifest(manifest, manifest_path)
+
+
+def evaluate_vector_store_freshness(
+    sync: dict[str, Any] | None,
+    *,
+    available: bool,
+    manifest_reason: str | None = None,
+) -> dict[str, Any]:
+    table_summaries: dict[str, dict[str, int]] = {}
+    totals = {
+        "source_count": 0,
+        "indexed_count": 0,
+        "missing_count": 0,
+        "stale_count": 0,
+        "orphan_count": 0,
+    }
+    for kind in ("passages", "objects"):
+        raw = dict((sync or {}).get(kind) or {})
+        summary = {
+            key: int(_safe_int(raw.get(key)) or 0)
+            for key in totals
+        }
+        table_summaries[kind] = summary
+        for key, value in summary.items():
+            totals[key] += value
+
+    count_mismatch = any(
+        table["source_count"] != table["indexed_count"]
+        for table in table_summaries.values()
+    )
+    source_drift = count_mismatch or any(
+        totals[key] > 0
+        for key in ("missing_count", "stale_count", "orphan_count")
+    )
+    if not available:
+        state = "unavailable"
+        reason = None
+    elif manifest_reason:
+        state = "manifest_mismatch"
+        reason = manifest_reason
+    elif source_drift:
+        state = "source_drift"
+        reason = "vector_store_source_drift"
+    else:
+        state = "current"
+        reason = None
+
+    return {
+        "state": state,
+        "complete": state == "current",
+        "reason": reason,
+        "manifest_compatible": available and manifest_reason is None,
+        "source_drift": source_drift,
+        "count_mismatch": count_mismatch,
+        "drift_count": (
+            totals["missing_count"]
+            + totals["stale_count"]
+            + totals["orphan_count"]
+        ),
+        **totals,
+        "tables": table_summaries,
+    }
+
+
+def _status_payload(
+    *,
+    available: bool,
+    reason: str | None,
+    stale: bool,
+    manifest: dict[str, Any] | None,
+    tables: dict[str, Any],
+    sync: dict[str, Any] | None = None,
+    freshness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    sync_payload = sync or {}
+    freshness_payload = freshness or evaluate_vector_store_freshness(
+        sync_payload,
+        available=available,
+        manifest_reason=reason if available and reason == "vector_store_stale" else None,
+    )
+    if not available and reason and freshness_payload.get("reason") is None:
+        freshness_payload = {**freshness_payload, "reason": reason}
+    return {
+        "backend": BACKEND,
+        "available": available,
+        "manifest": manifest,
+        "tables": tables,
+        "stale": stale,
+        "reason": reason,
+        "sync": sync_payload,
+        "freshness": freshness_payload,
+    }
+
+
+def _table_status(db: Any, table_name: str) -> dict[str, Any]:
+    if table_name not in _table_names(db):
+        return {"exists": False, "count": 0}
+    table = db.open_table(table_name)
+    return {"exists": True, "count": int(table.count_rows())}
+
+
+def _stale_reason(manifest: dict[str, Any]) -> str | None:
+    expected = {
+        "backend": BACKEND,
+        "embedding_model": EMBEDDING_MODEL,
+        "embedding_model_path": EMBEDDING_MODEL_PATH,
+        "passage_profile_version": PASSAGE_PROFILE_VERSION,
+        "object_profile_version": OBJECT_PROFILE_VERSION,
+    }
+    for key, value in expected.items():
+        if manifest.get(key) != value:
+            return "vector_store_stale"
+    if not manifest.get("embedding_dim"):
+        return "vector_store_stale"
+    return None
+
+
+def _table_names(db: Any) -> list[str]:
+    if hasattr(db, "list_tables"):
+        names = db.list_tables()
+        if hasattr(names, "tables"):
+            return list(names.tables)
+        return list(names() if callable(names) else names)
+    names = db.table_names()
+    return list(names() if callable(names) else names)
+
+
+def _import_lancedb() -> Any:
+    try:
+        import lancedb
+    except Exception as exc:  # pragma: no cover - depends on optional dependency
+        raise VectorStoreUnavailable(f"lancedb_unavailable: {exc}") from exc
+    return lancedb
+
+
+def _embedding_dim(records: list[dict[str, Any]]) -> int:
+    if records:
+        return int(records[0].get("embedding_dim") or len(records[0].get("vector") or []))
+    manifest = get_vector_manifest() or {}
+    return int(manifest.get("embedding_dim") or 0)
+
+
+def _table_embedding_dim(records: list[dict[str, Any]]) -> int:
+    if records:
+        return _embedding_dim(records)
+    manifest = get_vector_manifest() or {}
+    return int(manifest.get("embedding_dim") or 0)
+
+
+def _expected_embedding_dim() -> int:
+    return _table_embedding_dim([]) or 1024
+
+
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(_compact_text(text).encode("utf-8")).hexdigest()
+
+
+def _compact_text(value: str | None) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _format_datetime(value: Any) -> str | None:
+    return value.isoformat() if hasattr(value, "isoformat") else None
+
+
+def _safe_attr(obj: Any, name: str, default: Any = None) -> Any:
+    try:
+        return getattr(obj, name)
+    except Exception:
+        return default
+
+
+def _safe_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000
+
+
+def _json_safe(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: _json_value(value) for key, value in item.items() if key != "vector"}
+
+
+def _json_value(value: Any) -> Any:
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {key: _json_value(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_json_value(child) for child in value]
+    return value
