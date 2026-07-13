@@ -1,10 +1,12 @@
 export default function RetrievalSearchForm({
   query,
-  mode,
+  searchKind,
+  ftsMode,
   limit,
   loading,
   onQueryChange,
-  onModeChange,
+  onSearchKindChange,
+  onFtsModeChange,
   onLimitChange,
   onSubmit,
 }) {
@@ -21,24 +23,33 @@ export default function RetrievalSearchForm({
       </label>
       <div className="localRetrievalMode" role="group" aria-label="检索模式">
         {[
-          ["precision", "精准"],
-          ["coverage", "覆盖"],
+          ["high_quality", "高质量搜索"],
+          ["keyword", "关键词搜索"],
         ].map(([value, label]) => (
           <button
             key={value}
             type="button"
-            className={mode === value ? "selected" : ""}
-            aria-pressed={mode === value}
-            onClick={() => onModeChange(value)}
+            className={searchKind === value ? "selected" : ""}
+            aria-pressed={searchKind === value}
+            onClick={() => onSearchKindChange(value)}
           >
             {label}
           </button>
         ))}
       </div>
+      {searchKind === "keyword" && (
+        <label className="localRetrievalFtsMode">
+          <span>关键词排序</span>
+          <select value={ftsMode} onChange={(event) => onFtsModeChange(event.target.value)}>
+            <option value="precision">精准</option>
+            <option value="coverage">覆盖</option>
+          </select>
+        </label>
+      )}
       <label className="localRetrievalLimit">
         <span>返回</span>
         <select value={limit} onChange={(event) => onLimitChange(Number(event.target.value))}>
-          {[20, 50, 100, 200].map((value) => (
+          {[12, 20, 50].map((value) => (
             <option key={value} value={value}>{value}</option>
           ))}
         </select>

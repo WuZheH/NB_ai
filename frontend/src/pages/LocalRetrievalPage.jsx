@@ -5,20 +5,26 @@ import RetrievalResultList from "../components/retrieval/RetrievalResultList.jsx
 import RetrievalSearchForm from "../components/retrieval/RetrievalSearchForm.jsx";
 import {
   exportRetrievalEvidence,
+  fetchRetrievalFragment,
   resolveRetrievalSelection,
   searchLocalRetrieval,
+  searchNotebookRetrieval,
 } from "../services/retrievalApi.js";
+import {
+  HIGH_QUALITY_SEARCH_KIND,
+  KEYWORD_SEARCH_KIND,
+  NOTEBOOK_NOTE_SOURCE_TYPES,
+  NOTEBOOK_SOURCE_TYPES,
+  buildEvidenceCopyText,
+  buildKeywordSearchRequest,
+  buildNotebookSearchRequest as createNotebookSearchRequest,
+  normalizeRetrievalResponse,
+} from "../features/retrieval/utils/notebookSearch.js";
+import {
+  copyTextToClipboard,
+  downloadTextFile,
+} from "../features/retrieval/utils/retrievalResults.js";
 
-const ALL_SOURCE_TYPES = [
-  "pdf_chunk",
-  "zotero_highlight",
-  "zotero_annotation_comment",
-  "zotero_child_note",
-  "zotero_inspiration_note",
-  "personal_note",
-  "markdown_note",
-];
-const NOTE_SOURCE_TYPES = ALL_SOURCE_TYPES.filter((sourceType) => sourceType !== "pdf_chunk");
 const DEFAULT_FILTERS = {
   sourceType: "",
   documentId: "",
@@ -37,9 +43,10 @@ const DEFAULT_EXPORT_OPTIONS = {
 };
 
 export default function LocalRetrievalPage() {
-  const [query, setQuery] = useState("spectral clustering");
-  const [mode, setMode] = useState("precision");
-  const [limit, setLimit] = useState(50);
+  const [query, setQuery] = useState("");
+  const [searchKind, setSearchKind] = useState(HIGH_QUALITY_SEARCH_KIND);
+  const [ftsMode, setFtsMode] = useState("precision");
+  const [limit, setLimit] = useState(12);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [searchState, setSearchState] = useState({ status: "idle", data: null, error: "" });
   const [lastSearchRequest, setLastSearchRequest] = useState(null);
@@ -54,18 +61,25 @@ export default function LocalRetrievalPage() {
     () => new Set(basket.map((item) => item.fragment_id)),
     [basket]
   );
-  const aliases = searchState.data?.query_plan?.curated_aliases || [];
+  const aliases = searchKind === KEYWORD_SEARCH_KIND
+    ? searchState.data?.query_plan?.curated_aliases || []
+    : [];
 
   async function runSearch(event) {
     event?.preventDefault();
     const trimmedQuery = query.trim();
     if (!trimmedQuery) return;
-    const request = buildSearchRequest({ query: trimmedQuery, mode, limit, filters });
+    const request = searchKind === HIGH_QUALITY_SEARCH_KIND
+      ? createNotebookSearchRequest({ query: trimmedQuery, limit, filters })
+      : buildKeywordSearchRequest({ query: trimmedQuery, mode: ftsMode, limit, filters });
     setSearchState({ status: "loading", data: null, error: "" });
     setError("");
     try {
-      const data = await searchLocalRetrieval(request);
-      setLastSearchRequest(request);
+      const response = searchKind === HIGH_QUALITY_SEARCH_KIND
+        ? await searchNotebookRetrieval(request)
+        : await searchLocalRetrieval(request);
+      const data = normalizeRetrievalResponse(response);
+      setLastSearchRequest({ kind: searchKind, request });
       setSearchState({ status: "ready", data, error: "" });
     } catch (requestError) {
       setSearchState({ status: "error", data: null, error: apiErrorMessage(requestError) });
@@ -95,6 +109,20 @@ export default function LocalRetrievalPage() {
     }
   }
 
+  async function copyResult(item) {
+    try {
+      await copyTextToClipboard(buildEvidenceCopyText(item));
+      setNotice(`已复制片段 ${item.fragment_id}。`);
+      setError("");
+    } catch (copyError) {
+      setError(`复制失败：${apiErrorMessage(copyError)}`);
+    }
+  }
+
+  function fetchFragment(fragmentId) {
+    return fetchRetrievalFragment(fragmentId);
+  }
+
   function removeItem(fragmentId) {
     setBasket((current) => reindexBasket(
       current.filter((item) => item.fragment_id !== fragmentId)
@@ -121,12 +149,18 @@ export default function LocalRetrievalPage() {
 
   async function addAllSearchResults() {
     if (!lastSearchRequest || selectionBusy) return;
+    if (lastSearchRequest.kind === HIGH_QUALITY_SEARCH_KIND) {
+      const results = searchState.data?.results || [];
+      addItems(results);
+      setNotice(`已加入当前高质量搜索返回的 ${results.length} 条证据。`);
+      return;
+    }
     setSelectionBusy(true);
     setError("");
     try {
       const response = await resolveRetrievalSelection({
         type: "search_results",
-        search_request: lastSearchRequest,
+        search_request: lastSearchRequest.request,
         max_items: 500,
       });
       addItems(response.items);
@@ -146,7 +180,7 @@ export default function LocalRetrievalPage() {
       const response = await resolveRetrievalSelection({
         type: "document_scope",
         document_id: Number(documentId),
-        source_types: noteOnly ? NOTE_SOURCE_TYPES : ALL_SOURCE_TYPES,
+        source_types: noteOnly ? NOTEBOOK_NOTE_SOURCE_TYPES : NOTEBOOK_SOURCE_TYPES,
         max_items: 1000,
       });
       addItems(response.items);
@@ -163,22 +197,22 @@ export default function LocalRetrievalPage() {
     setExportBusy(true);
     setError("");
     try {
-      const response = await exportRetrievalEvidence({
+      const exportRequest = {
         fragment_ids: basket.map((item) => item.fragment_id),
         format,
-        query: lastSearchRequest?.query || query.trim() || null,
-        retrieval_mode: lastSearchRequest?.mode || mode,
+        query: lastSearchRequest?.request?.query || query.trim() || null,
         options: exportOptions,
         save_to_file: false,
-      });
+      };
+      if (lastSearchRequest?.kind === KEYWORD_SEARCH_KIND) {
+        exportRequest.retrieval_mode = lastSearchRequest.request.mode || ftsMode;
+      }
+      const response = await exportRetrievalEvidence(exportRequest);
       if (action === "copy") {
-        if (!navigator.clipboard?.writeText) {
-          throw new Error("当前浏览器不提供剪贴板写入能力。");
-        }
-        await navigator.clipboard.writeText(response.content);
+        await copyTextToClipboard(response.content);
         setNotice(`已复制 ${response.evidence_count} 条 Markdown 证据。`);
       } else {
-        downloadContent(response.content, response.filename, response.mime_type);
+        downloadTextFile(response.filename, response.content, response.mime_type);
         setNotice(`已生成 ${response.filename}。`);
       }
       if (response.warnings?.length) {
@@ -197,12 +231,21 @@ export default function LocalRetrievalPage() {
       <header className="localRetrievalHeader">
         <div>
           <span>LOCAL RETRIEVAL</span>
-          <h1>本地证据检索</h1>
+          <h1>高质量资料搜索</h1>
         </div>
         <div className="localRetrievalIndexState">
-          <span className={searchState.data?.index_status?.status === "ready" ? "ready" : ""} />
-          {searchState.data?.index_status?.status || "等待检索"}
-          {searchState.data?.index_status?.index_content_hash && (
+          <span className={
+            searchState.data?.status === "ok" || searchState.data?.index_status?.status === "ready"
+              ? "ready"
+              : ""
+          } />
+          {searchKind === HIGH_QUALITY_SEARCH_KIND
+            ? searchState.data?.backend || "等待高质量检索"
+            : searchState.data?.index_status?.status || "等待关键词检索"}
+          {searchKind === HIGH_QUALITY_SEARCH_KIND && searchState.data?.reranker_model && (
+            <code>{searchState.data.reranker_model}</code>
+          )}
+          {searchKind === KEYWORD_SEARCH_KIND && searchState.data?.index_status?.index_content_hash && (
             <code>{searchState.data.index_status.index_content_hash.slice(0, 12)}</code>
           )}
         </div>
@@ -210,15 +253,17 @@ export default function LocalRetrievalPage() {
 
       <RetrievalSearchForm
         query={query}
-        mode={mode}
+        searchKind={searchKind}
+        ftsMode={ftsMode}
         limit={limit}
         loading={searchState.status === "loading"}
         onQueryChange={setQuery}
-        onModeChange={setMode}
+        onSearchKindChange={setSearchKind}
+        onFtsModeChange={setFtsMode}
         onLimitChange={setLimit}
         onSubmit={runSearch}
       />
-      <RetrievalFilters value={filters} onChange={setFilters} />
+      <RetrievalFilters value={filters} searchKind={searchKind} onChange={setFilters} />
 
       {aliases.length > 0 && (
         <div className="localRetrievalAliases">
@@ -230,11 +275,20 @@ export default function LocalRetrievalPage() {
         </div>
       )}
 
+      {searchState.data?.warnings?.length > 0 && (
+        <div className="localRetrievalWarnings" role="status">
+          {searchState.data.warnings.map((warning) => <span key={warning}>{warning}</span>)}
+        </div>
+      )}
+
       <div className="localRetrievalBody">
         <RetrievalResultList
           state={searchState}
+          searchKind={searchKind}
           selectedIds={selectedIds}
           onToggle={toggleItem}
+          onFetch={fetchFragment}
+          onCopy={copyResult}
           onAddPage={() => addItems(searchState.data?.results || [])}
           onAddAll={addAllSearchResults}
           onClearPage={clearPageSelection}
@@ -277,14 +331,14 @@ export function buildSearchRequest({ query, mode, limit, filters }) {
 export function normalizeBasketItem(item) {
   return {
     fragment_id: item.fragment_id,
-    display_id: item.display_id,
+    display_id: item.display_id || item.fragment_id,
     source_type: item.source_type,
-    origin_kind: item.origin_kind,
+    origin_kind: item.origin_kind ?? null,
     document_id: item.document_id ?? null,
-    title: item.title ?? null,
+    title: item.document_title ?? item.title ?? null,
     authors: Array.isArray(item.authors) ? item.authors : [],
     year: item.year ?? null,
-    page_number: item.page_number ?? null,
+    page_number: item.pdf_page ?? item.page_number ?? null,
     page_label: item.page_label ?? null,
     section: item.section ?? null,
     duplicate_count: item.duplicate_count || 1,
@@ -299,6 +353,7 @@ export function reindexBasket(items) {
 
 export function apiErrorMessage(error) {
   const detail = error?.payload?.detail;
+  if (typeof detail === "string") return detail;
   if (detail?.message) {
     const counts = detail.available_count && detail.max_items
       ? ` (${detail.available_count} / ${detail.max_items})`
@@ -309,15 +364,7 @@ export function apiErrorMessage(error) {
 }
 
 export function downloadContent(content, filename, mimeType) {
-  const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
+  return downloadTextFile(filename, content, `${mimeType};charset=utf-8`);
 }
 
 function positiveInteger(value) {

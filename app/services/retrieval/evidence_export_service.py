@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from app.core.paths import PROJECT_ROOT
+from app.domains.retrieval.evidence_export_adapter import render_notebook_evidence
+from app.domains.retrieval.fragment_repository import NotebookFragmentNotFound
 from app.schemas.evidence_export import (
     EvidenceExportRequest,
     EvidenceExportResponse,
@@ -52,6 +55,15 @@ def export_evidence(
             details={"available_count": len(fragment_ids), "max_items": MAX_EXPORT_ITEMS},
         )
 
+    notebook_response = _try_notebook_export(
+        export_request,
+        fragment_ids=fragment_ids,
+        duplicate_count=duplicate_count,
+        output_dir=Path(output_dir),
+    )
+    if notebook_response is not None:
+        return notebook_response
+
     load_result = load_evidence_records(
         fragment_ids,
         index_path=index_path,
@@ -89,7 +101,7 @@ def export_evidence(
         )
         extension = ".md"
         mime_type = "text/markdown"
-    else:
+    elif export_request.format == "jsonl":
         content = render_evidence_jsonl(
             load_result.records,
             options=export_request.options,
@@ -97,6 +109,12 @@ def export_evidence(
         )
         extension = ".jsonl"
         mime_type = "application/x-ndjson"
+    else:
+        raise EvidenceWorkflowError(
+            "unsupported_evidence_format",
+            "JSON evidence export is available for NOTEBOOK_AI notebook-search fragments.",
+            status_code=400,
+        )
 
     warnings: list[str] = []
     if duplicate_count:
@@ -226,3 +244,68 @@ def _clean_optional(value: str | None) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def _try_notebook_export(
+    request: EvidenceExportRequest,
+    *,
+    fragment_ids: list[str],
+    duplicate_count: int,
+    output_dir: Path,
+) -> dict[str, Any] | None:
+    try:
+        rendered = render_notebook_evidence(
+            fragment_ids,
+            format=request.format,
+            query=_clean_optional(request.query),
+            include_context_before=request.options.include_context_before,
+            include_context_after=request.options.include_context_after,
+            include_provenance=request.options.include_provenance,
+        )
+    except NotebookFragmentNotFound:
+        return None
+
+    exported_at = datetime.now(timezone.utc).isoformat()
+    fingerprint_source = "|".join(
+        [
+            request.format,
+            _clean_optional(request.query) or "",
+            rendered["source_index_hash"],
+            rendered["source_manifest_hash"],
+        ]
+    )
+    fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
+    base_filename = _base_filename(
+        _clean_optional(request.query), fingerprint, rendered["extension"]
+    )
+    output_path: str | None = None
+    filename = base_filename
+    if request.save_to_file:
+        saved = _save_unique(
+            rendered["content"], base_filename=base_filename, output_dir=output_dir
+        )
+        output_path = str(saved)
+        filename = saved.name
+    warnings = [f"duplicate_fragment_ids_removed:{duplicate_count}"] if duplicate_count else []
+    response = {
+        "status": "OK",
+        "format": request.format,
+        "content": rendered["content"],
+        "filename": filename,
+        "mime_type": rendered["mime_type"],
+        "evidence_count": rendered["evidence_count"],
+        "export_fingerprint": fingerprint,
+        "source_index_hash": rendered["source_index_hash"],
+        "source_manifest_hash": rendered["source_manifest_hash"],
+        "exported_at": exported_at,
+        "warnings": warnings,
+        "output_path": output_path,
+        "db_write_performed": False,
+        "production_db_write_performed": False,
+        "zotero_db_write_performed": False,
+        "vector_write_performed": False,
+        "llm_called": False,
+        "relation_generated": False,
+        "mechanism_generated": False,
+    }
+    return EvidenceExportResponse.model_validate(response).model_dump(mode="json")

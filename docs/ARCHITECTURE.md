@@ -16,6 +16,10 @@ features.
   tests, and integrations.
 - `app/domains/` groups larger chapter-review, database-search, and library
   responsibilities behind those stable service façades.
+- `app/domains/retrieval/` composes the existing high-quality PDF service with
+  a separate derived Zotero user-note vector index. It owns source-aware
+  fragment fields and evidence rendering; it does not contain FTS ranking or
+  duplicate the embedding/reranker implementations.
 - `app/cli.py` preserves `app.cli:app`; command-group surfaces live under
   `app/cli_commands/` and the compatibility runtime remains in
   `app/cli_runtime.py`.
@@ -43,4 +47,6 @@ and temporary-store behavior explicitly.
 Operational scripts are grouped under `scripts/runtime`, `importing`, `index`,
 `maintenance`, `migrations`, and `zotero`. Historical top-level script paths are
 thin compatibility launchers. Zotero extension source and packaging contracts
-live under `zotero-plugin/`.
+live under `zotero-plugin/`. The ChatGPT Developer Mode MCP App is isolated in
+`integrations/notebook_ai_chatgpt_app/`; its TypeScript server is a read-only
+HTTP adapter to FastAPI and its React widget never accesses SQLite directly.

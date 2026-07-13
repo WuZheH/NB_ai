@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.retrieval_search import RetrievalSearchMode
 
 
-EvidenceExportFormat = Literal["markdown", "jsonl"]
+EvidenceExportFormat = Literal["markdown", "jsonl", "json"]
 
 
 class EvidenceExportOptions(BaseModel):

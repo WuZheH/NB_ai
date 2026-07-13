@@ -25,6 +25,7 @@ FTS_MANIFEST_PATH = FTS_INDEX_DIR / "retrieval_fts_v1_manifest.json"
 VECTOR_INDEX_DIR = DATA_DIR / "vector_index"
 VECTOR_STORE_DIR = DATA_DIR / "vector_store"
 LANCEDB_DIR = VECTOR_STORE_DIR / "lancedb"
+ZOTERO_NOTE_VECTOR_DIR = VECTOR_STORE_DIR / "zotero_user_notes_v1"
 
 # The checked-in project sits next to the shared model_cache directory.  The
 # model services retain their existing environment-variable resolution and

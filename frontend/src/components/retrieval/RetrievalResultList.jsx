@@ -2,8 +2,11 @@ import RetrievalResultCard from "./RetrievalResultCard.jsx";
 
 export default function RetrievalResultList({
   state,
+  searchKind,
   selectedIds,
   onToggle,
+  onFetch,
+  onCopy,
   onAddPage,
   onAddAll,
   onClearPage,
@@ -17,6 +20,9 @@ export default function RetrievalResultList({
       <div className="localRetrievalResultsToolbar">
         <div>
           <strong>{state.status === "ready" ? `${results.length} 条结果` : "检索结果"}</strong>
+          {state.data?.mode === "high_quality_notebook_search_v1" && (
+            <span>Qwen embedding · Qwen reranker · 高质量最终排序</span>
+          )}
           {state.data?.counts?.coverage && (
             <span>
               {state.data.counts.coverage.documents} 个文档 · {state.data.counts.coverage.source_types} 类来源
@@ -31,7 +37,13 @@ export default function RetrievalResultList({
       </div>
 
       {state.status === "idle" && <p className="localRetrievalState">输入查询后开始检索。</p>}
-      {state.status === "loading" && <p className="localRetrievalState">正在读取本地派生索引…</p>}
+      {state.status === "loading" && (
+        <p className="localRetrievalState">
+          {searchKind === "high_quality"
+            ? "正在执行高质量语义召回与重排…"
+            : "正在读取本地 FTS 关键词索引…"}
+        </p>
+      )}
       {state.status === "error" && <p className="localRetrievalState error">{state.error}</p>}
       {state.status === "ready" && !results.length && <p className="localRetrievalState">没有命中结果。</p>}
 
@@ -42,6 +54,8 @@ export default function RetrievalResultList({
             result={result}
             selected={selectedIds.has(result.fragment_id)}
             onToggle={onToggle}
+            onFetch={onFetch}
+            onCopy={onCopy}
             onAddDocument={onAddDocument}
             onAddDocumentNotes={onAddDocumentNotes}
           />

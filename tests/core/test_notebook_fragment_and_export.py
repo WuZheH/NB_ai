@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+import json
+
+from app.domains.retrieval.fragment_repository import list_notebook_fragments
+from app.services.retrieval.evidence_export_service import export_evidence
+
+
+def test_live_repository_keeps_note_and_selected_text_separate() -> None:
+    comments = list_notebook_fragments(source_types=["zotero_annotation_comment"])
+    inspirations = list_notebook_fragments(source_types=["zotero_inspiration_note"])
+
+    assert comments
+    assert all(item.note_text for item in comments)
+    assert all(item.selected_text for item in comments)
+    assert all(item.text is None for item in comments)
+    assert inspirations
+    assert any(item.note_text and item.selected_text for item in inspirations)
+    assert all(item.source_type == "zotero_inspiration_note" for item in inspirations)
+
+
+def test_notebook_markdown_jsonl_and_json_export_are_read_only_and_ordered() -> None:
+    note = list_notebook_fragments(source_types=["zotero_annotation_comment"])[0]
+    assert note.document_id is not None
+    pdf = list_notebook_fragments(
+        source_types=["pdf_chunk"], document_ids=[note.document_id]
+    )[0]
+    ids = [note.fragment_id, pdf.fragment_id]
+
+    markdown = export_evidence(
+        {"fragment_ids": ids, "format": "markdown", "query": "EDSR", "save_to_file": False}
+    )
+    assert markdown["output_path"] is None
+    assert markdown["production_db_write_performed"] is False
+    assert "### User note" in markdown["content"]
+    assert "### Selected source text" in markdown["content"]
+    pdf_section = markdown["content"].split("## Evidence 2", 1)[1]
+    assert "### PDF text" in pdf_section
+    assert "### User note" not in pdf_section
+
+    jsonl = export_evidence({"fragment_ids": ids, "format": "jsonl", "save_to_file": False})
+    rows = [json.loads(line) for line in jsonl["content"].splitlines()]
+    assert [row["fragment_id"] for row in rows] == ids
+    assert rows[0]["user_note"] == note.note_text
+    assert rows[0]["selected_source_text"] == note.selected_text
+
+    payload = export_evidence({"fragment_ids": ids, "format": "json", "save_to_file": False})
+    assert [item["fragment_id"] for item in json.loads(payload["content"])["results"]] == ids

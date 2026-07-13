@@ -10,6 +10,9 @@ The application uses these runtime locations:
 - `data/search_index/`: derived FTS index.
 - `data/vector_index/`: legacy vector index.
 - `data/vector_store/`: current LanceDB vector store.
+- `data/vector_store/zotero_user_notes_v1/`: separate derived vectors for
+  Zotero annotation comments, child notes, and inspiration notes. Synthetic
+  acceptance seeds are excluded from the active product index.
 - `data/lancedb/`: optional LanceDB location when present.
 - `data/exports/`: retained user evidence and Zotero Markdown exports.
 

@@ -4,6 +4,16 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from app.domains.retrieval.fragment_repository import (
+    NotebookFragmentNotFound,
+    get_notebook_fragment,
+)
+from app.domains.retrieval.notebook_search_service import (
+    NotebookSearchUnavailable,
+    search_notebook,
+)
+from app.domains.retrieval.result_contracts import NotebookFragment, NotebookSearchResponse
+from app.schemas.notebook_search import NotebookSearchRequest
 from app.schemas.retrieval_search import (
     RetrievalSearchRequest,
     RetrievalSearchResponse,
@@ -12,6 +22,47 @@ from app.services.retrieval import fts_search_service, fts_status_service
 
 
 router = APIRouter(prefix="/api/v1/retrieval", tags=["local-retrieval"])
+
+
+@router.post("/notebook-search", response_model=NotebookSearchResponse)
+def search_notebook_retrieval(
+    request: NotebookSearchRequest,
+) -> dict[str, Any]:
+    try:
+        return search_notebook(request)
+    except NotebookSearchUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "notebook_search_unavailable",
+                "message": str(exc),
+                **_safety_flags(),
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_notebook_search",
+                "message": str(exc),
+                **_safety_flags(),
+            },
+        ) from exc
+
+
+@router.get("/fragments/{fragment_id}", response_model=NotebookFragment)
+def fetch_notebook_fragment(fragment_id: str) -> dict[str, Any]:
+    try:
+        return get_notebook_fragment(fragment_id).model_dump(mode="json")
+    except NotebookFragmentNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "notebook_fragment_not_found",
+                "message": str(exc),
+                **_safety_flags(),
+            },
+        ) from exc
 
 
 @router.post("/search", response_model=RetrievalSearchResponse)

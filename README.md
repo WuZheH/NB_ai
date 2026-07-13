@@ -7,7 +7,9 @@ NOTEBOOK_AI is a local-first research evidence retrieval and export system for P
 - High-quality search: `Qwen3-Embedding-0.6B` semantic recall followed by `Qwen3-Reranker-0.6B` reranking.
 - Keyword search: independent local FTS5/BM25 precision and coverage modes.
 - Unified evidence: stable `RetrievalFragment` identities across PDF chunks, highlights, comments, Zotero notes, personal notes, and Markdown notes.
-- Evidence Basket: server-side Markdown and JSONL export with provenance and stable IDs.
+- Evidence Basket: server-side Markdown, JSONL, and JSON export with provenance and stable IDs.
+- ChatGPT Developer Mode App: read-only MCP `search`, `fetch`, and
+  `export_evidence` tools with an embedded React evidence widget.
 
 FTS does not silently replace high-quality model search. Model or vector runtime problems must be reported explicitly.
 
@@ -36,6 +38,8 @@ See [docs/RUNNING.md](docs/RUNNING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE
 - `frontend/src/`: React/Vite user interface.
 - `zotero-plugin/`: Zotero Reader and Library integration.
 - `scripts/`: runtime, import, index, maintenance, migration, and packaging commands.
+- `integrations/notebook_ai_chatgpt_app/`: Apps SDK/MCP server, React widget,
+  local smoke tests, and ChatGPT connection instructions.
 - `data/`: production data, local source documents, exports, and indexes.
 - `config/`: deterministic local retrieval configuration and path templates.
 

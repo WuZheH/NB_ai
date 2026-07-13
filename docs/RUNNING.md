@@ -35,6 +35,23 @@ Only run build or sync commands when an index refresh is intended:
 & "<PATH_TO_NOTEBOOK_AI_PYTHON>" scripts/sync_vector_store.py
 ```
 
+The separate Zotero user-note vector index has explicit build, incremental
+sync, and read-only status commands:
+
+```powershell
+& "<PATH_TO_NOTEBOOK_AI_PYTHON>" scripts/index/build_zotero_note_vectors.py
+& "<PATH_TO_NOTEBOOK_AI_PYTHON>" scripts/index/sync_zotero_note_vectors.py
+& "<PATH_TO_NOTEBOOK_AI_PYTHON>" scripts/index/status_zotero_note_vectors.py
+```
+
+## ChatGPT Developer Mode App
+
+The read-only MCP App and its complete local build, security, Inspector,
+HTTPS-tunnel, and ChatGPT connection instructions live in
+`integrations/notebook_ai_chatgpt_app/README.md`. The server binds to loopback
+and refuses unauthenticated startup unless the documented development switch
+is explicitly set.
+
 ## Zotero plugin
 
 The plugin source is under `zotero-plugin/`. Package it with:

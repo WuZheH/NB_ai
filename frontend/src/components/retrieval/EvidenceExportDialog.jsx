@@ -37,6 +37,9 @@ export default function EvidenceExportDialog({ options, busy, disabled, onChange
         <button type="button" disabled={disabled || busy} onClick={() => onExport("jsonl", "download")} title="下载 JSONL">
           ↓ JSONL
         </button>
+        <button type="button" disabled={disabled || busy} onClick={() => onExport("json", "download")} title="下载 JSON">
+          ↓ JSON
+        </button>
       </div>
     </div>
   );

@@ -1,0 +1,254 @@
+from __future__ import annotations
+
+import time
+from typing import Any
+
+from app.domains.retrieval.fragment_repository import get_notebook_fragments
+from app.domains.retrieval.note_vector_index import (
+    DEFAULT_RECALL_LIMIT,
+    NoteVectorIndexUnavailable,
+    search_zotero_note_vectors,
+)
+from app.domains.retrieval.result_contracts import (
+    NOTE_SOURCE_TYPES,
+    NotebookFragment,
+    NotebookSearchResponse,
+    NotebookSearchResult,
+)
+from app.schemas.notebook_search import NotebookSearchRequest
+from app.services import (
+    high_quality_search_service,
+    local_embedding_service,
+    local_reranker_service,
+)
+from app.services.retrieval.fragment_id import canonical_source_locator, fragment_uuid
+
+
+MODE = "high_quality_notebook_search_v1"
+
+
+class NotebookSearchUnavailable(RuntimeError):
+    pass
+
+
+def search_notebook(
+    request: NotebookSearchRequest | dict[str, Any],
+) -> dict[str, Any]:
+    search_request = (
+        request
+        if isinstance(request, NotebookSearchRequest)
+        else NotebookSearchRequest.model_validate(request)
+    )
+    started = time.perf_counter()
+    warnings: list[str] = []
+    candidates: list[dict[str, Any]] = []
+    backends: list[str] = []
+
+    if "pdf_chunk" in search_request.source_types:
+        pdf_started = time.perf_counter()
+        pdf_payload = high_quality_search_service.search_high_quality(search_request.query)
+        backends.append(str(pdf_payload.get("retrieval_backend") or "legacy_high_quality"))
+        fallback_reason = pdf_payload.get("fallback_reason")
+        if fallback_reason:
+            warnings.append(f"legacy_pdf_fallback:{fallback_reason}")
+        candidates.extend(
+            _pdf_candidates(
+                pdf_payload,
+                document_ids=set(search_request.document_ids),
+            )
+        )
+        pdf_ms = _elapsed_ms(pdf_started)
+    else:
+        pdf_ms = 0.0
+
+    requested_note_types = [
+        source_type
+        for source_type in search_request.source_types
+        if source_type in NOTE_SOURCE_TYPES
+    ]
+    if requested_note_types:
+        notes_started = time.perf_counter()
+        try:
+            note_payload = search_zotero_note_vectors(
+                search_request.query,
+                limit=DEFAULT_RECALL_LIMIT,
+                source_types=requested_note_types,
+                document_ids=search_request.document_ids,
+            )
+        except NoteVectorIndexUnavailable as exc:
+            raise NotebookSearchUnavailable(str(exc)) from exc
+        backends.append(str(note_payload.get("backend") or "zotero_note_vectors"))
+        for raw_rank, item in enumerate(note_payload.get("results") or [], start=1):
+            fragment = NotebookFragment.model_validate(item["fragment"])
+            candidates.append(
+                {
+                    "kind": "note",
+                    "fragment": fragment,
+                    "passage_text": item["passage_text"],
+                    "title": fragment.document_title or "",
+                    "heading_path": "",
+                    "semantic_score": float(item.get("semantic_score") or 0.0),
+                    "raw_rank": raw_rank,
+                }
+            )
+        notes_ms = _elapsed_ms(notes_started)
+    else:
+        notes_ms = 0.0
+
+    if requested_note_types:
+        ranked = _rerank_unified(search_request.query, candidates)
+    else:
+        ranked = candidates
+    limited = ranked[: search_request.limit]
+    results = [
+        _result_from_candidate(
+            item,
+            final_rank=rank,
+            include_context=search_request.include_context,
+        )
+        for rank, item in enumerate(limited, start=1)
+    ]
+    response = NotebookSearchResponse(
+        query=search_request.query,
+        embedding_model=local_embedding_service.MODEL_NAME,
+        reranker_model=local_reranker_service.RERANKER_MODEL_NAME,
+        backend="+".join(dict.fromkeys(backends)) or "high_quality_notebook_search",
+        result_count=len(results),
+        results=results,
+        warnings=list(dict.fromkeys(warnings)),
+        latency={
+            "pdf_high_quality_ms": round(pdf_ms, 2),
+            "note_vector_ms": round(notes_ms, 2),
+            "total_ms": round(_elapsed_ms(started), 2),
+        },
+    )
+    return response.model_dump(mode="json")
+
+
+def _pdf_candidates(
+    payload: dict[str, Any],
+    *,
+    document_ids: set[int],
+) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for paper in payload.get("papers") or []:
+        document_id = _int_or_none(paper.get("document_id"))
+        if document_id is None or (document_ids and document_id not in document_ids):
+            continue
+        for passage in paper.get("top_passages") or []:
+            chunk_id = _int_or_none(passage.get("chunk_id"))
+            if chunk_id is None:
+                continue
+            flattened.append(
+                {
+                    "kind": "pdf",
+                    "fragment_id": fragment_uuid(
+                        canonical_source_locator(
+                            "pdf_chunk", document_id=document_id, chunk_id=chunk_id
+                        )
+                    ),
+                    "document_id": document_id,
+                    "document_title": str(paper.get("title") or ""),
+                    "document_type": paper.get("document_type"),
+                    "chunk_id": chunk_id,
+                    "pdf_page": _int_or_none(
+                        passage.get("pdf_page") or passage.get("pdf_page_start")
+                    ),
+                    "page_label": None,
+                    "passage_text": str(passage.get("passage_text") or ""),
+                    "title": str(paper.get("title") or ""),
+                    "heading_path": str(passage.get("heading_path") or ""),
+                    "semantic_score": float(passage.get("embedding_score") or 0.0),
+                    "reranker_score": float(passage.get("rerank_score") or 0.0),
+                    "raw_rank": len(flattened) + 1,
+                    "legacy_source_trace": passage.get("source_trace") or {},
+                }
+            )
+    if not flattened:
+        return []
+    details = {
+        fragment.fragment_id: fragment
+        for fragment in get_notebook_fragments(item["fragment_id"] for item in flattened)
+    }
+    for candidate in flattened:
+        candidate["fragment"] = details[candidate["fragment_id"]]
+    return flattened
+
+
+def _rerank_unified(query: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not candidates:
+        return []
+    timings: dict[str, float] = {}
+    reranker = local_reranker_service._load_reranker(timings)  # noqa: SLF001
+    pairs = [
+        (
+            query,
+            local_reranker_service._candidate_text(  # noqa: SLF001
+                {
+                    "title": item.get("title") or "",
+                    "heading_path": item.get("heading_path") or "",
+                    "passage_text": item.get("passage_text") or "",
+                }
+            ),
+        )
+        for item in candidates
+    ]
+    scores = local_reranker_service._predict_scores(reranker, pairs)  # noqa: SLF001
+    reranked = []
+    for ordinal, (candidate, score) in enumerate(zip(candidates, scores)):
+        reranked.append({**candidate, "reranker_score": float(score), "_ordinal": ordinal})
+    reranked.sort(
+        key=lambda item: (-float(item["reranker_score"]), int(item["_ordinal"]))
+    )
+    return reranked
+
+
+def _result_from_candidate(
+    candidate: dict[str, Any],
+    *,
+    final_rank: int,
+    include_context: bool,
+) -> NotebookSearchResult:
+    fragment: NotebookFragment = candidate["fragment"]
+    payload = fragment.model_dump(mode="python")
+    if candidate["kind"] == "pdf":
+        payload.update(
+            {
+                "document_title": candidate.get("document_title") or fragment.document_title,
+                "document_type": candidate.get("document_type") or fragment.document_type,
+                "chunk_id": candidate.get("chunk_id") or fragment.chunk_id,
+                "pdf_page": candidate.get("pdf_page") or fragment.pdf_page,
+                # Keep the exact passage text exposed by the legacy high-quality endpoint.
+                "text": candidate.get("passage_text") or fragment.text,
+                "provenance": [
+                    *fragment.provenance,
+                    {
+                        "store": "legacy_high_quality_search",
+                        "source_trace": candidate.get("legacy_source_trace") or {},
+                    },
+                ],
+            }
+        )
+    if not include_context:
+        payload["context_before"] = None
+        payload["context_after"] = None
+    reranker_score = float(candidate.get("reranker_score") or 0.0)
+    return NotebookSearchResult(
+        **payload,
+        final_rank=final_rank,
+        final_score=reranker_score,
+        reranker_score=reranker_score,
+        semantic_score=float(candidate.get("semantic_score") or 0.0),
+        raw_rank=int(candidate.get("raw_rank") or final_rank),
+    )
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None

@@ -1,7 +1,15 @@
 from __future__ import annotations
 
-"""Discoverable command-group surfaces for the stable Typer application."""
+"""Domain-owned command implementations for the stable Typer application."""
 
-from app.cli_commands.app import app, inspiration_card_app
+from typing import Any
 
 __all__ = ["app", "inspiration_card_app"]
+
+
+def __getattr__(name: str) -> Any:
+    if name in __all__:
+        from app import cli_runtime
+
+        return getattr(cli_runtime, name)
+    raise AttributeError(name)

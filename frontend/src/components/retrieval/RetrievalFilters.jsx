@@ -1,15 +1,12 @@
 const SOURCE_TYPES = [
   ["", "全部来源"],
-  ["pdf_chunk", "PDF 正文"],
-  ["zotero_highlight", "Zotero 高亮"],
-  ["zotero_annotation_comment", "高亮批注"],
-  ["zotero_child_note", "Zotero 笔记"],
+  ["pdf_chunk", "PDF 片段"],
+  ["zotero_annotation_comment", "Zotero 批注笔记"],
+  ["zotero_child_note", "Zotero 子笔记"],
   ["zotero_inspiration_note", "灵感笔记"],
-  ["personal_note", "个人笔记"],
-  ["markdown_note", "Markdown 笔记"],
 ];
 
-export default function RetrievalFilters({ value, onChange }) {
+export default function RetrievalFilters({ value, searchKind, onChange }) {
   function update(key, nextValue) {
     onChange({ ...value, [key]: nextValue });
   }
@@ -34,17 +31,19 @@ export default function RetrievalFilters({ value, onChange }) {
           placeholder="全部"
         />
       </label>
-      <label>
-        <span>年份</span>
-        <input
-          type="number"
-          min="1900"
-          max="2100"
-          value={value.year}
-          onChange={(event) => update("year", event.target.value)}
-          placeholder="全部"
-        />
-      </label>
+      {searchKind === "keyword" && (
+        <label>
+          <span>年份</span>
+          <input
+            type="number"
+            min="1900"
+            max="2100"
+            value={value.year}
+            onChange={(event) => update("year", event.target.value)}
+            placeholder="全部"
+          />
+        </label>
+      )}
       <label className="localRetrievalCheck">
         <input
           type="checkbox"
@@ -53,14 +52,16 @@ export default function RetrievalFilters({ value, onChange }) {
         />
         <span>加载上下文</span>
       </label>
-      <label className="localRetrievalCheck">
-        <input
-          type="checkbox"
-          checked={value.collapseDuplicates}
-          onChange={(event) => update("collapseDuplicates", event.target.checked)}
-        />
-        <span>折叠重复来源</span>
-      </label>
+      {searchKind === "keyword" && (
+        <label className="localRetrievalCheck">
+          <input
+            type="checkbox"
+            checked={value.collapseDuplicates}
+            onChange={(event) => update("collapseDuplicates", event.target.checked)}
+          />
+          <span>折叠重复来源</span>
+        </label>
+      )}
     </div>
   );
 }

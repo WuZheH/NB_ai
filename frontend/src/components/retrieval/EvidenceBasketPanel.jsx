@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { notebookSourceLabel } from "../../features/retrieval/utils/notebookSearch.js";
 import EvidenceExportDialog from "./EvidenceExportDialog.jsx";
 
 export default function EvidenceBasketPanel({
@@ -42,7 +43,7 @@ export default function EvidenceBasketPanel({
             <div className="localEvidenceBasketMain">
               <strong>{item.display_id}</strong>
               <span>{item.title || "未命名来源"}</span>
-              <small>{item.source_type} · {item.page_label || item.page_number || "无页码"}</small>
+              <small>{notebookSourceLabel(item.source_type)} · {item.page_label || item.page_number || "无页码"}</small>
             </div>
             <div className="localEvidenceBasketControls">
               <button type="button" aria-label="上移" title="上移" disabled={index === 0} onClick={() => onMove(index, -1)}>↑</button>
