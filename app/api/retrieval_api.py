@@ -8,11 +8,16 @@ from app.domains.retrieval.fragment_repository import (
     NotebookFragmentNotFound,
     get_notebook_fragment,
 )
+from app.domains.retrieval.fragment_locator import get_notebook_fragment_locator
 from app.domains.retrieval.notebook_search_service import (
     NotebookSearchUnavailable,
     search_notebook,
 )
-from app.domains.retrieval.result_contracts import NotebookFragment, NotebookSearchResponse
+from app.domains.retrieval.result_contracts import (
+    NotebookFragment,
+    NotebookFragmentLocator,
+    NotebookSearchResponse,
+)
 from app.schemas.notebook_search import NotebookSearchRequest
 from app.schemas.retrieval_search import (
     RetrievalSearchRequest,
@@ -54,6 +59,21 @@ def search_notebook_retrieval(
 def fetch_notebook_fragment(fragment_id: str) -> dict[str, Any]:
     try:
         return get_notebook_fragment(fragment_id).model_dump(mode="json")
+    except NotebookFragmentNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "notebook_fragment_not_found",
+                "message": str(exc),
+                **_safety_flags(),
+            },
+        ) from exc
+
+
+@router.get("/fragments/{fragment_id}/locator", response_model=NotebookFragmentLocator)
+def fetch_notebook_fragment_locator(fragment_id: str) -> dict[str, Any]:
+    try:
+        return get_notebook_fragment_locator(fragment_id).model_dump(mode="json")
     except NotebookFragmentNotFound as exc:
         raise HTTPException(
             status_code=404,

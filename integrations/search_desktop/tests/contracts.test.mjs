@@ -13,11 +13,11 @@ test("product brand is Search while NOTEBOOK_AI runtime compatibility remains", 
   const packageJson = JSON.parse(await readFile(join(ROOT, "package.json"), "utf8"));
   const productMetadata = JSON.parse(await readFile(join(ROOT, "electron", "product-metadata.json"), "utf8"));
   assert.equal(packageJson.productName, "Search");
-  assert.equal(packageJson.version, "0.1.2");
+  assert.equal(packageJson.version, "0.1.3");
   assert.deepEqual(productMetadata, {
-    version: "0.1.2",
-    buildId: "20260714-startup2",
-    rendererAssetVersion: "0.1.2-startup2",
+    version: "0.1.3",
+    buildId: "20260714-pdfpreview1",
+    rendererAssetVersion: "0.1.3-pdfpreview1",
   });
   assert.equal(packageJson.devDependencies.electron, "37.2.6");
   const config = await readFile(join(ROOT, "electron", "main", "config.js"), "utf8");

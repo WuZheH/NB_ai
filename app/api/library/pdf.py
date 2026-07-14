@@ -6,7 +6,7 @@ from app.api.library.common import *  # noqa: F401,F403
 router = APIRouter()
 
 
-@router.get("/documents/{document_id}/pdf", response_model=None)
+@router.api_route("/documents/{document_id}/pdf", methods=["GET", "HEAD"], response_model=None)
 def document_pdf(document_id: int, request: Request) -> Any:
     try:
         pdf_path = library_service.resolve_document_pdf_path(document_id)
@@ -63,9 +63,11 @@ def _document_pdf_not_found_response(
         status_code=404,
         content={
             "status": "not_found",
+            "error": "document_pdf_not_found",
             "document_id": document_id,
-            "resolved_path": str(resolved_path) if resolved_path is not None else None,
-            "message": message,
+            # Paths and resolver exceptions may disclose the local corpus
+            # layout.  The document endpoint is intentionally ID-only.
+            "message": "The registered PDF file is unavailable for this document.",
             **safety_fields(),
         },
     )

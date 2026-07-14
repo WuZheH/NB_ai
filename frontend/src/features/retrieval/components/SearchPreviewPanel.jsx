@@ -1,10 +1,22 @@
+import { useEffect, useState } from "react";
 import FragmentIdBlock from "../../../shared/components/FragmentIdBlock.jsx";
 import SourceBadge from "../../../shared/components/SourceBadge.jsx";
 import { formatScore, pageLabel } from "../utils/notebookSearch.js";
+import PdfFragmentPreview from "./PdfFragmentPreview.jsx";
 
 export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onCopiedId }) {
   const result = state?.data;
   const isPdf = result?.source_type === "pdf_chunk";
+  const locator = result?.locator;
+  const [view, setView] = useState("text");
+
+  useEffect(() => {
+    setView(locator?.pdf_available ? "pdf" : "text");
+  }, [result?.fragment_id, locator?.pdf_available]);
+
+  function showTextAfterPdfFailure() {
+    setView("text");
+  }
 
   return (
     <aside className="search-preview-panel searchPreviewPanel" aria-label="片段预览" data-testid="search-preview-panel">
@@ -24,13 +36,20 @@ export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onC
           <p>完整片段、上下文和必要来源信息会显示在这里，搜索列表不会跳转或丢失。</p>
         </div>
       )}
-      {state?.status === "loading" && (
+      {(state?.status === "loading" || state?.status === "loading_fragment") && (
         <div className="searchPreviewEmpty search-state-loading" role="status">正在读取完整 fragment…</div>
       )}
       {state?.status === "error" && (
         <div className="searchPreviewEmpty search-state-error" role="alert">{state.error}</div>
       )}
       {state?.status === "ready" && result && (
+        <>
+          <div className="searchPreviewTabs" role="tablist" aria-label="预览视图">
+            {locator?.pdf_available && (
+              <button type="button" role="tab" aria-selected={view === "pdf"} className={`searchPreviewTab${view === "pdf" ? " isActive" : ""}`} onClick={() => setView("pdf")}>PDF</button>
+            )}
+            <button type="button" role="tab" aria-selected={view === "text"} className={`searchPreviewTab${view === "text" ? " isActive" : ""}`} onClick={() => setView("text")}>文本</button>
+          </div>
         <div
           className="searchPreviewContent search-scroll-region"
           data-testid="search-preview-scroll"
@@ -47,16 +66,11 @@ export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onC
             )}
           </div>
 
-          {isPdf ? (
-            <PreviewText title="PDF 原文" value={result.text} empty="该 fragment 没有可显示的 PDF 文本。" />
+          {view === "pdf" && locator?.pdf_available ? (
+            <PdfFragmentPreview fragment={result} locator={locator} onUnavailable={showTextAfterPdfFailure} />
           ) : (
-            <>
-              <PreviewText title="用户笔记" value={result.note_text} empty="该 fragment 没有用户笔记正文。" />
-              <PreviewText title="对应选中文本" value={result.selected_text} empty="该笔记没有关联的选中文本。" />
-            </>
+            <TextPreview result={result} isPdf={isPdf} />
           )}
-          <PreviewText title="前文" value={result.context_before} />
-          <PreviewText title="后文" value={result.context_after} />
 
           <section className="searchPreviewProvenance">
             <h3>来源摘要</h3>
@@ -77,8 +91,26 @@ export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onC
             复制片段
           </button>
         </div>
+        </>
       )}
     </aside>
+  );
+}
+
+function TextPreview({ result, isPdf }) {
+  return (
+    <>
+      {isPdf ? (
+        <PreviewText title="PDF 原文" value={result.text} empty="该 fragment 没有可显示的 PDF 文本。" />
+      ) : (
+        <>
+          <PreviewText title="用户笔记" value={result.note_text} empty="该 fragment 没有用户笔记正文。" />
+          <PreviewText title="对应选中文本" value={result.selected_text} empty="该笔记没有关联的选中文本。" />
+        </>
+      )}
+      <PreviewText title="前文" value={result.context_before} />
+      <PreviewText title="后文" value={result.context_after} />
+    </>
   );
 }
 

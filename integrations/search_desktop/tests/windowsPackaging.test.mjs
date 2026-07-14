@@ -14,11 +14,11 @@ const FIXTURE_ROOT = resolve(ROOT, "../..", ".codex_tmp", "search-desktop-packag
 
 test("Windows packaging avoids privileged symlink extraction and applies Search resources", () => {
   assert.equal(packageJson.build.win.signAndEditExecutable, false);
-  assert.equal(packageJson.version, "0.1.2");
+  assert.equal(packageJson.version, "0.1.3");
   assert.deepEqual(productMetadata, {
-    version: "0.1.2",
-    buildId: "20260714-startup2",
-    rendererAssetVersion: "0.1.2-startup2",
+    version: "0.1.3",
+    buildId: "20260714-pdfpreview1",
+    rendererAssetVersion: "0.1.3-pdfpreview1",
   });
   assert.equal(packageJson.build.electronDist, "node_modules/electron/dist");
   assert.match(packageJson.scripts["package:win:unpacked"], /package-windows-unpacked\.mjs/);

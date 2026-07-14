@@ -20,6 +20,12 @@ export function fetchRetrievalFragment(fragmentId, options = {}) {
   return getJson(`${RETRIEVAL_FRAGMENT_ENDPOINT}/${encodeURIComponent(normalizedId)}`, options);
 }
 
+export function fetchRetrievalFragmentLocator(fragmentId, options = {}) {
+  const normalizedId = String(fragmentId || "").trim();
+  if (!normalizedId) return Promise.reject(new Error("fragment_id is required"));
+  return getJson(`${RETRIEVAL_FRAGMENT_ENDPOINT}/${encodeURIComponent(normalizedId)}/locator`, options);
+}
+
 export function resolveRetrievalSelection(selector) {
   return postJson(RETRIEVAL_SELECTION_ENDPOINT, selector);
 }

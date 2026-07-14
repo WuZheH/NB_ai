@@ -36,6 +36,48 @@ class OpenTarget(BaseModel):
     zotero_disabled_reason: str | None = None
 
 
+class PdfHighlightRect(BaseModel):
+    """A rectangle in PDF user-space coordinates.
+
+    ``pdf_page`` is a one-based physical PDF page number.  Rectangle
+    coordinates retain the source PDF/Zotero coordinate system and are
+    converted to the active PDF.js viewport by the client.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+class NotebookFragmentLocator(BaseModel):
+    """Read-only PDF-preview metadata for a notebook retrieval fragment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fragment_id: str
+    source_type: NotebookSourceType
+    document_id: int | None = None
+    document_title: str | None = None
+    zotero_item_key: str | None = None
+    zotero_attachment_key: str | None = None
+    zotero_annotation_key: str | None = None
+    # Physical PDF page number (one-based).  PDF.js getPage uses the same
+    # convention; page_label is display-only and must not be used for lookup.
+    pdf_page: int | None = Field(default=None, ge=1)
+    page_index: int | None = Field(default=None, ge=0)
+    page_label: str | None = None
+    bbox: dict[str, Any] | None = None
+    rects: list[PdfHighlightRect] = Field(default_factory=list)
+    selected_text: str | None = None
+    locator_strategy: Literal["bbox", "text", "page", "none"] = "none"
+    pdf_available: bool = False
+    pdf_endpoint: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class NotebookFragment(BaseModel):
     """Stable, source-separated fragment returned by NOTEBOOK_AI retrieval."""
 

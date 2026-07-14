@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import EvidenceBasketPanel from "../components/retrieval/EvidenceBasketPanel.jsx";
 import RetrievalFilters from "../components/retrieval/RetrievalFilters.jsx";
 import RetrievalResultList from "../components/retrieval/RetrievalResultList.jsx";
@@ -7,6 +7,7 @@ import SearchPreviewPanel from "../features/retrieval/components/SearchPreviewPa
 import {
   exportRetrievalEvidence,
   fetchRetrievalFragment,
+  fetchRetrievalFragmentLocator,
   resolveRetrievalSelection,
   searchLocalRetrieval,
   searchNotebookRetrieval,
@@ -56,6 +57,9 @@ export default function LocalRetrievalPage() {
   const [exportOptions, setExportOptions] = useState(DEFAULT_EXPORT_OPTIONS);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const previewRequestRef = useRef(null);
+
+  useEffect(() => () => previewRequestRef.current?.abort(), []);
 
   const selectedIds = useMemo(
     () => new Set(basket.map((item) => item.fragment_id)),
@@ -123,10 +127,22 @@ export default function LocalRetrievalPage() {
   }
 
   async function previewFragment(item) {
-    setPreviewState({ status: "loading", data: item, error: "" });
+    previewRequestRef.current?.abort();
+    const controller = new AbortController();
+    previewRequestRef.current = controller;
+    setPreviewState({ status: "loading_fragment", data: item, error: "" });
     try {
-      const response = await fetchRetrievalFragment(item.fragment_id);
+      const response = await fetchRetrievalFragment(item.fragment_id, { signal: controller.signal });
       const detail = fragmentFromResponse(response);
+      let locator = null;
+      let locatorError = "";
+      try {
+        locator = await fetchRetrievalFragmentLocator(item.fragment_id, { signal: controller.signal });
+      } catch (locatorRequestError) {
+        if (controller.signal.aborted) return;
+        locatorError = apiErrorMessage(locatorRequestError);
+      }
+      if (controller.signal.aborted || previewRequestRef.current !== controller) return;
       setPreviewState({
         status: "ready",
         data: {
@@ -136,11 +152,15 @@ export default function LocalRetrievalPage() {
           final_score: item.final_score,
           reranker_score: item.reranker_score,
           semantic_score: item.semantic_score,
+          locator,
+          locator_error: locatorError,
         },
         error: "",
       });
     } catch (requestError) {
-      setPreviewState({ status: "error", data: item, error: apiErrorMessage(requestError) });
+      if (!controller.signal.aborted && previewRequestRef.current === controller) {
+        setPreviewState({ status: "error", data: item, error: apiErrorMessage(requestError) });
+      }
     }
   }
 
@@ -305,7 +325,10 @@ export default function LocalRetrievalPage() {
         ].filter(Boolean).join(" ")}>
           <SearchPreviewPanel
             state={previewState}
-            onClose={() => setPreviewState({ status: "idle", data: null, error: "" })}
+              onClose={() => {
+                previewRequestRef.current?.abort();
+                setPreviewState({ status: "idle", data: null, error: "" });
+              }}
             onCopyFragment={copyResult}
             onCopiedId={() => setNotice("已复制完整 fragment ID。")}
           />
