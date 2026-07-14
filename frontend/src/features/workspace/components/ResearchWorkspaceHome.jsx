@@ -1,5 +1,6 @@
 import WorkspaceStatusPill from "../../../components/workspace/WorkspaceStatusPill.jsx";
 import {
+  DEFAULT_HOME_WORKFLOW_TARGET,
   buildMachineLearningNotebook,
   openMachineLearningNotebook,
   openSourceWorkspace,

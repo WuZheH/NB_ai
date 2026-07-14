@@ -164,6 +164,8 @@ def test_research_workspace_preserves_home_fallback_and_legacy_named_export() ->
     assert "researchWorkspace.js" in legacy_source
     assert "export function NotebookWorkspaceHome" in home_source
     assert "export function NotebookCard" in home_source
+    assert "DEFAULT_HOME_WORKFLOW_TARGET," in home_source
+    assert "export const DEFAULT_HOME_WORKFLOW_TARGET" in utils_source
     for export_name in (
         "buildDeterministicWorkspaceFallbackState",
         "buildGraphFocusTarget",
@@ -209,6 +211,23 @@ def test_legacy_component_and_page_paths_remain_available() -> None:
     )
     for relative_path in legacy_paths:
         assert (SOURCE_ROOT / relative_path).is_file()
+
+
+def test_chapter_note_correction_imports_real_review_workbench_exports() -> None:
+    panel = (
+        SOURCE_ROOT / "components" / "book" / "ChapterNoteCorrectionPanel.jsx"
+    ).read_text(encoding="utf-8")
+    workbench = (
+        SOURCE_ROOT
+        / "features"
+        / "library"
+        / "components"
+        / "NoteCorrectionReviewWorkbench.jsx"
+    ).read_text(encoding="utf-8")
+    assert "CompletenessNoteIdList," in panel
+    assert "MetricMini," in panel
+    assert "export function CompletenessNoteIdList" in workbench
+    assert "export function MetricMini" in workbench
 
 
 def test_workspace_css_facade_preserves_chunk_order() -> None:

@@ -653,7 +653,7 @@ function SavedReviewStateSummary({ state, compact = false }) {
   );
 }
 
-function CompletenessNoteIdList({ label, ids }) {
+export function CompletenessNoteIdList({ label, ids }) {
   if (!ids.length) return null;
   const visibleIds = ids.slice(0, 10);
   const remaining = ids.length - visibleIds.length;
