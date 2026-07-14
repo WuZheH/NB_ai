@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.library import pdf as pdf_api
 from app.domains.retrieval.fragment_locator import get_notebook_fragment_locator
 from app.services.retrieval.source_registry import RetrievalSourceRegistry
 
@@ -51,8 +53,57 @@ def test_live_fragment_locator_characterization_is_read_only(fragment_id: str, e
     assert locator.pdf_available is True
 
 
+def test_live_annotation_bbox_uses_pdf_user_space_without_an_extra_y_flip() -> None:
+    fitz = pytest.importorskip("fitz")
+    db_path = LIVE_DATA_ROOT / "data" / "db" / "research_memory.db"
+    if not db_path.is_file():
+        pytest.skip("production data is not present in this checkout")
+    registry = RetrievalSourceRegistry(
+        research_db_path=db_path,
+        zotero_snapshot_path=LIVE_DATA_ROOT / "data" / "zotero" / "snapshot" / "zotero.sqlite",
+        notes_root=LIVE_DATA_ROOT / "data" / "notes",
+        project_root=LIVE_DATA_ROOT,
+    )
+    locator = get_notebook_fragment_locator(
+        "00573715-0056-5d28-bc72-1c585a7b700a",
+        registry=registry,
+    )
+    assert locator.pdf_page == 314
+    assert len(locator.rects) == 7
+    assert locator.selected_text
+
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        pdf_path = connection.execute(
+            "SELECT pdf_path FROM documents WHERE id = ?", (locator.document_id,)
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    document = fitz.open(pdf_path)
+    try:
+        page = document[locator.pdf_page - 1]
+        hits = page.search_for(locator.selected_text)
+        if not hits:
+            hits = page.search_for(" ".join(locator.selected_text.split()[:8]))
+        assert hits
+        page_width, page_height = float(page.rect.width), float(page.rect.height)
+        raw_rects = [(rect.x0, rect.y0, rect.x1, rect.y1) for rect in locator.rects]
+        assert all(
+            0 <= x0 <= x1 <= page_width and 0 <= y0 <= y1 <= page_height
+            for x0, y0, x1, y1 in raw_rects
+        )
+        # PyMuPDF's page rectangles use a top-left origin.  The stored bbox is
+        # PDF user space, so this conversion is required only for comparison
+        # with PyMuPDF; PDF.js receives the raw rectangle directly.
+        converted = [(x0, page_height - y1, x1, page_height - y0) for x0, y0, x1, y1 in raw_rects]
+        hit_rects = [(hit.x0, hit.y0, hit.x1, hit.y1) for hit in hits]
+        assert _overlap_area(converted, hit_rects) > 0
+        assert _overlap_area(raw_rects, hit_rects) == 0
+    finally:
+        document.close()
+
+
 def test_document_pdf_endpoint_is_id_only_and_supports_head_and_single_range(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    pdf_api = _pdf_api_or_skip()
     fixture = tmp_path / "registered.pdf"
     fixture.write_bytes(b"%PDF-1.7\nfixture-pdf-content\n")
     monkeypatch.setattr(pdf_api.library_service, "resolve_document_pdf_path", lambda _id: fixture)
@@ -78,7 +129,6 @@ def test_document_pdf_endpoint_is_id_only_and_supports_head_and_single_range(tmp
 
 
 def test_document_pdf_missing_response_never_discloses_resolved_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    pdf_api = _pdf_api_or_skip()
     hidden = tmp_path / "private" / "missing.pdf"
     monkeypatch.setattr(pdf_api.library_service, "resolve_document_pdf_path", lambda _id: hidden)
 
@@ -95,7 +145,6 @@ def test_document_pdf_missing_response_never_discloses_resolved_path(tmp_path: P
 
 
 def test_document_pdf_endpoint_has_no_path_parameter() -> None:
-    pdf_api = _pdf_api_or_skip()
     from fastapi import FastAPI
 
     app = FastAPI()
@@ -107,12 +156,9 @@ def test_document_pdf_endpoint_has_no_path_parameter() -> None:
     assert "C:\\secret.pdf" not in response.text
 
 
-def _pdf_api_or_skip():
-    try:
-        from app.api.library import pdf as pdf_api
-    except ModuleNotFoundError as exc:
-        # The clean frontend baseline intentionally excludes the ignored ORM
-        # package.  Keep the route tests runnable when that optional local
-        # package is present, without fabricating an application module here.
-        pytest.skip(f"library PDF route dependencies are unavailable: {exc.name}")
-    return pdf_api
+def _overlap_area(left: list[tuple[float, float, float, float]], right: list[tuple[float, float, float, float]]) -> float:
+    total = 0.0
+    for ax0, ay0, ax1, ay1 in left:
+        for bx0, by0, bx1, by1 in right:
+            total += max(0.0, min(ax1, bx1) - max(ax0, bx0)) * max(0.0, min(ay1, by1) - max(ay0, by0))
+    return total

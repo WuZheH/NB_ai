@@ -39,6 +39,21 @@ test("text-layer matcher handles whitespace, typography, and multiple PDF items"
   assert.deepEqual(match.itemIndexes, [0, 1, 2]);
 });
 
+test("NFKC expansions retain one text-item mapping for every normalized character", () => {
+  const items = [
+    { str: "\ufb01\ufb02", hasEOL: false },
+    { str: "\uff26\uff55\uff4c\uff4c", hasEOL: false },
+    { str: "e\u0301", hasEOL: false },
+    { str: "\u201cquoted\u201d", hasEOL: false },
+  ];
+  const normalized = buildNormalizedPdfText(items);
+  assert.equal(normalized.text, 'fifl Full \u00e9 "quoted"');
+  assert.equal(normalized.text.length, normalized.charToItem.length);
+  const match = matchPdfTextItems(items, 'fifl Full \u00e9 "quoted"');
+  assert.equal(match.matched, true);
+  assert.deepEqual(match.itemIndexes, [0, 1, 2, 3]);
+});
+
 test("bbox rectangles are converted with the PDF.js viewport and retain every region", () => {
   const viewport = {
     viewBox: [0, 0, 400, 400],
@@ -46,8 +61,8 @@ test("bbox rectangles are converted with the PDF.js viewport and retain every re
   };
   const first = viewportRectFromPdfRect(viewport, { x0: 10, y0: 20, x1: 30, y1: 40 });
   const second = viewportRectFromPdfRect(viewport, { x0: 50, y0: 60, x1: 70, y1: 80 });
-  assert.deepEqual(first, { left: 20, top: 40, width: 40, height: 40 });
-  assert.deepEqual(second, { left: 100, top: 120, width: 40, height: 40 });
+  assert.deepEqual(first, { left: 20, top: 720, width: 40, height: 40 });
+  assert.deepEqual(second, { left: 100, top: 640, width: 40, height: 40 });
 });
 
 test("adjacent text rectangles merge only within the same visual line", () => {

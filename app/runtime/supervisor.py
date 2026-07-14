@@ -1,0 +1,1521 @@
+from __future__ import annotations
+
+from contextlib import AbstractContextManager
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+from threading import Thread
+import time
+from typing import Any, BinaryIO, Callable
+from uuid import uuid4
+
+from app.runtime.config import RuntimeConfig, atomic_write_json
+from app.runtime.contracts import (
+    ComponentName,
+    ComponentState,
+    ComponentStatus,
+    ControlRequest,
+    ProcessIdentity,
+    RuntimeState,
+    RuntimeStatus,
+    TunnelState,
+)
+from app.runtime.health import (
+    HealthResult,
+    check_fastapi_health,
+    check_mcp_health,
+    port_is_listening,
+    wait_for_health,
+)
+from app.runtime.logging import RuntimeMetadataLogger
+from app.runtime.pid_identity import (
+    ProcessIdentityUnavailable,
+    get_process_identity,
+    process_is_alive,
+    terminate_verified_process,
+)
+from app.runtime.process_manager import (
+    ManagedProcess,
+    ProcessManager,
+    ProcessSpec,
+    ProcessStartError,
+)
+from app.runtime.tunnel import TunnelDriverBoundary
+
+
+class RuntimeStartupError(RuntimeError):
+    def __init__(self, error_code: str):
+        super().__init__(error_code)
+        self.error_code = error_code
+
+
+class SingleInstanceLock(AbstractContextManager["SingleInstanceLock"]):
+    def __init__(self, path: Path):
+        self.path = path
+        self._stream: BinaryIO | None = None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        stream = self.path.open("a+b")
+        if stream.tell() == 0:
+            stream.write(b"0")
+            stream.flush()
+        stream.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            stream.close()
+            return False
+        self._stream = stream
+        return True
+
+    def release(self) -> None:
+        if self._stream is None:
+            return
+        try:
+            self._stream.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self._stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._stream.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._stream.close()
+            self._stream = None
+
+    def __enter__(self) -> "SingleInstanceLock":
+        if not self.acquire():
+            raise RuntimeStartupError("launcher_already_running")
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.release()
+
+
+class ControlRequestQueue:
+    """Small, sanitized local queue used by the Zotero integration."""
+
+    def __init__(self, directory: Path):
+        self.directory = directory
+
+    def submit(self, request: ControlRequest) -> Path:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        path = self.directory / f"{request.request_id}.json"
+        if path.exists():
+            raise ValueError("duplicate runtime control request")
+        atomic_write_json(path, request.to_dict())
+        return path
+
+    def consume(self) -> list[ControlRequest]:
+        if not self.directory.is_dir():
+            return []
+        requests: list[ControlRequest] = []
+        for path in sorted(self.directory.glob("*.json")):
+            try:
+                if path.stat().st_size > 4096:
+                    raise ValueError("runtime control request is too large")
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(value, dict):
+                    raise ValueError("runtime control request must be an object")
+                requests.append(ControlRequest.from_dict(value))
+            except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                pass
+            finally:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        return requests
+
+
+class RuntimeSupervisor:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        *,
+        process_manager: ProcessManager | None = None,
+        logger: RuntimeMetadataLogger | None = None,
+    ):
+        self.config = config
+        self.process_manager = process_manager or ProcessManager()
+        self.logger = logger or RuntimeMetadataLogger(config.paths.runtime_log_file)
+        self.tunnel = TunnelDriverBoundary(config)
+        self.control_queue = ControlRequestQueue(config.paths.control_dir)
+        self._managed: dict[ComponentName, ManagedProcess] = {}
+        self._tunnel_paused = False
+        self.status = _empty_status(RuntimeState.STOPPED)
+
+    def supervise_forever(self) -> int:
+        self.config.paths.ensure()
+        try:
+            lock = SingleInstanceLock(self.config.paths.supervisor_lock)
+            lock.__enter__()
+        except RuntimeStartupError:
+            # A second detached launcher can race with the first before the
+            # first one persists status.  The lock holder remains authoritative.
+            return 0
+        try:
+            try:
+                try:
+                    self.config.paths.supervisor_stop_file.unlink()
+                except FileNotFoundError:
+                    pass
+                self._adopt_previous_owned_components()
+                self._set_supervisor(ComponentState.STARTING)
+                self._persist(RuntimeState.STARTING)
+                self.start_components()
+                while not self.config.paths.supervisor_stop_file.exists():
+                    self._consume_control_requests()
+                    self._monitor_once()
+                    time.sleep(self.config.monitor_interval_seconds)
+            except RuntimeStartupError as exc:
+                self._rollback()
+                self._safe_persist(RuntimeState.FAILED, error_code=exc.error_code)
+                return 1
+            except Exception:
+                # Do not let a status/log/filesystem failure orphan any child
+                # that this supervisor started or safely adopted.
+                self._rollback()
+                self._safe_persist(
+                    RuntimeState.FAILED,
+                    error_code="runtime_supervisor_internal_error",
+                )
+                return 1
+            else:
+                stopped = self.stop_components()
+                self._safe_persist(
+                    RuntimeState.STOPPED if stopped else RuntimeState.FAILED,
+                    error_code=None if stopped else "runtime_stop_failed",
+                )
+                return 0 if stopped else 1
+            finally:
+                try:
+                    self.config.paths.supervisor_stop_file.unlink()
+                except OSError:
+                    pass
+        finally:
+            lock.release()
+
+    def _adopt_previous_owned_components(self) -> None:
+        """Reattach only identities that match this product and current health."""
+
+        path = self.config.paths.status_file
+        if not path.is_file():
+            return
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                return
+            previous = RuntimeStatus.from_dict(value)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            return
+        old_supervisor = previous.components.get(ComponentName.SUPERVISOR.value)
+        if (
+            old_supervisor
+            and old_supervisor.owned
+            and old_supervisor.identity
+            and process_is_alive(old_supervisor.identity)
+        ):
+            raise RuntimeStartupError("supervisor_identity_conflict")
+        self.status = previous
+        self._adopt_previous_local_component(
+            ComponentName.FASTAPI,
+            self._fastapi_spec(),
+            lambda: check_fastapi_health(self.config.backend_url),
+        )
+        self._adopt_previous_local_component(
+            ComponentName.MCP,
+            self._mcp_spec(),
+            lambda: check_mcp_health(self.config.mcp_port),
+        )
+        self._stop_previous_note_process()
+        previous_tunnel = previous.components.get(ComponentName.TUNNEL.value)
+        if not (
+            previous_tunnel
+            and previous_tunnel.owned
+            and previous_tunnel.identity
+            and process_is_alive(previous_tunnel.identity)
+        ):
+            return
+        # A tunnel-client executable alone cannot prove which profile or
+        # tunnel_id the old process is using.  Stop the previous *owned*
+        # identity and let the current configuration start a fresh process.
+        executable = Path(previous_tunnel.identity.executable)
+        if executable.name.casefold() not in {"tunnel-client", "tunnel-client.exe"}:
+            previous_tunnel.state = ComponentState.DEGRADED
+            previous_tunnel.error_code = "tunnel_adoption_rejected"
+            raise RuntimeStartupError("tunnel_adoption_rejected")
+        stop_spec = ProcessSpec(
+            name="tunnel",
+            executable=executable,
+            arguments=(),
+            cwd=self.config.paths.project_root,
+        )
+        try:
+            previous_process = self.process_manager.attach(
+                stop_spec,
+                previous_tunnel.identity,
+            )
+        except ProcessStartError as exc:
+            raise RuntimeStartupError("tunnel_adoption_rejected") from exc
+        self.process_manager.stop(previous_process)
+        deadline = time.monotonic() + 5.0
+        while (
+            time.monotonic() < deadline
+            and self.process_manager.is_alive(previous_process)
+        ):
+            time.sleep(0.05)
+        if self.process_manager.is_alive(previous_process):
+            self._managed[ComponentName.TUNNEL] = previous_process
+            raise RuntimeStartupError("tunnel_previous_process_unhealthy")
+        previous_tunnel.owned = False
+        previous_tunnel.pid = None
+        previous_tunnel.identity = None
+        previous_tunnel.state = ComponentState.STOPPED
+        previous_tunnel.error_code = None
+
+    def _stop_previous_note_process(self) -> None:
+        previous = self.status.components.get(ComponentName.ZOTERO_NOTE_INDEX.value)
+        if not previous or not previous.owned or not previous.identity:
+            return
+        if not process_is_alive(previous.identity):
+            previous.owned = False
+            previous.pid = None
+            previous.identity = None
+            return
+        spec = ProcessSpec(
+            name="zotero_note_index",
+            executable=self.config.python_exe,
+            arguments=(),
+            cwd=self.config.paths.project_root,
+        )
+        try:
+            process = self.process_manager.attach(spec, previous.identity)
+        except ProcessStartError as exc:
+            raise RuntimeStartupError("zotero_note_index_adoption_rejected") from exc
+        self.process_manager.stop(process)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and self.process_manager.is_alive(process):
+            time.sleep(0.05)
+        if self.process_manager.is_alive(process):
+            self._managed[ComponentName.ZOTERO_NOTE_INDEX] = process
+            raise RuntimeStartupError("zotero_note_index_previous_process_unhealthy")
+        previous.owned = False
+        previous.pid = None
+        previous.identity = None
+
+    def _adopt_previous_local_component(
+        self,
+        component: ComponentName,
+        spec: ProcessSpec,
+        health_check: Callable[[], HealthResult],
+    ) -> None:
+        previous = self.status.components.get(component.value)
+        if not previous or not previous.owned or not previous.identity:
+            return
+        if not process_is_alive(previous.identity):
+            previous.state = ComponentState.STOPPED
+            previous.owned = False
+            previous.pid = None
+            previous.identity = None
+            return
+        try:
+            process = self.process_manager.attach(spec, previous.identity)
+        except ProcessStartError:
+            # The status file is not authority to claim an arbitrary process.
+            previous.state = ComponentState.DEGRADED
+            previous.error_code = f"{component.value}_adoption_rejected"
+            previous.owned = False
+            previous.pid = None
+            previous.identity = None
+            return
+        if health_check().ready:
+            self._managed[component] = process
+            self._set_owned(component, process, ComponentState.READY)
+            return
+        # The identity and executable are proven to belong to the previous
+        # launcher, so it is safe to stop before starting a replacement.
+        self.process_manager.stop(process)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and self.process_manager.is_alive(process):
+            time.sleep(0.05)
+        if self.process_manager.is_alive(process):
+            self._managed[component] = process
+            raise RuntimeStartupError(f"{component.value}_previous_owned_unhealthy")
+        previous.state = ComponentState.STOPPED
+        previous.owned = False
+        previous.pid = None
+        previous.identity = None
+
+    def start_components(self) -> RuntimeStatus:
+        if self.config.mode == "remote":
+            raise RuntimeStartupError("remote_mode_does_not_start_local_runtime")
+        if not self.config.paths.mcp_server_entry.is_file():
+            raise RuntimeStartupError("mcp_build_missing")
+        # The sync command is incremental: an unchanged content hash reuses all
+        # vectors and performs no vector write.  Running it on launcher startup
+        # detects notes added while the launcher was stopped.
+        self._ensure_note_index(sync_if_missing=True, incremental_sync=True)
+        try:
+            self._start_fastapi()
+            self._start_mcp()
+            adopted_tunnel = self._managed.get(ComponentName.TUNNEL)
+            if adopted_tunnel is not None and self.process_manager.is_alive(adopted_tunnel):
+                self._start_tunnel()
+            else:
+                tunnel_diagnosis = self.tunnel.diagnose(run_doctor=True)
+                self.status.tunnel_state = tunnel_diagnosis.state
+                if tunnel_diagnosis.state is TunnelState.STARTING:
+                    try:
+                        self._start_tunnel()
+                    except RuntimeStartupError as exc:
+                        self.status.tunnel_state = TunnelState.UNHEALTHY
+                        self.status.components[ComponentName.TUNNEL.value] = ComponentStatus(
+                            component=ComponentName.TUNNEL,
+                            state=ComponentState.DEGRADED,
+                            error_code=exc.error_code,
+                        )
+                else:
+                    self.status.components[ComponentName.TUNNEL.value] = ComponentStatus(
+                        component=ComponentName.TUNNEL,
+                        state=ComponentState.DEGRADED,
+                        error_code=tunnel_diagnosis.error_code,
+                    )
+            self._set_supervisor(ComponentState.READY)
+            target_state = self._derive_runtime_state()
+            tunnel_status = self.status.components.get(ComponentName.TUNNEL.value)
+            self._persist(
+                target_state,
+                error_code=(
+                    tunnel_status.error_code
+                    if target_state is RuntimeState.DEGRADED and tunnel_status
+                    else None
+                ),
+            )
+            return self.status
+        except RuntimeStartupError:
+            self._rollback()
+            raise
+
+    def stop_components(self) -> bool:
+        stopped_all = True
+        for component in (
+            ComponentName.ZOTERO_NOTE_INDEX,
+            ComponentName.TUNNEL,
+            ComponentName.MCP,
+            ComponentName.FASTAPI,
+        ):
+            process = self._managed.pop(component, None)
+            if process is not None:
+                self.process_manager.stop(process)
+                deadline = time.monotonic() + 2.0
+                while (
+                    time.monotonic() < deadline
+                    and self.process_manager.is_alive(process)
+                ):
+                    time.sleep(0.05)
+            status = self.status.components.get(component.value)
+            if status is not None:
+                if component is ComponentName.ZOTERO_NOTE_INDEX and process is None:
+                    continue
+                if process is None and not status.owned:
+                    # A matching pre-existing NOTEBOOK_AI process was reused,
+                    # never adopted.  Stopping the launcher must not claim to
+                    # have stopped or terminate that external process.
+                    status.state = ComponentState.EXTERNAL
+                    continue
+                if (
+                    process is None
+                    and status.owned
+                    and status.identity
+                    and process_is_alive(status.identity)
+                ):
+                    stopped_all = False
+                    status.state = ComponentState.DEGRADED
+                    status.error_code = f"{component.value}_ownership_not_attached"
+                    continue
+                still_alive = bool(
+                    process is not None
+                    and self.process_manager.is_alive(process)
+                )
+                if still_alive:
+                    stopped_all = False
+                    status.state = ComponentState.FAILED
+                    status.error_code = f"{component.value}_stop_failed"
+                else:
+                    status.state = ComponentState.STOPPED
+                    status.pid = None
+                    status.identity = None
+                    status.error_code = None
+        supervisor = self.status.components.get(ComponentName.SUPERVISOR.value)
+        if supervisor:
+            supervisor.state = ComponentState.STOPPED
+        return stopped_all
+
+    def _start_fastapi(self) -> None:
+        adopted = self._managed.get(ComponentName.FASTAPI)
+        if adopted is not None and self.process_manager.is_alive(adopted):
+            health = check_fastapi_health(self.config.backend_url)
+            if health.ready:
+                self._set_owned(ComponentName.FASTAPI, adopted, ComponentState.READY)
+                return
+        existing = check_fastapi_health(self.config.backend_url)
+        if existing.ready:
+            self._set_external(ComponentName.FASTAPI, self.config.backend_port)
+            return
+        if port_is_listening(self.config.backend_port):
+            raise RuntimeStartupError("backend_port_conflict")
+        spec = self._fastapi_spec()
+        self._spawn_and_wait(
+            ComponentName.FASTAPI,
+            spec,
+            lambda: check_fastapi_health(self.config.backend_url),
+        )
+
+    def _fastapi_spec(self) -> ProcessSpec:
+        return ProcessSpec(
+            name="fastapi",
+            executable=self.config.python_exe,
+            arguments=(
+                "-B",
+                "-m",
+                "uvicorn",
+                "app.main:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(self.config.backend_port),
+            ),
+            cwd=self.config.paths.project_root,
+            environment={"PYTHONDONTWRITEBYTECODE": "1"},
+            port=self.config.backend_port,
+        )
+
+    def _start_mcp(self) -> None:
+        adopted = self._managed.get(ComponentName.MCP)
+        if adopted is not None and self.process_manager.is_alive(adopted):
+            health = check_mcp_health(self.config.mcp_port)
+            if health.ready:
+                self._set_owned(ComponentName.MCP, adopted, ComponentState.READY)
+                return
+        existing = check_mcp_health(self.config.mcp_port)
+        if existing.ready:
+            self._set_external(ComponentName.MCP, self.config.mcp_port)
+            return
+        if port_is_listening(self.config.mcp_port):
+            raise RuntimeStartupError("mcp_port_conflict")
+        spec = self._mcp_spec()
+        self._spawn_and_wait(
+            ComponentName.MCP,
+            spec,
+            lambda: check_mcp_health(self.config.mcp_port),
+        )
+
+    def _mcp_spec(self) -> ProcessSpec:
+        return ProcessSpec(
+            name="mcp",
+            executable=self.config.node_exe,
+            arguments=(str(self.config.paths.mcp_server_entry),),
+            cwd=self.config.paths.mcp_app_dir,
+            environment={
+                "NOTEBOOK_AI_BACKEND_URL": self.config.backend_url,
+                "NOTEBOOK_AI_ALLOW_UNAUTHENTICATED_MCP_DEV": "1",
+                "NOTEBOOK_AI_MCP_PORT": str(self.config.mcp_port),
+            },
+            port=self.config.mcp_port,
+        )
+
+    def _start_tunnel(self) -> None:
+        adopted = self._managed.get(ComponentName.TUNNEL)
+        if adopted is not None and self.process_manager.is_alive(adopted):
+            self._update_tunnel_readiness(adopted)
+            return
+        spec = self.tunnel.process_spec()
+        started = time.monotonic()
+        try:
+            process = self.process_manager.spawn(spec)
+        except (ProcessStartError, RuntimeError) as exc:
+            raise RuntimeStartupError("tunnel_start_failed") from exc
+        self._managed[ComponentName.TUNNEL] = process
+        time.sleep(1.0)
+        if not self.process_manager.is_alive(process):
+            self._managed.pop(ComponentName.TUNNEL, None)
+            raise RuntimeStartupError("tunnel_unhealthy")
+        if self.config.tunnel.ready_url:
+            self.status.tunnel_state = TunnelState.STARTING
+            self._set_owned(ComponentName.TUNNEL, process, ComponentState.STARTING)
+            try:
+                self._persist(self.status.state, error_code=self.status.error_code)
+            except Exception as exc:
+                if self._stop_managed_process(process):
+                    self._managed.pop(ComponentName.TUNNEL, None)
+                raise RuntimeStartupError("tunnel_status_persist_failed") from exc
+            readiness = self._wait_for_tunnel_readiness(process)
+            self._update_tunnel_readiness(process, readiness=readiness)
+        else:
+            self._update_tunnel_readiness(process)
+        tunnel_status = self.status.components[ComponentName.TUNNEL.value]
+        self.logger.log(
+            component=ComponentName.TUNNEL.value,
+            state=tunnel_status.state.value,
+            pid=process.pid,
+            duration=time.monotonic() - started,
+            error_code=tunnel_status.error_code,
+        )
+
+    def _wait_for_tunnel_readiness(self, process: ManagedProcess) -> HealthResult:
+        deadline = time.monotonic() + self.config.health_timeout_seconds
+        next_heartbeat = time.monotonic() + 10.0
+        last = HealthResult(False, "tunnel_readiness_timeout")
+        while time.monotonic() < deadline:
+            if not self.process_manager.is_alive(process):
+                return HealthResult(False, "tunnel_process_exited")
+            last = self.tunnel.readiness()
+            if last.ready:
+                return last
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                self._safe_persist(self.status.state, error_code=self.status.error_code)
+                next_heartbeat = now + 10.0
+            time.sleep(0.25)
+        return last
+
+    def _update_tunnel_readiness(
+        self,
+        process: ManagedProcess,
+        *,
+        readiness: HealthResult | None = None,
+    ) -> bool | None:
+        readiness = readiness or self.tunnel.readiness()
+        if readiness.ready:
+            self.status.tunnel_state = TunnelState.READY
+            self._set_owned(ComponentName.TUNNEL, process, ComponentState.READY)
+            return True
+        if self.config.tunnel.ready_url:
+            self.status.tunnel_state = TunnelState.UNHEALTHY
+            self._set_owned(ComponentName.TUNNEL, process, ComponentState.DEGRADED)
+            self.status.components[ComponentName.TUNNEL.value].error_code = (
+                "tunnel_readiness_failed"
+            )
+            return False
+        self.status.tunnel_state = TunnelState.STARTING
+        self._set_owned(ComponentName.TUNNEL, process, ComponentState.STARTING)
+        self.status.components[ComponentName.TUNNEL.value].error_code = (
+            "tunnel_readiness_unverified"
+        )
+        return None
+
+    def _spawn_and_wait(
+        self,
+        component: ComponentName,
+        spec: ProcessSpec,
+        health_check: Callable[[], Any],
+    ) -> None:
+        started = time.monotonic()
+        try:
+            process = self.process_manager.spawn(spec)
+        except ProcessStartError as exc:
+            raise RuntimeStartupError(f"{component.value}_start_failed") from exc
+        self._managed[component] = process
+        self._set_owned(component, process, ComponentState.STARTING)
+        result = wait_for_health(
+            health_check,
+            timeout_seconds=self.config.health_timeout_seconds,
+            process_alive=lambda: self.process_manager.is_alive(process),
+        )
+        if not result.ready:
+            stopped = self._stop_managed_process(process)
+            if stopped:
+                self._managed.pop(component, None)
+            failed = self.status.components.get(component.value)
+            if failed is not None:
+                failed.state = ComponentState.FAILED
+                failed.error_code = (
+                    f"{component.value}_{result.error_code or 'health_failed'}"
+                    if stopped
+                    else f"{component.value}_stop_failed"
+                )
+            raise RuntimeStartupError(
+                (
+                    f"{component.value}_{result.error_code or 'health_failed'}"
+                    if stopped
+                    else f"{component.value}_stop_failed"
+                )
+            )
+        self._set_owned(component, process, ComponentState.READY)
+        self.logger.log(
+            component=component.value,
+            state=ComponentState.READY.value,
+            pid=process.pid,
+            port=spec.port,
+            duration=time.monotonic() - started,
+        )
+
+    def _monitor_once(self) -> None:
+        for component, process in tuple(self._managed.items()):
+            alive = self.process_manager.is_alive(process)
+            health_error: str | None = None
+            if alive and component is ComponentName.FASTAPI:
+                # Startup already proved the HTTP contract.  During live
+                # searches, extra concurrent HTTP probes can race lazy native
+                # model/LanceDB initialization on Windows.  PID identity plus
+                # the owned listening port gives a side-effect-free liveness
+                # signal and still detects crashes immediately.
+                alive = port_is_listening(self.config.backend_port)
+                health_error = None if alive else "port_not_listening"
+            elif alive and component is ComponentName.MCP:
+                alive = port_is_listening(self.config.mcp_port)
+                health_error = None if alive else "port_not_listening"
+            elif alive and component is ComponentName.TUNNEL:
+                tunnel_ready = self._update_tunnel_readiness(process)
+                if tunnel_ready is not False:
+                    continue
+                alive = False
+                health_error = "tunnel_readiness_failed"
+            if alive:
+                continue
+            current = self.status.components.get(component.value)
+            restart_count = (current.restart_count if current else 0) + 1
+            if self.process_manager.is_alive(process):
+                if not self._stop_managed_process(process):
+                    if current:
+                        current.state = ComponentState.FAILED
+                        current.error_code = f"{component.value}_stop_failed"
+                    self._persist(
+                        RuntimeState.DEGRADED,
+                        error_code=f"{component.value}_stop_failed",
+                    )
+                    continue
+            if restart_count > self.config.max_restart_count:
+                self._managed.pop(component, None)
+                if current:
+                    current.state = (
+                        ComponentState.DEGRADED
+                        if component is ComponentName.TUNNEL
+                        else ComponentState.FAILED
+                    )
+                    current.error_code = f"{component.value}_restart_exhausted"
+                    current.restart_count = restart_count
+                if component is ComponentName.TUNNEL:
+                    self.status.tunnel_state = TunnelState.UNHEALTHY
+                else:
+                    self._persist(
+                        RuntimeState.FAILED,
+                        error_code=f"{component.value}_restart_exhausted",
+                    )
+                continue
+            self.logger.log(
+                component=component.value,
+                state=ComponentState.DEGRADED.value,
+                error_code="child_exited" if health_error is None else "health_failed",
+                restart_count=restart_count,
+            )
+            time.sleep(min(30.0, float(2 ** (restart_count - 1))))
+            self._managed.pop(component, None)
+            try:
+                if component is ComponentName.FASTAPI:
+                    self._start_fastapi()
+                elif component is ComponentName.MCP:
+                    self._start_mcp()
+                elif component is ComponentName.TUNNEL:
+                    self._start_tunnel()
+                replacement = self.status.components.get(component.value)
+                if replacement:
+                    replacement.restart_count = restart_count
+            except RuntimeStartupError as exc:
+                replacement_process = self._managed.pop(component, None)
+                replacement_stopped = True
+                if replacement_process is not None:
+                    replacement_stopped = self._stop_managed_process(
+                        replacement_process
+                    )
+                replacement = self.status.components.get(component.value) or current
+                if replacement:
+                    replacement.state = ComponentState.DEGRADED
+                    replacement.error_code = (
+                        exc.error_code
+                        if replacement_stopped
+                        else f"{component.value}_stop_failed"
+                    )
+                    replacement.restart_count = restart_count
+                    self.status.components[component.value] = replacement
+                # Keep a dead identity as a retry sentinel.  It cannot be
+                # terminated as a different process because every operation
+                # revalidates creation time and executable path.
+                self._managed[component] = (
+                    process if replacement_stopped else replacement_process
+                )
+                self._persist(RuntimeState.DEGRADED, error_code=exc.error_code)
+        self._monitor_external_components()
+        derived = self._derive_runtime_state()
+        active_error = next(
+            (
+                component.error_code
+                for component in self.status.components.values()
+                if component.error_code
+                and component.state in {ComponentState.DEGRADED, ComponentState.FAILED}
+            ),
+            None,
+        )
+        self._persist(derived, error_code=active_error)
+
+    def _stop_managed_process(
+        self,
+        process: ManagedProcess,
+        *,
+        timeout_seconds: float = 5.0,
+    ) -> bool:
+        self.process_manager.stop(process)
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline and self.process_manager.is_alive(process):
+            time.sleep(0.05)
+        return not self.process_manager.is_alive(process)
+
+    def _monitor_external_components(self) -> None:
+        for component, port, health_check in (
+            (
+                ComponentName.FASTAPI,
+                self.config.backend_port,
+                lambda: check_fastapi_health(self.config.backend_url),
+            ),
+            (
+                ComponentName.MCP,
+                self.config.mcp_port,
+                lambda: check_mcp_health(self.config.mcp_port),
+            ),
+        ):
+            current = self.status.components.get(component.value)
+            if current is None or current.owned:
+                continue
+            health = health_check()
+            if health.ready:
+                current.state = ComponentState.EXTERNAL
+                current.error_code = None
+                current.restart_count = 0
+                continue
+            if port_is_listening(port):
+                current.state = ComponentState.DEGRADED
+                current.error_code = (
+                    "backend_port_conflict"
+                    if component is ComponentName.FASTAPI
+                    else "mcp_port_conflict"
+                )
+                continue
+            restart_count = current.restart_count + 1
+            current.restart_count = restart_count
+            if restart_count > self.config.max_restart_count:
+                current.state = ComponentState.FAILED
+                current.error_code = f"{component.value}_restart_exhausted"
+                continue
+            time.sleep(min(30.0, float(2 ** (restart_count - 1))))
+            try:
+                if component is ComponentName.FASTAPI:
+                    self._start_fastapi()
+                else:
+                    self._start_mcp()
+                replacement = self.status.components.get(component.value)
+                if replacement:
+                    replacement.restart_count = restart_count
+            except RuntimeStartupError as exc:
+                current.state = ComponentState.DEGRADED
+                current.error_code = exc.error_code
+
+    def _consume_control_requests(self) -> None:
+        for request in self.control_queue.consume():
+            if request.action == "sync_zotero_notes":
+                self._sync_note_index_while_running()
+            elif request.action == "pause_tunnel":
+                try:
+                    self._pause_tunnel()
+                except RuntimeStartupError as exc:
+                    self._safe_persist(RuntimeState.DEGRADED, error_code=exc.error_code)
+            elif request.action == "resume_tunnel":
+                try:
+                    self._resume_tunnel()
+                except RuntimeStartupError as exc:
+                    self._safe_persist(RuntimeState.DEGRADED, error_code=exc.error_code)
+            elif request.action == "restart":
+                if not self.stop_components():
+                    raise RuntimeStartupError("runtime_stop_failed")
+                self._set_supervisor(ComponentState.STARTING)
+                self._persist(RuntimeState.STARTING)
+                self.start_components()
+
+    def _pause_tunnel(self) -> None:
+        """Pause only a tunnel whose durable identity is owned by this supervisor."""
+
+        process = self._managed.get(ComponentName.TUNNEL)
+        current = self.status.components.get(ComponentName.TUNNEL.value)
+        if process is not None:
+            if (
+                current is None
+                or not current.owned
+                or current.identity != process.identity
+            ):
+                raise RuntimeStartupError("tunnel_pause_ownership_unverified")
+            if self.process_manager.is_alive(process) and not self._stop_managed_process(
+                process
+            ):
+                raise RuntimeStartupError("tunnel_pause_stop_failed")
+            self._managed.pop(ComponentName.TUNNEL, None)
+        elif (
+            current
+            and current.owned
+            and current.identity
+            and process_is_alive(current.identity)
+        ):
+            # A status file alone is never authority to terminate a process.
+            raise RuntimeStartupError("tunnel_pause_ownership_not_attached")
+
+        self._tunnel_paused = True
+        self.status.tunnel_state = TunnelState.NOT_CONFIGURED
+        self.status.components[ComponentName.TUNNEL.value] = ComponentStatus(
+            component=ComponentName.TUNNEL,
+            state=ComponentState.STOPPED,
+            error_code="tunnel_paused_by_user",
+            owned=False,
+        )
+        self.logger.log(
+            component=ComponentName.TUNNEL.value,
+            state=ComponentState.STOPPED.value,
+            error_code="tunnel_paused_by_user",
+        )
+        self._persist(self._derive_runtime_state())
+
+    def _resume_tunnel(self) -> None:
+        """Resume the configured tunnel without disturbing FastAPI or MCP."""
+
+        process = self._managed.get(ComponentName.TUNNEL)
+        current = self.status.components.get(ComponentName.TUNNEL.value)
+        if process is not None:
+            if (
+                current is None
+                or not current.owned
+                or current.identity != process.identity
+            ):
+                raise RuntimeStartupError("tunnel_resume_ownership_unverified")
+            if self.process_manager.is_alive(process):
+                self._tunnel_paused = False
+                self._update_tunnel_readiness(process)
+                self._persist(self._derive_runtime_state())
+                return
+            self._managed.pop(ComponentName.TUNNEL, None)
+        elif (
+            current
+            and current.owned
+            and current.identity
+            and process_is_alive(current.identity)
+        ):
+            raise RuntimeStartupError("tunnel_resume_ownership_not_attached")
+        self._tunnel_paused = False
+        diagnosis = self.tunnel.diagnose(run_doctor=True)
+        if diagnosis.state is TunnelState.STARTING:
+            self._start_tunnel()
+        else:
+            self.status.tunnel_state = diagnosis.state
+            self.status.components[ComponentName.TUNNEL.value] = ComponentStatus(
+                component=ComponentName.TUNNEL,
+                state=ComponentState.DEGRADED,
+                error_code=diagnosis.error_code,
+            )
+        self._persist(self._derive_runtime_state())
+
+    def _sync_note_index_while_running(self) -> None:
+        try:
+            self._ensure_note_index(sync_if_missing=True, force_sync=True)
+        except Exception:
+            self.status.components[ComponentName.ZOTERO_NOTE_INDEX.value] = (
+                ComponentStatus(
+                    component=ComponentName.ZOTERO_NOTE_INDEX,
+                    state=ComponentState.DEGRADED,
+                    error_code="zotero_note_index_sync_failed",
+                )
+            )
+            self.logger.log(
+                component=ComponentName.ZOTERO_NOTE_INDEX.value,
+                state=ComponentState.DEGRADED.value,
+                error_code="zotero_note_index_sync_failed",
+            )
+            self._safe_persist(
+                RuntimeState.DEGRADED,
+                error_code="zotero_note_index_sync_failed",
+            )
+
+    def _ensure_note_index(
+        self,
+        *,
+        sync_if_missing: bool,
+        force_sync: bool = False,
+        incremental_sync: bool = False,
+    ) -> None:
+        status = self._run_note_index_command(
+            self.config.paths.note_status_script,
+            timeout_seconds=30,
+        )
+        ready = bool(status and status.get("status") == "ready")
+        if force_sync or incremental_sync or (sync_if_missing and not ready):
+            synced = self._run_note_index_command(
+                self.config.paths.note_sync_script,
+                timeout_seconds=1800,
+            )
+            sync_safe = bool(
+                synced
+                and synced.get("status") == "ready"
+                and synced.get("production_db_write_performed") is False
+                and synced.get("zotero_db_write_performed") is False
+            )
+            if not sync_safe:
+                raise RuntimeStartupError("zotero_note_index_sync_failed")
+            status = self._run_note_index_command(
+                self.config.paths.note_status_script,
+                timeout_seconds=30,
+            )
+            ready = bool(status and status.get("status") == "ready")
+        state = ComponentState.READY if ready else ComponentState.FAILED
+        self.status.components[ComponentName.ZOTERO_NOTE_INDEX.value] = ComponentStatus(
+            component=ComponentName.ZOTERO_NOTE_INDEX,
+            state=state,
+            error_code=None if ready else "zotero_note_index_not_ready",
+        )
+        if not ready:
+            raise RuntimeStartupError("zotero_note_index_not_ready")
+
+    def _run_note_index_command(
+        self,
+        script: Path,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any] | None:
+        creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            process = subprocess.Popen(
+                [str(self.config.python_exe), "-B", str(script)],
+                cwd=str(self.config.paths.project_root),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+                creationflags=creation_flags,
+            )
+        except OSError:
+            return None
+        stdout_buffer = bytearray()
+        stdout_overflow = [False]
+
+        def drain_stdout() -> None:
+            stream = process.stdout
+            if stream is None:
+                return
+            while True:
+                chunk = stream.read(65_536)
+                if not chunk:
+                    return
+                remaining = 1_048_577 - len(stdout_buffer)
+                if remaining > 0:
+                    stdout_buffer.extend(chunk[:remaining])
+                if len(chunk) > remaining or len(stdout_buffer) > 1_048_576:
+                    stdout_overflow[0] = True
+
+        stdout_reader = Thread(
+            target=drain_stdout,
+            name="notebook-ai-note-index-output",
+            daemon=True,
+        )
+        stdout_reader.start()
+        try:
+            identity = get_process_identity(process.pid)
+        except (OSError, ProcessIdentityUnavailable):
+            _terminate_popen_handle(process)
+            return None
+        managed = ManagedProcess(
+            ProcessSpec(
+                name="zotero_note_index",
+                executable=self.config.python_exe,
+                arguments=("-B", str(script)),
+                cwd=self.config.paths.project_root,
+            ),
+            identity,
+            process,
+        )
+        self._managed[ComponentName.ZOTERO_NOTE_INDEX] = managed
+        self._set_owned(
+            ComponentName.ZOTERO_NOTE_INDEX,
+            managed,
+            ComponentState.STARTING,
+        )
+        try:
+            self._persist(self.status.state, error_code=self.status.error_code)
+        except Exception:
+            _terminate_popen_handle(process)
+            self._managed.pop(ComponentName.ZOTERO_NOTE_INDEX, None)
+            raise
+        deadline = time.monotonic() + timeout_seconds
+        next_heartbeat = time.monotonic() + 10.0
+        try:
+            while process.poll() is None:
+                now = time.monotonic()
+                if now >= deadline:
+                    _terminate_popen_handle(process)
+                    return None
+                if now >= next_heartbeat:
+                    self._safe_persist(self.status.state, error_code=self.status.error_code)
+                    next_heartbeat = now + 10.0
+                time.sleep(0.25)
+            stdout_reader.join(timeout=5)
+            if stdout_reader.is_alive():
+                return None
+            stdout = bytes(stdout_buffer)
+        finally:
+            self._managed.pop(ComponentName.ZOTERO_NOTE_INDEX, None)
+            current = self.status.components.get(ComponentName.ZOTERO_NOTE_INDEX.value)
+            if current and current.identity == identity:
+                current.owned = False
+                current.pid = None
+                current.identity = None
+            self._safe_persist(self.status.state, error_code=self.status.error_code)
+        if process.returncode != 0 or stdout_overflow[0] or len(stdout) > 1_048_576:
+            return None
+        try:
+            value = json.loads(stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def _set_supervisor(self, state: ComponentState) -> None:
+        try:
+            identity = get_process_identity(os.getpid())
+        except ProcessIdentityUnavailable:
+            identity = ProcessIdentity(
+                pid=os.getpid(),
+                creation_time=time.time(),
+                executable=sys.executable,
+            )
+        self.status.components[ComponentName.SUPERVISOR.value] = ComponentStatus(
+            component=ComponentName.SUPERVISOR,
+            state=state,
+            pid=identity.pid,
+            owned=True,
+            identity=identity,
+        )
+
+    def _set_owned(
+        self,
+        component: ComponentName,
+        process: ManagedProcess,
+        state: ComponentState,
+    ) -> None:
+        previous = self.status.components.get(component.value)
+        self.status.components[component.value] = ComponentStatus(
+            component=component,
+            state=state,
+            pid=process.pid,
+            port=process.spec.port,
+            restart_count=(
+                previous.restart_count
+                if previous and previous.state is not ComponentState.STOPPED
+                else 0
+            ),
+            owned=True,
+            identity=process.identity,
+        )
+
+    def _set_external(self, component: ComponentName, port: int) -> None:
+        self.status.components[component.value] = ComponentStatus(
+            component=component,
+            state=ComponentState.EXTERNAL,
+            port=port,
+            owned=False,
+        )
+
+    def _rollback(self) -> None:
+        managed_snapshot = tuple(self._managed.items())
+        try:
+            self.stop_components()
+        except Exception:
+            for component, process in managed_snapshot:
+                try:
+                    self._stop_managed_process(process)
+                except Exception:
+                    pass
+                finally:
+                    self._managed.pop(component, None)
+
+    def _derive_runtime_state(self) -> RuntimeState:
+        local = [
+            self.status.components.get(ComponentName.FASTAPI.value),
+            self.status.components.get(ComponentName.MCP.value),
+        ]
+        if any(item is None for item in local):
+            return RuntimeState.DEGRADED
+        if any(item and item.state is ComponentState.FAILED for item in local):
+            return RuntimeState.FAILED
+        if any(item and item.state is ComponentState.DEGRADED for item in local):
+            return RuntimeState.DEGRADED
+        if any(
+            item
+            and item.state
+            not in {ComponentState.READY, ComponentState.EXTERNAL}
+            for item in local
+        ):
+            return RuntimeState.STARTING
+        note_index = self.status.components.get(ComponentName.ZOTERO_NOTE_INDEX.value)
+        if note_index and note_index.state in {
+            ComponentState.DEGRADED,
+            ComponentState.FAILED,
+        }:
+            return RuntimeState.DEGRADED
+        if self.status.tunnel_state is TunnelState.UNHEALTHY:
+            return RuntimeState.DEGRADED
+        return (
+            RuntimeState.READY
+            if self.status.tunnel_state is TunnelState.READY
+            else RuntimeState.LOCAL_READY_TUNNEL_MISSING
+        )
+
+    def _persist(
+        self,
+        state: RuntimeState,
+        *,
+        error_code: str | None = None,
+    ) -> None:
+        self.status.state = state
+        self.status.updated_at = _utc_now()
+        self.status.error_code = error_code
+        atomic_write_json(self.config.paths.status_file, self.status.to_dict())
+
+    def _safe_persist(
+        self,
+        state: RuntimeState,
+        *,
+        error_code: str | None = None,
+    ) -> None:
+        try:
+            self._persist(state, error_code=error_code)
+        except (OSError, ValueError):
+            return
+
+
+class RuntimeController:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        *,
+        process_manager: ProcessManager | None = None,
+    ):
+        self.config = config
+        self.process_manager = process_manager or ProcessManager()
+        self.control_queue = ControlRequestQueue(config.paths.control_dir)
+
+    def start(self, *, wait_seconds: float = 60.0) -> RuntimeStatus:
+        existing = self.status()
+        supervisor = existing.components.get(ComponentName.SUPERVISOR.value)
+        if supervisor and supervisor.identity and process_is_alive(supervisor.identity):
+            return existing
+        if self.config.mode == "remote":
+            raise RuntimeStartupError("remote_mode_does_not_start_local_runtime")
+        self.config.paths.ensure()
+        try:
+            self.config.paths.supervisor_stop_file.unlink()
+        except FileNotFoundError:
+            pass
+        spec = ProcessSpec(
+            name="supervisor",
+            executable=self.config.python_exe,
+            arguments=(
+                "-B",
+                str(self.config.paths.launcher_script),
+                "supervise",
+            ),
+            cwd=self.config.paths.project_root,
+            environment={"PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        try:
+            self.process_manager.spawn(spec, detached=True)
+        except ProcessStartError as exc:
+            raise RuntimeStartupError("supervisor_start_failed") from exc
+        deadline = time.monotonic() + wait_seconds
+        last = existing
+        while time.monotonic() < deadline:
+            time.sleep(0.25)
+            last = self.status()
+            if last.state not in {RuntimeState.STOPPED, RuntimeState.STARTING}:
+                return last
+        supervisor = last.components.get(ComponentName.SUPERVISOR.value)
+        if (
+            last.state is RuntimeState.STARTING
+            and supervisor
+            and supervisor.identity
+            and process_is_alive(supervisor.identity)
+        ):
+            # An initial incremental note sync can legitimately exceed the
+            # interactive wait.  The live supervisor continues it while
+            # refreshing status heartbeats; do not misreport a start failure.
+            return last
+        raise RuntimeStartupError("launcher_start_timeout")
+
+    def stop(self, *, wait_seconds: float = 15.0) -> RuntimeStatus:
+        current = self.status()
+        supervisor = current.components.get(ComponentName.SUPERVISOR.value)
+        if not supervisor or not supervisor.identity or not process_is_alive(supervisor.identity):
+            return self._force_stop_owned(current)
+        self.config.paths.ensure()
+        atomic_write_json(
+            self.config.paths.supervisor_stop_file,
+            {"action": "stop", "timestamp": _utc_now()},
+        )
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline and process_is_alive(supervisor.identity):
+            time.sleep(0.25)
+        if process_is_alive(supervisor.identity):
+            terminate_verified_process(supervisor.identity)
+        return self._force_stop_owned(self.status())
+
+    def restart(self) -> RuntimeStatus:
+        stopped = self.stop()
+        if stopped.state is not RuntimeState.STOPPED:
+            raise RuntimeStartupError("runtime_stop_failed")
+        return self.start()
+
+    def status(self) -> RuntimeStatus:
+        path = self.config.paths.status_file
+        if not path.is_file():
+            return _empty_status(RuntimeState.STOPPED)
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError
+            return self._reconcile_status(RuntimeStatus.from_dict(value))
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            return _empty_status(RuntimeState.FAILED, error_code="runtime_status_invalid")
+
+    def signal(self, action: str, *, request_id: str | None = None) -> Path:
+        request = ControlRequest(
+            action=action,  # type: ignore[arg-type]
+            request_id=request_id or uuid4().hex,
+            timestamp=_utc_now(),
+        )
+        return self.control_queue.submit(request)
+
+    def doctor(self) -> dict[str, Any]:
+        return {
+            "mode": self.config.mode,
+            "python_ready": self.config.python_exe.is_file(),
+            "node_ready": self.config.node_exe.is_file()
+            or bool(_which_path(self.config.node_exe)),
+            "mcp_build_ready": self.config.paths.mcp_server_entry.is_file(),
+            "fastapi_health": check_fastapi_health(self.config.backend_url).ready,
+            "mcp_health": check_mcp_health(self.config.mcp_port).ready,
+            "tunnel": self.tunnel_status(run_doctor=True),
+            "runtime_state": self.status().state.value,
+        }
+
+    def tunnel_status(self, *, run_doctor: bool) -> dict[str, object]:
+        diagnosis = TunnelDriverBoundary(self.config).diagnose(
+            run_doctor=run_doctor
+        )
+        value = diagnosis.to_dict()
+        running = self.status().components.get(ComponentName.TUNNEL.value)
+        if running and running.owned and running.identity and process_is_alive(running.identity):
+            readiness = TunnelDriverBoundary(self.config).readiness()
+            if readiness.ready:
+                value["state"] = TunnelState.READY.value
+                value["error_code"] = None
+            elif self.config.tunnel.ready_url:
+                value["state"] = TunnelState.UNHEALTHY.value
+                value["error_code"] = "tunnel_readiness_failed"
+            else:
+                value["state"] = TunnelState.STARTING.value
+                value["error_code"] = "tunnel_readiness_unverified"
+        return value
+
+    def _reconcile_status(self, current: RuntimeStatus) -> RuntimeStatus:
+        if current.state is RuntimeState.STOPPED:
+            return current
+        supervisor = current.components.get(ComponentName.SUPERVISOR.value)
+        supervisor_alive = bool(
+            supervisor
+            and supervisor.owned
+            and supervisor.identity
+            and process_is_alive(supervisor.identity)
+        )
+        if current.state is RuntimeState.STARTING and supervisor_alive:
+            return current
+        local_ready = True
+        owned_child_alive = False
+        for component_name, health_check in (
+            (
+                ComponentName.FASTAPI,
+                lambda: check_fastapi_health(self.config.backend_url),
+            ),
+            (
+                ComponentName.MCP,
+                lambda: check_mcp_health(self.config.mcp_port),
+            ),
+        ):
+            component = current.components.get(component_name.value)
+            if component is None:
+                local_ready = False
+                continue
+            identity_alive = bool(
+                component.owned
+                and component.identity
+                and process_is_alive(component.identity)
+            )
+            owned_child_alive = owned_child_alive or identity_alive
+            if component.owned and not identity_alive:
+                component.state = ComponentState.FAILED
+                component.error_code = f"{component_name.value}_identity_stale"
+                local_ready = False
+                continue
+            health = health_check()
+            if not health.ready:
+                component.state = ComponentState.DEGRADED
+                component.error_code = f"{component_name.value}_health_failed"
+                local_ready = False
+            elif not component.owned:
+                component.state = ComponentState.EXTERNAL
+                component.error_code = None
+            else:
+                component.state = ComponentState.READY
+                component.error_code = None
+
+        tunnel_component = current.components.get(ComponentName.TUNNEL.value)
+        if current.tunnel_state in {TunnelState.STARTING, TunnelState.READY}:
+            tunnel_alive = bool(
+                tunnel_component
+                and tunnel_component.owned
+                and tunnel_component.identity
+                and process_is_alive(tunnel_component.identity)
+            )
+            if not tunnel_alive:
+                current.tunnel_state = TunnelState.UNHEALTHY
+                if tunnel_component:
+                    tunnel_component.state = ComponentState.DEGRADED
+                    tunnel_component.error_code = "tunnel_process_not_running"
+            else:
+                readiness = TunnelDriverBoundary(self.config).readiness()
+                if readiness.ready:
+                    current.tunnel_state = TunnelState.READY
+                    tunnel_component.state = ComponentState.READY
+                    tunnel_component.error_code = None
+                elif self.config.tunnel.ready_url:
+                    current.tunnel_state = TunnelState.UNHEALTHY
+                    tunnel_component.state = ComponentState.DEGRADED
+                    tunnel_component.error_code = "tunnel_readiness_failed"
+                else:
+                    current.tunnel_state = TunnelState.STARTING
+                    tunnel_component.state = ComponentState.STARTING
+                    tunnel_component.error_code = "tunnel_readiness_unverified"
+
+        if supervisor and supervisor.owned and not supervisor_alive:
+            supervisor.state = ComponentState.FAILED
+            supervisor.error_code = "supervisor_identity_stale"
+            if current.state is RuntimeState.FAILED:
+                return current
+            if owned_child_alive:
+                current.state = RuntimeState.DEGRADED
+                current.error_code = "supervisor_not_running"
+            elif not owned_child_alive:
+                current.state = RuntimeState.STOPPED
+                current.error_code = None
+        note_index = current.components.get(ComponentName.ZOTERO_NOTE_INDEX.value)
+        if supervisor and supervisor.owned and not supervisor_alive:
+            pass
+        elif not local_ready:
+            current.state = RuntimeState.DEGRADED
+            current.error_code = "local_health_failed"
+        elif note_index and note_index.state in {
+            ComponentState.DEGRADED,
+            ComponentState.FAILED,
+        }:
+            current.state = RuntimeState.DEGRADED
+            current.error_code = note_index.error_code
+        elif current.tunnel_state is TunnelState.READY:
+            current.state = RuntimeState.READY
+            current.error_code = None
+        else:
+            current.state = RuntimeState.LOCAL_READY_TUNNEL_MISSING
+            current.error_code = None
+        return current
+
+    def _force_stop_owned(self, current: RuntimeStatus) -> RuntimeStatus:
+        stop_failed = False
+        for name in (
+            ComponentName.ZOTERO_NOTE_INDEX.value,
+            ComponentName.TUNNEL.value,
+            ComponentName.MCP.value,
+            ComponentName.FASTAPI.value,
+            ComponentName.SUPERVISOR.value,
+        ):
+            component = current.components.get(name)
+            if component and component.owned and component.identity:
+                if process_is_alive(component.identity):
+                    terminate_verified_process(component.identity)
+                    deadline = time.monotonic() + 2.0
+                    while time.monotonic() < deadline and process_is_alive(component.identity):
+                        time.sleep(0.05)
+                if process_is_alive(component.identity):
+                    component.state = ComponentState.FAILED
+                    component.error_code = f"{name}_stop_failed"
+                    stop_failed = True
+                    continue
+            if component:
+                component.state = ComponentState.STOPPED
+                component.pid = None
+                component.identity = None
+                component.error_code = None
+        current.state = RuntimeState.FAILED if stop_failed else RuntimeState.STOPPED
+        current.updated_at = _utc_now()
+        current.error_code = "runtime_stop_failed" if stop_failed else None
+        self.config.paths.ensure()
+        atomic_write_json(self.config.paths.status_file, current.to_dict())
+        return current
+
+
+def _empty_status(
+    state: RuntimeState,
+    *,
+    error_code: str | None = None,
+) -> RuntimeStatus:
+    return RuntimeStatus(
+        state=state,
+        updated_at=_utc_now(),
+        error_code=error_code,
+    )
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _which_path(executable: Path) -> str | None:
+    import shutil
+
+    return shutil.which(str(executable))
+
+
+def _terminate_popen_handle(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+        return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        process.kill()
+        process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return

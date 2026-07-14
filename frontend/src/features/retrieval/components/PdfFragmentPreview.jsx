@@ -151,7 +151,7 @@ export default function PdfFragmentPreview({ fragment, locator, onUnavailable })
   }
 
   return (
-    <section className="searchPdfPreview" data-testid="pdf-fragment-preview" aria-label="内嵌 PDF 预览">
+    <section className="searchPdfPreview" data-testid="pdf-fragment-preview" data-pdf-rotation={rotation} aria-label="内嵌 PDF 预览">
       <PdfPreviewToolbar
         pageNumber={pageNumber}
         pageCount={pageCount}

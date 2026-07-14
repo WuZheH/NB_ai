@@ -39,9 +39,9 @@ class OpenTarget(BaseModel):
 class PdfHighlightRect(BaseModel):
     """A rectangle in PDF user-space coordinates.
 
-    ``pdf_page`` is a one-based physical PDF page number.  Rectangle
-    coordinates retain the source PDF/Zotero coordinate system and are
-    converted to the active PDF.js viewport by the client.
+    ``pdf_page`` is a one-based physical PDF page number.  Zotero annotation
+    positions are retained as PDF user-space rectangles (bottom-left origin),
+    so PDF.js converts them directly through its active viewport.
     """
 
     model_config = ConfigDict(extra="forbid")

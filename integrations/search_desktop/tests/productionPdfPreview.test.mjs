@@ -20,8 +20,17 @@ test("production renderer renders a local PDF.js page and replaces stale fragmen
   assert.equal(payload.metrics.canvasPresent, true);
   assert.equal(payload.metrics.first.strategy, "text");
   assert.ok(payload.metrics.first.highlightCount > 0, JSON.stringify(payload.metrics));
+  assert.equal(payload.metrics.textInitial.allInside, true, JSON.stringify(payload.metrics.textInitial));
+  assert.equal(payload.metrics.textInitial.targetIntersected, true, JSON.stringify(payload.metrics.textInitial));
   assert.equal(payload.metrics.second.strategy, "bbox");
   assert.equal(payload.metrics.second.highlightCount, 2);
+  assert.equal(payload.metrics.bboxInitial.allInside, true, JSON.stringify(payload.metrics.bboxInitial));
+  assert.equal(payload.metrics.bboxInitial.targetIntersected, true, JSON.stringify(payload.metrics.bboxInitial));
+  assert.equal(payload.metrics.bboxZoomed.allInside, true, JSON.stringify(payload.metrics.bboxZoomed));
+  assert.equal(payload.metrics.bboxZoomed.targetIntersected, true, JSON.stringify(payload.metrics.bboxZoomed));
+  assert.equal(payload.metrics.bboxRotated.rotation, 90, JSON.stringify(payload.metrics.bboxRotated));
+  assert.equal(payload.metrics.bboxRotated.allInside, true, JSON.stringify(payload.metrics.bboxRotated));
+  assert.equal(payload.metrics.bboxRotated.targetIntersected, true, JSON.stringify(payload.metrics.bboxRotated));
   assert.equal(payload.metrics.resultScroll.sameNode, true);
   assert.ok(payload.metrics.resultScroll.before > 0);
   assert.ok(Math.abs(payload.metrics.resultScroll.after - payload.metrics.resultScroll.before) <= 1);

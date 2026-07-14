@@ -83,14 +83,26 @@ async function runProbe() {
     await clickPreview(1);
     await waitFor("document.querySelector('[data-testid=\"pdf-page-canvas\"]') && document.querySelectorAll('[data-testid=\"pdf-highlight-rect\"]').length > 0", 16000, "pdf_first_preview");
     const first = await window.webContents.executeJavaScript(`(() => ({ strategy: document.querySelector('[data-testid="pdf-highlight-layer"]')?.dataset.strategy, highlightCount: document.querySelectorAll('[data-testid="pdf-highlight-rect"]').length }))()`);
+    const textInitial = await highlightGeometry();
     await clickPreview(2);
     await waitFor("document.querySelector('[data-testid=\"pdf-highlight-layer\"]')?.dataset.strategy === 'bbox' && document.querySelectorAll('[data-testid=\"pdf-highlight-rect\"]').length === 2", 16000, "pdf_second_preview");
+    const bboxInitial = await highlightGeometry();
+    await window.webContents.executeJavaScript("document.querySelector('[aria-label=\"放大 PDF\"]').click()");
+    await waitFor("document.querySelector('.searchPdfZoom')?.textContent.trim() === '135%'", 8000, "pdf_zoom");
+    const bboxZoomed = await highlightGeometry();
+    await window.webContents.executeJavaScript("document.querySelector('[aria-label=\"旋转 PDF\"]').click()");
+    await waitFor("document.querySelector('[data-testid=\"pdf-fragment-preview\"]')?.dataset.pdfRotation === '90'", 8000, "pdf_rotation");
+    const bboxRotated = await highlightGeometry();
     const metrics = await window.webContents.executeJavaScript(`(() => {
       const pane=document.querySelector('[data-testid="retrieval-results-scroll"]');
       return {
         canvasPresent: Boolean(document.querySelector('[data-testid="pdf-page-canvas"]')),
         first: ${JSON.stringify(first)},
+        textInitial: ${JSON.stringify(textInitial)},
         second: { strategy: document.querySelector('[data-testid="pdf-highlight-layer"]')?.dataset.strategy, highlightCount: document.querySelectorAll('[data-testid="pdf-highlight-rect"]').length },
+        bboxInitial: ${JSON.stringify(bboxInitial)},
+        bboxZoomed: ${JSON.stringify(bboxZoomed)},
+        bboxRotated: ${JSON.stringify(bboxRotated)},
         resultScroll: { before: ${JSON.stringify(before)}, after: pane.scrollTop, sameNode: globalThis.__pdfPreviewResultsPane === pane },
         remoteWorkerRequested: ${JSON.stringify(remoteWorkerRequested)},
       };
@@ -106,6 +118,32 @@ async function runProbe() {
     if (fixtureServer) await new Promise((resolvePromise) => fixtureServer.close(resolvePromise));
     app.quit();
   }
+}
+
+async function highlightGeometry() {
+  return window.webContents.executeJavaScript(`(() => {
+    const page = document.querySelector('[data-testid="pdf-page-wrap"]');
+    const canvas = document.querySelector('[data-testid="pdf-page-canvas"]');
+    const rotation = Number(document.querySelector('[data-testid="pdf-fragment-preview"]')?.dataset.pdfRotation || 0);
+    const pageRect = page?.getBoundingClientRect();
+    const canvasRect = canvas?.getBoundingClientRect();
+    const rects = [...document.querySelectorAll('[data-testid="pdf-highlight-rect"]')].map((node) => {
+      const box = node.getBoundingClientRect();
+      return { left: box.left - pageRect.left, top: box.top - pageRect.top, width: box.width, height: box.height };
+    });
+    // The fixture text is positioned at PDF user-space [72, 690, 300, 712].
+    // PDF.js uses a bottom-left source origin and applies rotation in the
+    // viewport.  This independent expected rectangle checks DOM placement,
+    // not only the number of overlay nodes.
+    const source = { x0: 72, y0: 690, x1: 300, y1: 712 };
+    const scale = rotation % 180 === 0 ? canvasRect.width / 612 : canvasRect.width / 792;
+    const expected = rotation % 360 === 90
+      ? { left: source.y0 * scale, top: source.x0 * scale, width: (source.y1 - source.y0) * scale, height: (source.x1 - source.x0) * scale }
+      : { left: source.x0 * scale, top: (792 - source.y1) * scale, width: (source.x1 - source.x0) * scale, height: (source.y1 - source.y0) * scale };
+    const intersects = (left, right) => Math.max(0, Math.min(left.left + left.width, right.left + right.width) - Math.max(left.left, right.left)) * Math.max(0, Math.min(left.top + left.height, right.top + right.height) - Math.max(left.top, right.top)) > 0;
+    const inside = rects.every((rect) => rect.left >= -1 && rect.top >= -1 && rect.left + rect.width <= canvasRect.width + 1 && rect.top + rect.height <= canvasRect.height + 1);
+    return { rotation, canvas: { width: canvasRect.width, height: canvasRect.height }, expected, rects, allInside: inside, targetIntersected: rects.some((rect) => intersects(rect, expected)) };
+  })()`);
 }
 
 function startFixtureServer() {

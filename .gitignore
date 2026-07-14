@@ -24,9 +24,14 @@ integrations/search_desktop/.npm-cache/
 # Private local corpus, databases, derived indexes, and runtime data
 data/
 
-# Local model weights
-model_cache/
-models/
+# Local model weights.  These are root-level private assets; the application
+# ORM package lives at app/models and is deliberately tracked below.
+/model_cache/
+/models/
+!app/models/
+!app/models/**
+app/models/__pycache__/
+app/models/**/*.py[cod]
 *.safetensors
 *.gguf
 pytorch_model*.bin

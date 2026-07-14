@@ -32,15 +32,14 @@ export function buildNormalizedPdfText(items = []) {
   let text = "";
   const charToItem = [];
   const append = (value, itemIndex) => {
-    for (const char of value) {
-      const normalized = normalizeCharacter(char);
-      if (!normalized) continue;
-      if (/\s/u.test(normalized)) {
+    const normalizedValue = normalizeItemValue(value);
+    for (const normalizedCharacter of normalizedValue) {
+      if (/\s/u.test(normalizedCharacter)) {
         if (!text || /\s$/u.test(text)) continue;
         text += " ";
         charToItem.push(itemIndex);
       } else {
-        text += normalized;
+        text += normalizedCharacter;
         charToItem.push(itemIndex);
       }
     }
@@ -80,17 +79,12 @@ export function pdfTextItemRects(items, itemIndexes, viewport, pdfjsLib) {
 export function viewportRectFromPdfRect(viewport, rect) {
   const raw = rectValues(rect);
   if (!viewport?.convertToViewportRectangle || !raw) return null;
-  // Zotero persists annotation rects in Reader coordinates: unrotated page
-  // units with a top-left origin. PDF.js expects PDF user space, whose origin
-  // is bottom-left, before it applies viewport scale and rotation.
-  const pageHeight = Array.isArray(viewport.viewBox) && viewport.viewBox.length === 4
-    ? Math.abs(Number(viewport.viewBox[3]) - Number(viewport.viewBox[1]))
-    : null;
-  const [x0, y0, x1, y1] = raw;
-  const sourceRect = Number.isFinite(pageHeight) && pageHeight > 0
-    ? [x0, pageHeight - y1, x1, pageHeight - y0]
-    : raw;
-  const values = viewport.convertToViewportRectangle(sourceRect);
+  // Retrieval bbox values are copied from Zotero's PDF annotation position.
+  // The real annotation characterization confirms these are PDF user-space
+  // rectangles (bottom-left origin), exactly what PDF.js expects here.  Do
+  // not invert Y a second time: PDF.js applies that inversion, scale, and
+  // rotation in convertToViewportRectangle.
+  const values = viewport.convertToViewportRectangle(raw);
   const left = Math.min(values[0], values[2]);
   const top = Math.min(values[1], values[3]);
   const width = Math.abs(values[2] - values[0]);
@@ -130,14 +124,12 @@ function normalizeString(value) {
   return { text: text.trim() };
 }
 
-function normalizeCharacter(char) {
-  const value = String(char || "").normalize("NFKC")
+function normalizeItemValue(value) {
+  return String(value || "").normalize("NFKC")
     .replace(/[\u2018\u2019\u201a\u201b]/gu, "'")
     .replace(/[\u201c\u201d\u201e\u201f]/gu, '"')
     .replace(/[\u2010-\u2015]/gu, "-")
     .replace(/\u00ad/gu, "");
-  if (!value) return "";
-  return /\s/u.test(value) ? " " : value;
 }
 
 function rectValues(rect) {
