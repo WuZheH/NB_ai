@@ -1,0 +1,109 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+import { IPC_CHANNELS } from "../electron/ipc/channels.js";
+import { normalizeSettingsPatch } from "../electron/ipc/settingsStore.js";
+import { validateLoopbackUrl } from "../electron/main/config.js";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("product brand is Search while NOTEBOOK_AI runtime compatibility remains", async () => {
+  const packageJson = JSON.parse(await readFile(join(ROOT, "package.json"), "utf8"));
+  const productMetadata = JSON.parse(await readFile(join(ROOT, "electron", "product-metadata.json"), "utf8"));
+  assert.equal(packageJson.productName, "Search");
+  assert.equal(packageJson.version, "0.1.2");
+  assert.deepEqual(productMetadata, {
+    version: "0.1.2",
+    buildId: "20260714-startup2",
+    rendererAssetVersion: "0.1.2-startup2",
+  });
+  assert.equal(packageJson.devDependencies.electron, "37.2.6");
+  const config = await readFile(join(ROOT, "electron", "main", "config.js"), "utf8");
+  assert.match(config, /NOTEBOOK_AI_PYTHON_EXE/);
+  assert.match(config, /notebook_ai_launcher\.py/);
+  assert.match(config, /rendererPort:\s*5173/);
+});
+
+test("Electron security and lifecycle contracts are explicit", async () => {
+  const [entry, windowSource, tray] = await Promise.all([
+    readFile(join(ROOT, "electron", "main", "index.js"), "utf8"),
+    readFile(join(ROOT, "electron", "main", "window.js"), "utf8"),
+    readFile(join(ROOT, "electron", "tray", "createTray.js"), "utf8"),
+  ]);
+  assert.match(entry, /requestSingleInstanceLock/);
+  assert.match(windowSource, /contextIsolation:\s*true/);
+  assert.match(windowSource, /nodeIntegration:\s*false/);
+  assert.match(windowSource, /sandbox:\s*true/);
+  assert.match(windowSource, /event\.preventDefault\(\)/);
+  assert.match(tray, /打开 Search/);
+  assert.match(tray, /完全退出/);
+  assert.match(tray, /暂停 ChatGPT 连接/);
+  assert.match(tray, /恢复 ChatGPT 连接/);
+  const application = await readFile(join(ROOT, "electron", "main", "application.js"), "utf8");
+  assert.ok(application.indexOf("await coordinator.ensureReady()") < application.indexOf("await windowController.create()"));
+});
+
+test("desktop navigation exposes real status and settings routes", async () => {
+  const handlers = await readFile(join(ROOT, "electron", "ipc", "registerHandlers.js"), "utf8");
+  assert.match(handlers, /"\/system-status"/);
+  assert.match(handlers, /"\/settings"/);
+  assert.match(handlers, /autostartStatus/);
+  assert.match(handlers, /settingsUpdate/);
+  assert.match(handlers, /assertTrustedIpcSender/);
+  assert.match(handlers, /await windowController\.openRoute\(route\)/);
+});
+
+test("renderer and API URLs are loopback-only", () => {
+  assert.equal(validateLoopbackUrl("http://127.0.0.1:8000"), "http://127.0.0.1:8000");
+  assert.throws(() => validateLoopbackUrl("https://example.com"), /loopback/);
+  assert.throws(() => validateLoopbackUrl("http://user:pass@127.0.0.1:8000"), /loopback/);
+});
+
+test("preload surface is allowlisted and contains no raw process or filesystem bridge", async () => {
+  const preload = await readFile(join(ROOT, "electron", "preload", "index.cjs"), "utf8");
+  for (const channel of Object.values(IPC_CHANNELS)) assert.match(preload, new RegExp(channel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(preload, /require\(["'](?:node:)?(?:fs|child_process)["']\)/);
+  assert.doesNotMatch(preload, /ipcRenderer\.send\(/);
+  assert.match(preload, /productVersion/);
+  assert.match(preload, /rendererAssetVersion/);
+});
+
+test("desktop startup never installs, builds, or rebuilds indexes", async () => {
+  const files = [
+    "electron/main/index.js",
+    "electron/main/application.js",
+    "electron/runtime/launcherClient.js",
+  ];
+  const source = (await Promise.all(files.map((path) => readFile(join(ROOT, path), "utf8")))).join("\n");
+  assert.doesNotMatch(source, /npm\s+(?:install|ci|run\s+build)/i);
+  assert.doesNotMatch(source, /build_zotero_note_vectors|build_vector/i);
+  assert.doesNotMatch(source, /run\(["']pause-tunnel["']/);
+  assert.doesNotMatch(source, /run\(["']resume-tunnel["']/);
+  assert.match(source, /run\(["']signal["'], \[["']pause_tunnel["']\]\)/);
+});
+
+test("desktop renderer consumes the shared Search design system", async () => {
+  const html = await readFile(join(ROOT, "renderer", "missing-build.html"), "utf8");
+  const css = await readFile(join(ROOT, "renderer", "missing-build.css"), "utf8");
+  assert.match(html, /__search_design__\/tokens\.css/);
+  assert.match(html, /__search_design__\/components\.css/);
+  assert.doesNotMatch(css, /#[0-9a-f]{3,8}/i);
+  assert.match(css, /var\(--search-primary/);
+  const [windowSource, traySource, tokenLoader] = await Promise.all([
+    readFile(join(ROOT, "electron", "main", "window.js"), "utf8"),
+    readFile(join(ROOT, "electron", "tray", "createTray.js"), "utf8"),
+    readFile(join(ROOT, "electron", "main", "designTokens.js"), "utf8"),
+  ]);
+  assert.match(windowSource, /designTokens\.background/);
+  assert.match(traySource, /designTokens\.primary/);
+  assert.doesNotMatch(`${windowSource}\n${traySource}`, /#[0-9a-f]{6}/i);
+  assert.match(tokenLoader, /tokens\.css/);
+});
+
+test("desktop settings cannot persist secrets or private content", () => {
+  assert.deepEqual(normalizeSettingsPatch({ minimizeToTray: false }), { minimizeToTray: false });
+  assert.throws(() => normalizeSettingsPatch({ apiKey: "secret" }), /not_allowed/);
+  assert.throws(() => normalizeSettingsPatch({ fragmentId: "private" }), /not_allowed/);
+});

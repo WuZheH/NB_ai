@@ -17,6 +17,9 @@ htmlcov/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+integrations/search_desktop/node_modules/
+integrations/search_desktop/dist/
+integrations/search_desktop/.npm-cache/
 
 # Private local corpus, databases, derived indexes, and runtime data
 data/
