@@ -1,7 +1,7 @@
 /* Local retrieval and stateless evidence basket */
 .srOnly { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.localRetrievalAppShell { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); height: 100vh; overflow: hidden; background: var(--bg); }
-.localRetrievalPage { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; padding: 20px 22px; overflow: hidden; }
+.localRetrievalAppShell { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); width: 100%; height: 100vh; height: 100dvh; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); }
+.localRetrievalPage { display: flex; flex-direction: column; gap: 12px; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 20px 22px; overflow: hidden; }
 .localRetrievalHeader { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .localRetrievalHeader > div:first-child { display: grid; gap: 2px; }
 .localRetrievalHeader span { color: var(--text-subtle); font-size: 10px; font-weight: 700; }
@@ -13,7 +13,7 @@
 
 .localRetrievalSearchForm { display: grid; grid-template-columns: minmax(240px, 1fr) auto auto auto auto; gap: 8px; align-items: center; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .localRetrievalQueryField { min-width: 0; }
-.localRetrievalQueryField input { width: 100%; min-height: 40px; padding: 0 11px; border: 0; outline: 0; color: var(--text); background: transparent; }
+.localRetrievalQueryField input { width: 100%; color: var(--search-text-primary); }
 .localRetrievalMode { display: grid; grid-template-columns: repeat(2, minmax(86px, 1fr)); min-height: 34px; padding: 2px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--bg); }
 .localRetrievalMode button { min-height: 28px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); }
 .localRetrievalMode button.selected { background: var(--surface-hover); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
@@ -32,15 +32,15 @@
 .localRetrievalWarnings { display: flex; flex-wrap: wrap; gap: 6px; }
 .localRetrievalWarnings span { padding: 4px 7px; border: 1px solid rgba(201, 159, 85, 0.38); border-radius: 6px; color: #d6bb82; background: rgba(201, 159, 85, 0.08); font-size: 10px; }
 
-.localRetrievalBody { display: grid; flex: 1 1 auto; grid-template-columns: minmax(0, 1fr) minmax(330px, 390px); gap: 14px; min-height: 0; }
-.localRetrievalResults { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
+.localRetrievalBody { display: grid; flex: 1 1 0; grid-template-columns: minmax(0, 1fr) minmax(330px, 390px); gap: 14px; min-width: 0; min-height: 0; overflow: hidden; }
+.localRetrievalResults { display: grid; grid-template-rows: auto minmax(0, 1fr); width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
 .localRetrievalResultsToolbar { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 0 2px 9px; }
 .localRetrievalResultsToolbar > div:first-child { display: grid; gap: 2px; }
 .localRetrievalResultsToolbar strong { color: var(--text); font-size: 13px; }
 .localRetrievalResultsToolbar span { color: var(--text-subtle); font-size: 10px; }
 .localRetrievalBatchActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .localRetrievalBatchActions button { min-height: 30px; padding: 0 9px; border-radius: 6px; font-size: 11px; }
-.localRetrievalResultStack { display: grid; align-content: start; gap: 8px; min-height: 0; padding-right: 4px; overflow-y: auto; }
+.localRetrievalResultStack { display: grid; align-content: start; gap: 8px; min-width: 0; min-height: 0; padding-right: 4px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .localRetrievalState { margin: 12px 2px; color: var(--text-muted); font-size: 12px; }
 .localRetrievalState.error, .localEvidenceBasketStatus .error { color: #df9292; }
 
@@ -84,14 +84,14 @@
 .localRetrievalInlineError { color: #df9292; }
 .localRetrievalFile { flex: 1 1 160px; min-width: 0; overflow: hidden; color: var(--text-subtle); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 
-.localEvidenceBasket { display: grid; grid-template-rows: auto minmax(100px, 1fr) auto auto; min-height: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: hidden; }
+.localEvidenceBasket { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; min-height: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: hidden; }
 .localEvidenceBasketHeader { display: flex; justify-content: space-between; gap: 10px; align-items: start; padding-bottom: 10px; border-bottom: 1px solid var(--border-soft); }
 .localEvidenceBasketHeader > div { display: grid; gap: 2px; }
 .localEvidenceBasketHeader span { color: var(--text-subtle); font-size: 9px; font-weight: 700; }
 .localEvidenceBasketHeader strong { color: var(--text); font-size: 16px; }
 .localEvidenceBasketHeader small { color: var(--text-muted); font-size: 10px; }
 .localEvidenceBasketHeader button { min-height: 28px; padding: 0 7px; font-size: 10px; }
-.localEvidenceBasketList { display: grid; align-content: start; gap: 0; min-height: 0; overflow-y: auto; }
+.localEvidenceBasketList { display: grid; align-content: start; gap: 0; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .localEvidenceBasketItem { display: grid; grid-template-columns: 37px minmax(0, 1fr) auto; gap: 7px; align-items: center; min-width: 0; padding: 9px 0; border-bottom: 1px solid var(--border-soft); }
 .localEvidenceBasketOrder { color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; }
 .localEvidenceBasketMain { display: grid; gap: 2px; min-width: 0; }
@@ -104,8 +104,9 @@
 .localEvidenceExport { display: grid; gap: 9px; padding-top: 10px; border-top: 1px solid var(--border-soft); }
 .localEvidenceExportOptions { display: flex; flex-wrap: wrap; gap: 5px 9px; }
 .localEvidenceExportOptions label { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 9px; }
-.localEvidenceExportActions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.localEvidenceExportActions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
 .localEvidenceExportActions button { min-height: 31px; padding: 0 5px; border-radius: 6px; font-size: 10px; }
+.localEvidenceExportActions .search-overflow-menu-panel { position: static; margin-top: var(--search-space-1); }
 .localEvidenceBasketStatus { min-height: 28px; }
 .localEvidenceBasketStatus p { margin: 7px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
 
@@ -116,12 +117,11 @@
   .localRetrievalSearchForm { grid-template-columns: minmax(190px, 1fr) auto auto; }
 }
 @media (max-width: 900px) {
-  .localRetrievalAppShell { grid-template-columns: 1fr; height: auto; min-height: 100vh; overflow: visible; }
-  .localRetrievalPage { grid-template-rows: auto; overflow: visible; }
+  .localRetrievalAppShell { grid-template-columns: minmax(168px, 24vw) minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
+  .localRetrievalPage { overflow: hidden; }
   .localRetrievalBody { grid-template-columns: 1fr; }
-  .localRetrievalResults, .localEvidenceBasket { overflow: visible; }
-  .localRetrievalResultStack, .localEvidenceBasketList { max-height: none; overflow: visible; }
-  .localEvidenceBasket { min-height: 420px; }
+  .localRetrievalResults, .localEvidenceBasket { min-height: 0; overflow: hidden; }
+  .localRetrievalResultStack, .localEvidenceBasketList { max-height: none; overflow-x: hidden; overflow-y: auto; }
 }
 @media (max-width: 620px) {
   .localRetrievalSearchForm { grid-template-columns: 1fr; }

@@ -3,6 +3,7 @@ import EvidenceBasketPanel from "../components/retrieval/EvidenceBasketPanel.jsx
 import RetrievalFilters from "../components/retrieval/RetrievalFilters.jsx";
 import RetrievalResultList from "../components/retrieval/RetrievalResultList.jsx";
 import RetrievalSearchForm from "../components/retrieval/RetrievalSearchForm.jsx";
+import SearchPreviewPanel from "../features/retrieval/components/SearchPreviewPanel.jsx";
 import {
   exportRetrievalEvidence,
   fetchRetrievalFragment,
@@ -13,11 +14,9 @@ import {
 import {
   HIGH_QUALITY_SEARCH_KIND,
   KEYWORD_SEARCH_KIND,
-  NOTEBOOK_NOTE_SOURCE_TYPES,
-  NOTEBOOK_SOURCE_TYPES,
-  buildEvidenceCopyText,
   buildKeywordSearchRequest,
   buildNotebookSearchRequest as createNotebookSearchRequest,
+  fragmentFromResponse,
   normalizeRetrievalResponse,
 } from "../features/retrieval/utils/notebookSearch.js";
 import {
@@ -49,6 +48,7 @@ export default function LocalRetrievalPage() {
   const [limit, setLimit] = useState(12);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [searchState, setSearchState] = useState({ status: "idle", data: null, error: "" });
+  const [previewState, setPreviewState] = useState({ status: "idle", data: null, error: "" });
   const [lastSearchRequest, setLastSearchRequest] = useState(null);
   const [basket, setBasket] = useState([]);
   const [selectionBusy, setSelectionBusy] = useState(false);
@@ -81,6 +81,7 @@ export default function LocalRetrievalPage() {
       const data = normalizeRetrievalResponse(response);
       setLastSearchRequest({ kind: searchKind, request });
       setSearchState({ status: "ready", data, error: "" });
+      setPreviewState({ status: "idle", data: null, error: "" });
     } catch (requestError) {
       setSearchState({ status: "error", data: null, error: apiErrorMessage(requestError) });
     }
@@ -111,16 +112,36 @@ export default function LocalRetrievalPage() {
 
   async function copyResult(item) {
     try {
-      await copyTextToClipboard(buildEvidenceCopyText(item));
-      setNotice(`已复制片段 ${item.fragment_id}。`);
+      const text = copyableFragmentText(item);
+      if (!text) throw new Error("该结果没有可复制的片段正文。");
+      await copyTextToClipboard(text);
+      setNotice("已复制片段正文。");
       setError("");
     } catch (copyError) {
       setError(`复制失败：${apiErrorMessage(copyError)}`);
     }
   }
 
-  function fetchFragment(fragmentId) {
-    return fetchRetrievalFragment(fragmentId);
+  async function previewFragment(item) {
+    setPreviewState({ status: "loading", data: item, error: "" });
+    try {
+      const response = await fetchRetrievalFragment(item.fragment_id);
+      const detail = fragmentFromResponse(response);
+      setPreviewState({
+        status: "ready",
+        data: {
+          ...item,
+          ...detail,
+          final_rank: item.final_rank,
+          final_score: item.final_score,
+          reranker_score: item.reranker_score,
+          semantic_score: item.semantic_score,
+        },
+        error: "",
+      });
+    } catch (requestError) {
+      setPreviewState({ status: "error", data: item, error: apiErrorMessage(requestError) });
+    }
   }
 
   function removeItem(fragmentId) {
@@ -172,26 +193,6 @@ export default function LocalRetrievalPage() {
     }
   }
 
-  async function addDocumentScope(documentId, noteOnly) {
-    if (!documentId || selectionBusy) return;
-    setSelectionBusy(true);
-    setError("");
-    try {
-      const response = await resolveRetrievalSelection({
-        type: "document_scope",
-        document_id: Number(documentId),
-        source_types: noteOnly ? NOTEBOOK_NOTE_SOURCE_TYPES : NOTEBOOK_SOURCE_TYPES,
-        max_items: 1000,
-      });
-      addItems(response.items);
-      setNotice(`文档 ${documentId} 已加入 ${response.resolved_count} 条证据。`);
-    } catch (requestError) {
-      setError(apiErrorMessage(requestError));
-    } finally {
-      setSelectionBusy(false);
-    }
-  }
-
   async function handleExport(format, action) {
     if (!basket.length || exportBusy) return;
     setExportBusy(true);
@@ -230,8 +231,8 @@ export default function LocalRetrievalPage() {
     <main className="localRetrievalPage">
       <header className="localRetrievalHeader">
         <div>
-          <span>LOCAL RETRIEVAL</span>
-          <h1>高质量资料搜索</h1>
+          <span>SEARCH</span>
+          <h1>搜索资料与阅读笔记</h1>
         </div>
         <div className="localRetrievalIndexState">
           <span className={
@@ -251,19 +252,21 @@ export default function LocalRetrievalPage() {
         </div>
       </header>
 
-      <RetrievalSearchForm
-        query={query}
-        searchKind={searchKind}
-        ftsMode={ftsMode}
-        limit={limit}
-        loading={searchState.status === "loading"}
-        onQueryChange={setQuery}
-        onSearchKindChange={setSearchKind}
-        onFtsModeChange={setFtsMode}
-        onLimitChange={setLimit}
-        onSubmit={runSearch}
-      />
-      <RetrievalFilters value={filters} searchKind={searchKind} onChange={setFilters} />
+      <section className="localRetrievalToolbar" aria-label="搜索工具栏">
+        <RetrievalSearchForm
+          query={query}
+          searchKind={searchKind}
+          ftsMode={ftsMode}
+          limit={limit}
+          loading={searchState.status === "loading"}
+          onQueryChange={setQuery}
+          onSearchKindChange={setSearchKind}
+          onFtsModeChange={setFtsMode}
+          onLimitChange={setLimit}
+          onSubmit={runSearch}
+        />
+        <RetrievalFilters value={filters} searchKind={searchKind} onChange={setFilters} />
+      </section>
 
       {aliases.length > 0 && (
         <div className="localRetrievalAliases">
@@ -281,32 +284,44 @@ export default function LocalRetrievalPage() {
         </div>
       )}
 
-      <div className="localRetrievalBody">
+      <div className="localRetrievalBody searchResultWorkspace" data-testid="retrieval-workspace">
         <RetrievalResultList
           state={searchState}
           searchKind={searchKind}
           selectedIds={selectedIds}
           onToggle={toggleItem}
-          onFetch={fetchFragment}
+          onPreview={previewFragment}
           onCopy={copyResult}
+          onCopiedId={() => setNotice("已复制完整 fragment ID。")}
           onAddPage={() => addItems(searchState.data?.results || [])}
           onAddAll={addAllSearchResults}
           onClearPage={clearPageSelection}
-          onAddDocument={(documentId) => addDocumentScope(documentId, false)}
-          onAddDocumentNotes={(documentId) => addDocumentScope(documentId, true)}
         />
-        <EvidenceBasketPanel
-          items={basket}
-          exportOptions={exportOptions}
-          exportBusy={exportBusy || selectionBusy}
-          notice={notice}
-          error={error}
-          onRemove={removeItem}
-          onClear={() => { setBasket([]); setNotice("证据篮子已清空。"); }}
-          onMove={moveItem}
-          onExportOptionsChange={setExportOptions}
-          onExport={handleExport}
-        />
+        <div className={[
+          "searchResultRail",
+          previewState.status === "idle" ? "" : "hasPreview",
+          basket.length ? "hasBasket" : "",
+          previewState.status === "idle" && !basket.length ? "isDormant" : "",
+        ].filter(Boolean).join(" ")}>
+          <SearchPreviewPanel
+            state={previewState}
+            onClose={() => setPreviewState({ status: "idle", data: null, error: "" })}
+            onCopyFragment={copyResult}
+            onCopiedId={() => setNotice("已复制完整 fragment ID。")}
+          />
+          <EvidenceBasketPanel
+            items={basket}
+            exportOptions={exportOptions}
+            exportBusy={exportBusy || selectionBusy}
+            notice={notice}
+            error={error}
+            onRemove={removeItem}
+            onClear={() => { setBasket([]); setNotice("证据篮子已清空。"); }}
+            onMove={moveItem}
+            onExportOptionsChange={setExportOptions}
+            onExport={handleExport}
+          />
+        </div>
       </div>
     </main>
   );
@@ -370,4 +385,9 @@ export function downloadContent(content, filename, mimeType) {
 function positiveInteger(value) {
   const number = Number(value);
   return Number.isInteger(number) && number > 0;
+}
+
+export function copyableFragmentText(item = {}) {
+  if (item.source_type === "pdf_chunk") return String(item.text || "").trim();
+  return [item.note_text, item.selected_text].map((value) => String(value || "").trim()).filter(Boolean).join("\n\n");
 }

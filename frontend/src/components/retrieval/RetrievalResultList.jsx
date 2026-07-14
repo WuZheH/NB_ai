@@ -5,13 +5,12 @@ export default function RetrievalResultList({
   searchKind,
   selectedIds,
   onToggle,
-  onFetch,
+  onPreview,
   onCopy,
+  onCopiedId,
   onAddPage,
   onAddAll,
   onClearPage,
-  onAddDocument,
-  onAddDocumentNotes,
 }) {
   const results = state.data?.results || [];
 
@@ -30,9 +29,9 @@ export default function RetrievalResultList({
           )}
         </div>
         <div className="localRetrievalBatchActions">
-          <button type="button" onClick={onAddPage} disabled={!results.length}>当前页全选</button>
-          <button type="button" onClick={onAddAll} disabled={!results.length}>本次全部加入</button>
-          <button type="button" onClick={onClearPage} disabled={!results.length}>清除本页选择</button>
+          <button type="button" className="search-button search-button-transparent search-button-compact" onClick={onAddPage} disabled={!results.length}>当前页全选</button>
+          <button type="button" className="search-button search-button-transparent search-button-compact" onClick={onAddAll} disabled={!results.length}>本次全部加入</button>
+          <button type="button" className="search-button search-button-transparent search-button-compact" onClick={onClearPage} disabled={!results.length}>清除本页选择</button>
         </div>
       </div>
 
@@ -47,17 +46,23 @@ export default function RetrievalResultList({
       {state.status === "error" && <p className="localRetrievalState error">{state.error}</p>}
       {state.status === "ready" && !results.length && <p className="localRetrievalState">没有命中结果。</p>}
 
-      <div className="localRetrievalResultStack">
-        {results.map((result) => (
+      <div
+        className="localRetrievalResultStack search-scroll-region"
+        data-testid="retrieval-results-scroll"
+        tabIndex={0}
+        role="region"
+        aria-label="可滚动的检索结果列表"
+      >
+        {results.map((result, index) => (
           <RetrievalResultCard
             key={result.fragment_id}
             result={result}
+            resultIndex={index}
             selected={selectedIds.has(result.fragment_id)}
             onToggle={onToggle}
-            onFetch={onFetch}
+            onPreview={onPreview}
             onCopy={onCopy}
-            onAddDocument={onAddDocument}
-            onAddDocumentNotes={onAddDocumentNotes}
+            onCopiedId={onCopiedId}
           />
         ))}
       </div>

@@ -50,26 +50,27 @@ def test_high_quality_export_does_not_send_legacy_fts_mode() -> None:
     assert "retrieval_mode:" not in page
 
 
-def test_result_card_keeps_evidence_roles_and_open_target_visible() -> None:
+def test_result_card_uses_preview_and_fragment_id_handoff_without_direct_navigation() -> None:
     card = _source("components/retrieval/RetrievalResultCard.jsx")
+    preview = _source("features/retrieval/components/SearchPreviewPanel.jsx")
+    fragment_id = _source("shared/components/FragmentIdBlock.jsx")
     for label in (
         "PDF 原文",
         "用户笔记",
-        "对应选中文本",
-        "展开上下文",
-        "查看 provenance",
-        "复制单条",
-        "读取完整片段",
-        "打开 PDF 页",
-        "打开 Zotero 条目",
+        "预览",
+        "复制片段",
     ):
         assert label in card
-    assert "displayResult.note_text" in card
-    assert "displayResult.selected_text" in card
-    assert "openTargetActions(displayResult, API_BASE_URL)" in card
-    assert "localRetrievalFragmentId" in card
+    assert "SourceBadge" in card
+    assert "FragmentIdBlock" in card
     assert "displayResult.reranker_score" in card
-    assert "displayResult.semantic_score" in card
+    assert "displayResult.final_score" in card
+    assert "对应选中文本" in preview
+    assert "前文" in preview and "后文" in preview
+    assert "来源摘要" in preview
+    assert "navigator.clipboard.writeText(value)" in fragment_id
+    for forbidden in ("打开 PDF 页", "打开 Zotero", "打开 ChatGPT", "openTargetActions"):
+        assert forbidden not in card
 
 
 def test_retrieval_route_facade_and_mobile_styles_remain() -> None:

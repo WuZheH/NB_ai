@@ -16,7 +16,7 @@ const CRASH_DUMPS_TMP = resolve(ROOT, "..", "..", ".codex_tmp", "electron-scroll
 test("production renderer keeps window fixed while results, preview, and evidence basket scroll independently", { timeout: 30000 }, async () => {
   const { payload, stdout, stderr, code } = await runProbe();
   assert.equal(code, 0, `production DOM probe failed\n${stdout}\n${stderr}`);
-  assert.equal(payload.status, "ok", payload.error || `production DOM metrics missing\n${stdout}\n${stderr}`);
+  assert.equal(payload.status, "ok", `${payload.error || "production DOM metrics missing"}\n${stdout}\n${stderr}`);
   const { metrics } = payload;
 
   assert.deepEqual(metrics.viewport, { width: 1024, height: 768 });
@@ -36,7 +36,14 @@ test("production renderer keeps window fixed while results, preview, and evidenc
   assert.ok(metrics.interactions.wheelTop > 0, JSON.stringify(metrics.interactions));
   assert.ok(metrics.interactions.pageDownTop > 0, JSON.stringify(metrics.interactions));
   assert.ok(metrics.interactions.endTop > 0, JSON.stringify(metrics.interactions));
+  assert.equal(metrics.interactions.homeTop, 0, JSON.stringify(metrics.interactions));
   assert.ok(metrics.interactions.scrollbarDragTop > 0, JSON.stringify(metrics.interactions));
+  assert.equal(metrics.resultState.basketSameNode, true, JSON.stringify(metrics.resultState));
+  assert.ok(metrics.resultState.basketScrollBefore > 0, JSON.stringify(metrics.resultState));
+  assert.ok(Math.abs(metrics.resultState.basketScrollAfter - metrics.resultState.basketScrollBefore) <= 1, JSON.stringify(metrics.resultState));
+  assert.equal(metrics.resultState.previewSameNode, true, JSON.stringify(metrics.resultState));
+  assert.ok(metrics.resultState.previewScrollBefore > 0, JSON.stringify(metrics.resultState));
+  assert.ok(Math.abs(metrics.resultState.previewScrollAfter - metrics.resultState.previewScrollBefore) <= 1, JSON.stringify(metrics.resultState));
   console.log(`production DOM scroll metrics: ${JSON.stringify(metrics)}`);
 });
 

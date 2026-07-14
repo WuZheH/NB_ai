@@ -15,6 +15,7 @@ export default function RetrievalSearchForm({
       <label className="localRetrievalQueryField">
         <span className="srOnly">检索问题或关键词</span>
         <input
+          className="search-input"
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder="检索本地 PDF、Zotero 标注与笔记"
@@ -29,7 +30,7 @@ export default function RetrievalSearchForm({
           <button
             key={value}
             type="button"
-            className={searchKind === value ? "selected" : ""}
+            className={`search-button search-toggle-button search-button-compact${searchKind === value ? " selected" : ""}`}
             aria-pressed={searchKind === value}
             onClick={() => onSearchKindChange(value)}
           >
@@ -54,7 +55,12 @@ export default function RetrievalSearchForm({
           ))}
         </select>
       </label>
-      <button className="primaryButton localRetrievalSubmit" type="submit" disabled={loading || !query.trim()}>
+      <button
+        className="search-button search-button-primary search-button-prominent localRetrievalSubmit"
+        type="submit"
+        aria-busy={loading}
+        disabled={loading || !query.trim()}
+      >
         {loading ? "检索中" : "检索"}
       </button>
     </form>

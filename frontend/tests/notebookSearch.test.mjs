@@ -99,9 +99,9 @@ test("fragment wrapper and exact source labels are stable", () => {
   });
   assert.equal(fragment.title, "Paper");
   assert.equal(fragment.page_number, 8);
-  assert.equal(notebookSourceLabel("pdf_chunk"), "PDF 片段");
-  assert.equal(notebookSourceLabel("zotero_annotation_comment"), "Zotero 批注笔记");
-  assert.equal(notebookSourceLabel("zotero_child_note"), "Zotero 子笔记");
+  assert.equal(notebookSourceLabel("pdf_chunk"), "PDF 原文");
+  assert.equal(notebookSourceLabel("zotero_annotation_comment"), "Zotero 批注");
+  assert.equal(notebookSourceLabel("zotero_child_note"), "Zotero 笔记");
   assert.equal(notebookSourceLabel("zotero_inspiration_note"), "灵感笔记");
 });
 

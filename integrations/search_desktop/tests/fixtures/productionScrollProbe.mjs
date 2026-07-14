@@ -36,13 +36,18 @@ try {
   }
   console.log("SEARCH_SCROLL_PROBE_STAGE=app-ready");
   fixtureServer = await startFixtureServer();
+  const fixtureAddress = fixtureServer.address();
+  if (!fixtureAddress || typeof fixtureAddress === "string") {
+    throw new Error("fixture_api_address_invalid");
+  }
+  const fixtureOrigin = `http://127.0.0.1:${fixtureAddress.port}`;
   console.log("SEARCH_SCROLL_PROBE_STAGE=fixture-ready");
   rendererServer = new RendererServer({
     frontendDist: FRONTEND_DIST,
     fallbackFile: resolve(DESKTOP_ROOT, "renderer", "missing-build.html"),
     designSystemRoot: resolve(PROJECT_ROOT, "packages", "search-design-system", "src"),
     rendererAssets: resolve(DESKTOP_ROOT, "renderer"),
-    backendUrl: "http://127.0.0.1:8000",
+    backendUrl: fixtureOrigin,
     port: 0,
   });
   const rendererOrigin = await rendererServer.start();
@@ -61,6 +66,36 @@ try {
       backgroundThrottling: false,
     },
   });
+  const fixtureCsp = [
+    "default-src 'self'",
+    "img-src 'self' data: blob:",
+    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self'",
+    `connect-src 'self' http://127.0.0.1:8000 ${fixtureOrigin}`,
+    "font-src 'self' data:",
+    "object-src 'none'",
+    "frame-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join("; ");
+  window.webContents.session.webRequest.onHeadersReceived(
+    { urls: [`${rendererOrigin}/*`] },
+    (details, callback) => {
+      const responseHeaders = { ...details.responseHeaders };
+      for (const name of Object.keys(responseHeaders)) {
+        if (name.toLowerCase() === "content-security-policy") delete responseHeaders[name];
+      }
+      responseHeaders["Content-Security-Policy"] = [fixtureCsp];
+      callback({ responseHeaders });
+    },
+  );
+  window.webContents.session.webRequest.onBeforeRequest(
+    { urls: ["http://127.0.0.1:8000/api/*"] },
+    (details, callback) => {
+      const requested = new URL(details.url);
+      callback({ redirectURL: `${rendererOrigin}${requested.pathname}${requested.search}` });
+    },
+  );
   window.webContents.on("console-message", (_event, level, message) => {
     console.log(`SEARCH_SCROLL_RENDERER_CONSOLE=${level}:${message}`);
   });
@@ -79,10 +114,35 @@ try {
     throw new Error(`search_fixture_failed:${errorText}`);
   }
 
+  const resultStateBeforeBasket = await window.webContents.executeJavaScript(`(() => {
+    const pane = document.querySelector('[data-testid="retrieval-results-scroll"]');
+    pane.scrollTop = Math.min(420, pane.scrollHeight - pane.clientHeight);
+    globalThis.__searchScrollProbeResultsPane = pane;
+    return { scrollTop: pane.scrollTop };
+  })()`);
   await clickButton(window.webContents, "当前页全选");
   await waitFor(window.webContents, "document.querySelectorAll('.localEvidenceBasketItem').length === 12");
+  const resultStateAfterBasket = await window.webContents.executeJavaScript(`(() => {
+    const pane = document.querySelector('[data-testid="retrieval-results-scroll"]');
+    return {
+      sameNode: globalThis.__searchScrollProbeResultsPane === pane,
+      scrollTop: pane.scrollTop,
+    };
+  })()`);
+  const resultStateBeforePreview = await window.webContents.executeJavaScript(`(() => {
+    const pane = document.querySelector('[data-testid="retrieval-results-scroll"]');
+    pane.scrollTop = Math.min(620, pane.scrollHeight - pane.clientHeight);
+    return { scrollTop: pane.scrollTop };
+  })()`);
   await clickButton(window.webContents, "预览");
   await waitFor(window.webContents, "document.querySelector('[data-testid=\"search-preview-scroll\"]')");
+  const resultStateAfterPreview = await window.webContents.executeJavaScript(`(() => {
+    const pane = document.querySelector('[data-testid="retrieval-results-scroll"]');
+    return {
+      sameNode: globalThis.__searchScrollProbeResultsPane === pane,
+      scrollTop: pane.scrollTop,
+    };
+  })()`);
 
   const interactionMetrics = await exerciseNativeScrolling(window.webContents);
   console.log("SEARCH_SCROLL_PROBE_STAGE=interactions-complete");
@@ -120,6 +180,14 @@ try {
       railPosition: getComputedStyle(document.querySelector('.searchResultRail')).position,
       navigationOutlined: [...document.querySelectorAll('.navItem')].some((item) => getComputedStyle(item).borderTopColor !== 'rgba(0, 0, 0, 0)' && getComputedStyle(item).borderTopStyle !== 'none'),
       evidenceBasketEnglishVisible: document.body.innerText.includes('Evidence Basket'),
+      resultState: {
+        basketSameNode: ${JSON.stringify(resultStateAfterBasket.sameNode)},
+        basketScrollBefore: ${JSON.stringify(resultStateBeforeBasket.scrollTop)},
+        basketScrollAfter: ${JSON.stringify(resultStateAfterBasket.scrollTop)},
+        previewSameNode: ${JSON.stringify(resultStateAfterPreview.sameNode)},
+        previewScrollBefore: ${JSON.stringify(resultStateBeforePreview.scrollTop)},
+        previewScrollAfter: ${JSON.stringify(resultStateAfterPreview.scrollTop)},
+      },
     };
   })()`);
   metrics.interactions = interactionMetrics;
@@ -140,7 +208,7 @@ try {
 
 function startFixtureServer() {
   const server = createServer((request, response) => {
-    const url = new URL(request.url || "/", "http://127.0.0.1:8000");
+    const url = new URL(request.url || "/", "http://127.0.0.1");
     response.setHeader("access-control-allow-origin", "*");
     response.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
     response.setHeader("access-control-allow-headers", "content-type,accept");
@@ -165,8 +233,8 @@ function startFixtureServer() {
     response.writeHead(404).end(JSON.stringify({ detail: "fixture_not_found" }));
   });
   return new Promise((resolvePromise, reject) => {
-    server.once("error", (error) => reject(new Error(error?.code === "EADDRINUSE" ? "fixture_api_port_conflict" : "fixture_api_start_failed")));
-    server.listen(8000, "127.0.0.1", () => resolvePromise(server));
+    server.once("error", () => reject(new Error("fixture_api_start_failed")));
+    server.listen(0, "127.0.0.1", () => resolvePromise(server));
   });
 }
 
@@ -270,15 +338,25 @@ async function exerciseNativeScrolling(webContents) {
   await delay(100);
   const endTop = await scrollTop(webContents);
 
+  webContents.sendInputEvent({ type: "keyDown", keyCode: "Home" });
+  webContents.sendInputEvent({ type: "keyUp", keyCode: "Home" });
+  await delay(500);
+  const homeTop = await scrollTop(webContents);
+
   await resetAndFocus(webContents);
+  await delay(100);
   webContents.sendInputEvent({ type: "mouseMove", x: bounds.right, y: bounds.top });
   webContents.sendInputEvent({ type: "mouseDown", x: bounds.right, y: bounds.top, button: "left", clickCount: 1 });
-  webContents.sendInputEvent({ type: "mouseMove", x: bounds.right, y: bounds.bottom, button: "left" });
+  for (let step = 1; step <= 6; step += 1) {
+    const y = Math.round(bounds.top + ((bounds.bottom - bounds.top) * step) / 6);
+    webContents.sendInputEvent({ type: "mouseMove", x: bounds.right, y, button: "left" });
+    await delay(30);
+  }
   webContents.sendInputEvent({ type: "mouseUp", x: bounds.right, y: bounds.bottom, button: "left", clickCount: 1 });
-  await delay(100);
+  await delay(200);
   const scrollbarDragTop = await scrollTop(webContents);
 
-  return { wheelTop, pageDownTop, endTop, scrollbarDragTop };
+  return { wheelTop, pageDownTop, endTop, homeTop, scrollbarDragTop };
 }
 
 async function resetAndFocus(webContents) {

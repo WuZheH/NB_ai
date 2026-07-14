@@ -7,3 +7,7 @@
 @import "./styles/detail-pages.css";
 @import "./styles/pdf-preview.css";
 @import "./styles/workspace.css";
+@import "../../packages/search-design-system/src/tokens.css";
+@import "../../packages/search-design-system/src/base.css";
+@import "../../packages/search-design-system/src/components.css";
+@import "./styles/search-product.css";

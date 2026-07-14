@@ -13,9 +13,9 @@ export const NOTEBOOK_NOTE_SOURCE_TYPES = Object.freeze(
 );
 
 const SOURCE_LABELS = Object.freeze({
-  pdf_chunk: "PDF 片段",
-  zotero_annotation_comment: "Zotero 批注笔记",
-  zotero_child_note: "Zotero 子笔记",
+  pdf_chunk: "PDF 原文",
+  zotero_annotation_comment: "Zotero 批注",
+  zotero_child_note: "Zotero 笔记",
   zotero_inspiration_note: "灵感笔记",
 });
 
