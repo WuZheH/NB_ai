@@ -158,6 +158,10 @@ function Invoke-IsolatedRuntimeCommand {
 function Test-LocalRuntimeReady {
     param([Parameter(Mandatory = $true)]$Status)
 
+    if (-not $Status.PSObject.Properties["components"]) { return $false }
+    if (-not $Status.components.PSObject.Properties["fastapi"]) { return $false }
+    if (-not $Status.components.PSObject.Properties["mcp"]) { return $false }
+
     $AcceptableState = $Status.state -in @("ready", "local_ready_tunnel_missing")
     $FastApiState = [string]$Status.components.fastapi.state
     $McpState = [string]$Status.components.mcp.state
@@ -167,7 +171,36 @@ function Test-LocalRuntimeReady {
         $McpState -in $AcceptableComponentStates
 }
 
+function Get-HealthyExternalRuntimeFixture {
+    $Endpoints = @{
+        fastapi = "http://127.0.0.1:8000/api/v1/retrieval/index/status"
+        mcp = "http://127.0.0.1:8787/healthz"
+    }
+    foreach ($Endpoint in $Endpoints.GetEnumerator()) {
+        try {
+            $Response = Invoke-WebRequest -UseBasicParsing -Uri $Endpoint.Value -TimeoutSec 5
+            if ([int]$Response.StatusCode -lt 200 -or [int]$Response.StatusCode -ge 300) {
+                return $null
+            }
+        }
+        catch {
+            return $null
+        }
+    }
+
+    [pscustomobject]@{
+        state = "ready"
+        components = [pscustomobject]@{
+            fastapi = [pscustomobject]@{ state = "external" }
+            mcp = [pscustomobject]@{ state = "external" }
+        }
+    }
+}
+
 function Start-IsolatedRuntimeFixture {
+    $ExternalRuntime = Get-HealthyExternalRuntimeFixture
+    if ($ExternalRuntime) { return $ExternalRuntime }
+
     $Status = Invoke-IsolatedRuntimeCommand -Command "start"
     $Deadline = (Get-Date).AddSeconds($RuntimeReadyTimeoutSeconds)
     while (-not (Test-LocalRuntimeReady -Status $Status)) {

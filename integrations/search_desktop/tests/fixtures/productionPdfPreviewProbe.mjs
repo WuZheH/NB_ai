@@ -83,16 +83,16 @@ async function runProbe() {
     await clickPreview(1);
     await waitFor("document.querySelector('[data-testid=\"pdf-page-canvas\"]') && document.querySelectorAll('[data-testid=\"pdf-highlight-rect\"]').length > 0", 16000, "pdf_first_preview");
     const first = await window.webContents.executeJavaScript(`(() => ({ strategy: document.querySelector('[data-testid="pdf-highlight-layer"]')?.dataset.strategy, highlightCount: document.querySelectorAll('[data-testid="pdf-highlight-rect"]').length }))()`);
-    const textInitial = await highlightGeometry();
+    const textInitial = await waitForHighlightGeometry("text_initial");
     await clickPreview(2);
     await waitFor("document.querySelector('[data-testid=\"pdf-highlight-layer\"]')?.dataset.strategy === 'bbox' && document.querySelectorAll('[data-testid=\"pdf-highlight-rect\"]').length === 2", 16000, "pdf_second_preview");
-    const bboxInitial = await highlightGeometry();
+    const bboxInitial = await waitForHighlightGeometry("bbox_initial");
     await window.webContents.executeJavaScript("document.querySelector('[aria-label=\"放大 PDF\"]').click()");
     await waitFor("document.querySelector('.searchPdfZoom')?.textContent.trim() === '135%'", 8000, "pdf_zoom");
-    const bboxZoomed = await highlightGeometry();
+    const bboxZoomed = await waitForHighlightGeometry("bbox_zoomed");
     await window.webContents.executeJavaScript("document.querySelector('[aria-label=\"旋转 PDF\"]').click()");
     await waitFor("document.querySelector('[data-testid=\"pdf-fragment-preview\"]')?.dataset.pdfRotation === '90'", 8000, "pdf_rotation");
-    const bboxRotated = await highlightGeometry();
+    const bboxRotated = await waitForHighlightGeometry("bbox_rotated");
     const metrics = await window.webContents.executeJavaScript(`(() => {
       const pane=document.querySelector('[data-testid="retrieval-results-scroll"]');
       return {
@@ -144,6 +144,17 @@ async function highlightGeometry() {
     const inside = rects.every((rect) => rect.left >= -1 && rect.top >= -1 && rect.left + rect.width <= canvasRect.width + 1 && rect.top + rect.height <= canvasRect.height + 1);
     return { rotation, canvas: { width: canvasRect.width, height: canvasRect.height }, expected, rects, allInside: inside, targetIntersected: rects.some((rect) => intersects(rect, expected)) };
   })()`);
+}
+
+async function waitForHighlightGeometry(label, timeout = 8000) {
+  const started = Date.now();
+  let metrics;
+  while (Date.now() - started < timeout) {
+    metrics = await highlightGeometry();
+    if (metrics.rects.length > 0 && metrics.allInside && metrics.targetIntersected) return metrics;
+    await delay(40);
+  }
+  throw new Error(`highlight_geometry_timeout:${label}:${JSON.stringify(metrics)}`);
 }
 
 function startFixtureServer() {

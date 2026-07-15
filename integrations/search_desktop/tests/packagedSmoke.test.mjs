@@ -42,3 +42,21 @@ test("packaged smoke cleanup is identity-scoped and uses the isolated launcher",
   assert.match(smoke, /search_packaged_smoke_port_owner_changed/);
   assert.doesNotMatch(smoke, /taskkill|Stop-Process\s+-Name|Get-Process\s+Search/);
 });
+
+test("packaged smoke reuses healthy loopback services before requiring a local MCP build", () => {
+  assert.match(smoke, /Get-HealthyExternalRuntimeFixture/);
+  assert.match(smoke, /127\.0\.0\.1:8000\/api\/v1\/retrieval\/index\/status/);
+  assert.match(smoke, /127\.0\.0\.1:8787\/healthz/);
+  assert.match(smoke, /fastapi = \[pscustomobject\]@\{ state = "external" \}/);
+  assert.match(smoke, /mcp = \[pscustomobject\]@\{ state = "external" \}/);
+  assert.match(
+    smoke,
+    /if \(\$ExternalRuntime\) \{ return \$ExternalRuntime \}[\s\S]*Invoke-IsolatedRuntimeCommand -Command "start"/,
+  );
+});
+
+test("packaged smoke treats incomplete launcher failure payloads as not ready", () => {
+  assert.match(smoke, /Properties\["components"\]/);
+  assert.match(smoke, /Properties\["fastapi"\]/);
+  assert.match(smoke, /Properties\["mcp"\]/);
+});
