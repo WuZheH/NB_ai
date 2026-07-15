@@ -5,7 +5,7 @@ import PdfLocationPreview from "../../../PdfLocationPreview.jsx";
 import { buildSearchPdfLocationPreview } from "../adapters/searchPdfLocationPreview.js";
 import { formatScore, pageLabel } from "../utils/notebookSearch.js";
 
-export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onCopiedId }) {
+export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onCopiedId, onViewChange }) {
   const result = state?.data;
   const isPdf = result?.source_type === "pdf_chunk";
   const locator = result?.locator;
@@ -13,15 +13,27 @@ export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onC
   const [view, setView] = useState("text");
 
   useEffect(() => {
-    setView(pdfPreview.available ? "pdf" : "text");
-  }, [result?.fragment_id, pdfPreview.available]);
+    setView(result?.preview_view === "text" || result?.preview_view === "pdf"
+      ? result.preview_view
+      : pdfPreview.available ? "pdf" : "text");
+  }, [result?.fragment_id, result?.preview_view, pdfPreview.available]);
+
+  function selectView(nextView) {
+    setView(nextView);
+    onViewChange?.(nextView);
+  }
 
   return (
     <aside className="search-preview-panel searchPreviewPanel" aria-label="片段预览" data-testid="search-preview-panel">
       <header>
         <div>
-          <span className="searchPreviewEyebrow">预览</span>
           <h2>{result?.document_title || "片段预览"}</h2>
+          {result && (
+            <div className="searchPreviewHeaderMeta">
+              <SourceBadge sourceType={result.source_type} />
+              <span>{pageLabel(result)}</span>
+            </div>
+          )}
         </div>
         {state?.status !== "idle" && (
           <button type="button" className="search-icon-button search-button-transparent" aria-label="关闭预览" title="关闭预览" onClick={onClose}>×</button>
@@ -44,50 +56,52 @@ export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onC
         <>
           <div className="searchPreviewTabs" role="tablist" aria-label="预览视图">
             {pdfPreview.available && (
-              <button type="button" role="tab" aria-selected={view === "pdf"} className={`searchPreviewTab${view === "pdf" ? " isActive" : ""}`} onClick={() => setView("pdf")}>PDF</button>
+              <button type="button" role="tab" aria-selected={view === "pdf"} className={`searchPreviewTab${view === "pdf" ? " isActive" : ""}`} onClick={() => selectView("pdf")}>PDF</button>
             )}
-            <button type="button" role="tab" aria-selected={view === "text"} className={`searchPreviewTab${view === "text" ? " isActive" : ""}`} onClick={() => setView("text")}>文本</button>
+            <button type="button" role="tab" aria-selected={view === "text"} className={`searchPreviewTab${view === "text" ? " isActive" : ""}`} onClick={() => selectView("text")}>文本</button>
           </div>
         <div
-          className="searchPreviewContent search-scroll-region"
+          className={`searchPreviewContent search-scroll-region ${view === "pdf" ? "isPdfView" : "isTextView"}`}
           data-testid="search-preview-scroll"
           tabIndex={0}
           role="region"
           aria-label="可滚动的片段预览内容"
         >
-          <div className="searchPreviewMeta">
-            <SourceBadge sourceType={result.source_type} />
-            <span>{pageLabel(result)}</span>
-            {result.final_rank && <span>最终排名 #{result.final_rank}</span>}
-            {result.reranker_score !== null && result.reranker_score !== undefined && (
-              <span className="search-mono">reranker {formatScore(result.reranker_score)}</span>
-            )}
-          </div>
-
           {view === "pdf" && pdfPreview.available ? (
-            <PdfLocationPreview {...pdfPreview.props} />
+            <div className="searchPreviewPdfStage">
+              <PdfLocationPreview {...pdfPreview.props} />
+            </div>
           ) : (
             <TextPreview result={result} isPdf={isPdf} />
           )}
 
-          <section className="searchPreviewProvenance">
-            <h3>来源摘要</h3>
-            <dl>
-              <MetaRow label="document_id" value={result.document_id} />
-              <MetaRow label="chunk_id" value={result.chunk_id} />
-              <MetaRow label="page_label" value={result.page_label} />
-              <MetaRow label="content_hash" value={result.content_hash} />
-            </dl>
-          </section>
+          {view === "pdf" && (
+            <section className="searchPreviewHitText">
+              <h3>命中原文</h3>
+              <p>{result.selected_text || result.text || "该 fragment 没有可显示的命中原文。"}</p>
+            </section>
+          )}
 
-          <FragmentIdBlock fragmentId={result.fragment_id} onCopied={onCopiedId} />
-          <button
-            type="button"
-            className="search-button search-button-transparent search-button-compact searchPreviewCopy"
-            onClick={() => onCopyFragment(result)}
-          >
-            复制片段
-          </button>
+          <div className="searchPreviewFooter">
+            <button
+              type="button"
+              className="search-button search-button-transparent search-button-compact searchPreviewCopy"
+              onClick={() => onCopyFragment(result)}
+            >
+              复制片段
+            </button>
+            <details className="searchTechnicalDetails searchPreviewTechnicalDetails">
+              <summary>技术详情</summary>
+              <dl>
+                <MetaRow label="document_id" value={result.document_id} />
+                <MetaRow label="chunk_id" value={result.chunk_id} />
+                <MetaRow label="content_hash" value={result.content_hash} />
+                <MetaRow label="final_rank" value={result.final_rank} />
+                <MetaRow label="reranker" value={result.reranker_score === null || result.reranker_score === undefined ? null : formatScore(result.reranker_score)} />
+              </dl>
+              <FragmentIdBlock fragmentId={result.fragment_id} onCopied={onCopiedId} />
+            </details>
+          </div>
         </div>
         </>
       )}

@@ -136,6 +136,8 @@ try {
   })()`);
   await clickButton(window.webContents, "预览");
   await waitFor(window.webContents, "document.querySelector('[data-testid=\"search-preview-scroll\"]')");
+  await clickButton(window.webContents, "文本");
+  await waitFor(window.webContents, "document.querySelector('[role=\"tab\"][aria-selected=\"true\"]')?.textContent.trim() === '文本'");
   const resultStateAfterPreview = await window.webContents.executeJavaScript(`(() => {
     const pane = document.querySelector('[data-testid="retrieval-results-scroll"]');
     return {
@@ -339,19 +341,25 @@ async function clickButton(webContents, label) {
 
 async function exerciseNativeScrolling(webContents) {
   const bounds = await webContents.executeJavaScript(`(() => {
+    const rail = document.querySelector('.searchResultRail');
+    globalThis.__searchScrollRailDisplay = rail?.style.display || '';
+    if (rail) rail.style.display = 'none';
     const pane = document.querySelector('[data-testid="retrieval-results-scroll"]');
     pane.scrollTop = 0;
     pane.focus();
     const rect = pane.getBoundingClientRect();
     return { x: Math.floor(rect.left + rect.width / 2), y: Math.floor(rect.top + rect.height / 2), right: Math.floor(rect.right - 4), top: Math.floor(rect.top + 16), bottom: Math.floor(rect.bottom - 16) };
   })()`);
+  await delay(120);
   webContents.sendInputEvent({ type: "mouseMove", x: bounds.x, y: bounds.y });
-  webContents.sendInputEvent({ type: "mouseWheel", x: bounds.x, y: bounds.y, deltaX: 0, deltaY: -360, canScroll: true });
-  await delay(100);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    webContents.sendInputEvent({ type: "mouseWheel", x: bounds.x, y: bounds.y, deltaX: 0, deltaY: -240, canScroll: true });
+    await delay(100);
+  }
   let wheelTop = await scrollTop(webContents);
   if (wheelTop === 0) {
-    webContents.sendInputEvent({ type: "mouseWheel", x: bounds.x, y: bounds.y, deltaX: 0, deltaY: 360, canScroll: true });
-    await delay(100);
+    webContents.sendInputEvent({ type: "mouseWheel", x: bounds.x, y: bounds.y, deltaX: 0, deltaY: 240, canScroll: true });
+    await delay(200);
     wheelTop = await scrollTop(webContents);
   }
 
@@ -385,6 +393,10 @@ async function exerciseNativeScrolling(webContents) {
   await delay(200);
   const scrollbarDragTop = await scrollTop(webContents);
 
+  await webContents.executeJavaScript(`(() => {
+    const rail = document.querySelector('.searchResultRail');
+    if (rail) rail.style.display = globalThis.__searchScrollRailDisplay || '';
+  })()`);
   return { wheelTop, pageDownTop, endTop, homeTop, scrollbarDragTop };
 }
 

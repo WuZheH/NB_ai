@@ -18,6 +18,7 @@ test("production renderer keeps window fixed while results, preview, and evidenc
   assert.equal(code, 0, `production DOM probe failed\n${stdout}\n${stderr}`);
   assert.equal(payload.status, "ok", `${payload.error || "production DOM metrics missing"}\n${stdout}\n${stderr}`);
   const { metrics } = payload;
+  console.log(`production DOM scroll metrics: ${JSON.stringify(metrics)}`);
 
   assert.deepEqual(metrics.viewport, { width: 1024, height: 768 });
   assert.ok(metrics.root.scrollHeight <= metrics.root.clientHeight + 1, JSON.stringify(metrics.root));
@@ -30,7 +31,7 @@ test("production renderer keeps window fixed while results, preview, and evidenc
   assert.equal(metrics.results.lastVisible, true);
   assert.equal(metrics.preview.lastVisible, true);
   assert.equal(metrics.basket.lastVisible, true);
-  assert.equal(metrics.railPosition, "static");
+  assert.equal(metrics.railPosition, "fixed");
   assert.equal(metrics.navigationOutlined, false);
   assert.equal(metrics.evidenceBasketEnglishVisible, false);
   assert.ok(metrics.interactions.wheelTop > 0, JSON.stringify(metrics.interactions));
@@ -51,7 +52,6 @@ test("production renderer keeps window fixed while results, preview, and evidenc
   assert.ok(Math.abs(metrics.navigationRestore.resultsScroll - metrics.navigationRestore.expectedScroll.results) <= 1, JSON.stringify(metrics.navigationRestore));
   assert.ok(Math.abs(metrics.navigationRestore.previewScroll - metrics.navigationRestore.expectedScroll.preview) <= 1, JSON.stringify(metrics.navigationRestore));
   assert.ok(Math.abs(metrics.navigationRestore.basketScroll - metrics.navigationRestore.expectedScroll.basket) <= 1, JSON.stringify(metrics.navigationRestore));
-  console.log(`production DOM scroll metrics: ${JSON.stringify(metrics)}`);
 });
 
 async function runProbe() {

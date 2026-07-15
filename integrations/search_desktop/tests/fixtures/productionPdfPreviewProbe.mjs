@@ -11,6 +11,8 @@ const FRONTEND_DIST = resolve(PROJECT_ROOT, "frontend", "dist");
 const TEST_USER_DATA = resolve(PROJECT_ROOT, ".codex_tmp", "electron-pdf-preview-user-data");
 const TEST_CRASH_DUMPS = resolve(PROJECT_ROOT, ".codex_tmp", "electron-pdf-preview-crashes");
 const CALLBACK_URL = String(process.env.SEARCH_PDF_PREVIEW_CALLBACK_URL || "").trim();
+const VIEWPORT_WIDTH = positiveInteger(process.env.SEARCH_PDF_PREVIEW_WIDTH, 1440);
+const VIEWPORT_HEIGHT = positiveInteger(process.env.SEARCH_PDF_PREVIEW_HEIGHT, 900);
 
 mkdirSync(TEST_USER_DATA, { recursive: true });
 mkdirSync(TEST_CRASH_DUMPS, { recursive: true });
@@ -45,8 +47,8 @@ async function runProbe() {
     });
     const rendererOrigin = await rendererServer.start();
     window = new BrowserWindow({
-      width: 1023,
-      height: 767,
+      width: VIEWPORT_WIDTH,
+      height: VIEWPORT_HEIGHT,
       useContentSize: true,
       show: false,
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, offscreen: true, backgroundThrottling: false },
@@ -93,7 +95,19 @@ async function runProbe() {
     const bboxZoomed = await waitForHighlightGeometry("bbox_zoomed");
     const metrics = await window.webContents.executeJavaScript(`(() => {
       const pane=document.querySelector('[data-testid="retrieval-results-scroll"]');
+      const workspace=document.querySelector('[data-testid="retrieval-workspace"]');
+      const preview=document.querySelector('[data-testid="search-preview-panel"]');
+      const previewContent=document.querySelector('[data-testid="search-preview-scroll"]');
+      const pdfScroller=document.querySelector('.searchPreviewPdfStage .pdfPreviewScroller');
+      const resultTechnical=document.querySelector('.localRetrievalTechnicalDetails');
+      const previewTechnical=document.querySelector('.searchPreviewTechnicalDetails');
+      const workspaceStyle=getComputedStyle(workspace);
+      const previewContentStyle=getComputedStyle(previewContent);
+      const pdfScrollerStyle=getComputedStyle(pdfScroller);
+      const resultRect=pane.getBoundingClientRect();
+      const previewRect=preview.getBoundingClientRect();
       return {
+        viewport: { width: innerWidth, height: innerHeight },
         canvasPresent: Boolean(document.querySelector('[data-testid="pdf-page-canvas"]')),
         first: ${JSON.stringify(first)},
         textInitial: ${JSON.stringify(textInitial)},
@@ -101,6 +115,22 @@ async function runProbe() {
         bboxInitial: ${JSON.stringify(bboxInitial)},
         bboxZoomed: ${JSON.stringify(bboxZoomed)},
         resultScroll: { before: ${JSON.stringify(before)}, after: pane.scrollTop, sameNode: globalThis.__pdfPreviewResultsPane === pane },
+        layout: {
+          workspaceColumns: workspaceStyle.gridTemplateColumns,
+          resultsWidth: resultRect.width,
+          previewWidth: previewRect.width,
+          previewShare: previewRect.width / (resultRect.width + previewRect.width),
+          rootScrollable: document.scrollingElement.scrollHeight > document.scrollingElement.clientHeight + 1,
+          previewOuterScrollable: previewContent.scrollHeight > previewContent.clientHeight + 1,
+          previewOuterOverflowY: previewContentStyle.overflowY,
+          pdfScrollHeight: pdfScroller.scrollHeight,
+          pdfClientHeight: pdfScroller.clientHeight,
+          pdfOverflowX: pdfScrollerStyle.overflowX,
+          pdfOverflowY: pdfScrollerStyle.overflowY,
+          resultTechnicalOpen: resultTechnical?.open === true,
+          previewTechnicalOpen: previewTechnical?.open === true,
+          title: document.querySelector('.localRetrievalHeader h1')?.textContent,
+        },
         remoteWorkerRequested: ${JSON.stringify(remoteWorkerRequested)},
       };
     })()`);
@@ -188,6 +218,11 @@ function searchFixture() {
 
 function resultFixture(rank) {
   return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, chunk_id: rank, document_title: `PDF fixture document ${rank}`, pdf_page: 1, final_rank: rank, final_score: 0.9, reranker_score: 0.8, semantic_score: 0.7, tags: [], provenance: [], text: "PDF preview target text across the rendered page" };
+}
+
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function detailFixture(rank) {

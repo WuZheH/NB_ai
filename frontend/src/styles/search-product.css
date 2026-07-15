@@ -127,6 +127,7 @@ select { min-height: var(--search-control-prominent); }
 }
 
 .localRetrievalAppShell {
+  grid-template-columns: 264px minmax(0, 1fr);
   contain: size layout paint;
 }
 
@@ -254,7 +255,7 @@ select { min-height: var(--search-control-prominent); }
   flex: 1 1 0;
   height: auto;
   align-items: stretch;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-columns: minmax(360px, 54fr) minmax(520px, 46fr);
 }
 
 .localRetrievalResult,
@@ -321,7 +322,7 @@ select { min-height: var(--search-control-prominent); }
 
 .searchResultWorkspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(290px, 390px);
+  grid-template-columns: minmax(360px, 54fr) minmax(520px, 46fr);
   gap: var(--search-space-4);
   width: 100%;
   height: auto;
@@ -385,7 +386,7 @@ select { min-height: var(--search-control-prominent); }
 
 .searchResultRail {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) minmax(280px, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(260px, 30vh);
   gap: var(--search-space-4);
   width: 100%;
   height: 100%;
@@ -414,7 +415,7 @@ select { min-height: var(--search-control-prominent); }
   height: 100%;
   min-width: 0;
   min-height: 0;
-  padding: var(--search-space-4);
+  padding: var(--search-space-3);
   overflow: hidden;
 }
 
@@ -423,15 +424,28 @@ select { min-height: var(--search-control-prominent); }
   align-items: start;
   justify-content: space-between;
   gap: var(--search-space-3);
-  padding-bottom: var(--search-space-3);
+  padding-bottom: var(--search-space-2);
   border-bottom: 1px solid var(--search-border);
 }
 
 .searchPreviewPanel h2 {
-  margin: var(--search-space-1) 0 0;
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   color: var(--search-text-primary);
   font-size: 1.05rem;
   line-height: 1.4;
+}
+
+.searchPreviewHeaderMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--search-space-2);
+  margin-top: var(--search-space-1);
+  color: var(--search-text-secondary);
+  font-size: 0.76rem;
 }
 
 .searchPreviewEyebrow {
@@ -474,11 +488,77 @@ select { min-height: var(--search-control-prominent); }
   scrollbar-gutter: stable;
 }
 
+.searchPreviewContent.isPdfView {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  align-content: stretch;
+  padding-top: var(--search-space-2);
+  overflow: hidden;
+}
+
+.searchPreviewContent.isTextView {
+  overflow-y: auto;
+}
+
 .searchPreviewTabs {
   display: flex;
   gap: 2px;
   min-width: 0;
   padding-top: var(--search-space-2);
+}
+
+.searchPreviewPdfStage {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.searchPreviewPdfStage .pdfPreviewPanel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.searchPreviewPdfStage .pdfPreviewHeader {
+  min-height: var(--search-control-standard);
+  justify-content: flex-end;
+}
+
+.searchPreviewPdfStage .pdfPreviewHeader > div:first-child {
+  display: none;
+}
+
+.searchPreviewPdfStage .pdfZoomControls {
+  justify-content: flex-start;
+}
+
+.searchPreviewPdfStage .pdfPreviewScroller {
+  flex: 1 1 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  border-color: var(--search-border);
+  background: var(--search-bg-subtle);
+}
+
+.searchPreviewPdfStage .pdfPageCanvasWrap {
+  max-width: 100%;
+}
+
+.searchPreviewPdfStage .pdfPreviewNotice {
+  padding: var(--search-space-2);
+  border: 0;
+  background: var(--search-bg-subtle);
 }
 
 .searchPreviewTab {
@@ -532,7 +612,7 @@ select { min-height: var(--search-control-prominent); }
 .localEvidenceExportSettings[open] > summary { margin-bottom: var(--search-space-2); }
 
 .searchPreviewText,
-.searchPreviewProvenance {
+.searchPreviewHitText {
   padding: var(--search-space-3);
   border: 1px solid var(--search-border);
   border-radius: var(--search-radius-standard);
@@ -540,10 +620,25 @@ select { min-height: var(--search-control-prominent); }
 }
 
 .searchPreviewText h3,
-.searchPreviewProvenance h3 {
+.searchPreviewHitText h3 {
   margin: 0 0 var(--search-space-2);
   color: var(--search-text-secondary);
   font-size: 0.78rem;
+}
+
+.searchPreviewHitText {
+  min-width: 0;
+}
+
+.searchPreviewHitText p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: var(--search-text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.55;
 }
 
 .searchPreviewText p {
@@ -553,18 +648,51 @@ select { min-height: var(--search-control-prominent); }
   line-height: 1.58;
 }
 
-.searchPreviewProvenance dl { margin: 0; }
-.searchPreviewProvenance dl > div {
+.searchPreviewFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: var(--search-space-2);
+  min-width: 0;
+}
+
+.searchTechnicalDetails {
+  min-width: 0;
+  color: var(--search-text-secondary);
+  font-size: 0.72rem;
+}
+
+.searchTechnicalDetails > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--search-text-secondary);
+}
+
+.searchTechnicalDetails[open] > summary {
+  margin-bottom: var(--search-space-2);
+}
+
+.searchPreviewTechnicalDetails {
+  flex: 1 1 240px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.searchPreviewTechnicalDetails dl { margin: 0; }
+.searchPreviewTechnicalDetails dl > div {
   display: grid;
   grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
   gap: var(--search-space-2);
   padding: var(--search-space-1) 0;
 }
-.searchPreviewProvenance dt { color: var(--search-text-muted); }
-.searchPreviewProvenance dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.searchPreviewTechnicalDetails dt { color: var(--search-text-muted); }
+.searchPreviewTechnicalDetails dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.localRetrievalTechnicalDetails { border-top: 1px solid var(--search-border); padding-top: var(--search-space-1); }
+.localRetrievalTechnicalDetails .localRetrievalResultMeta { margin-bottom: var(--search-space-2); }
+.localRetrievalTechnicalDetails .search-fragment-id { background: var(--search-bg-subtle); }
 .searchPreviewCopy { justify-self: start; }
 
-@media (max-width: 900px) {
+@media (max-width: 1180px) {
   .searchResultWorkspace { grid-template-columns: 1fr; }
   .localRetrievalBody { grid-template-columns: 1fr; }
   .searchResultRail.isDormant { display: none; }

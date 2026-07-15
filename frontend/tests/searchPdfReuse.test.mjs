@@ -44,6 +44,24 @@ test("legacy pdf-location payload remains authoritative for Search PDF props", (
   assert.equal(preview.props.location, legacyLocation);
   assert.equal(preview.props.page, 13);
   assert.equal(preview.props.pdfUrl, "/api/v1/library/documents/5/pdf#page=13");
+  assert.equal(preview.props.fitWidthOnLoad, true);
+});
+
+test("Search keeps developer identifiers and raw ranking values inside collapsed technical details", async () => {
+  const card = await readFile(new URL("../src/components/retrieval/RetrievalResultCard.jsx", import.meta.url), "utf8");
+  const panel = await readFile(new URL("../src/features/retrieval/components/SearchPreviewPanel.jsx", import.meta.url), "utf8");
+  assert.match(card, /<details className="searchTechnicalDetails localRetrievalTechnicalDetails">/);
+  assert.match(panel, /<details className="searchTechnicalDetails searchPreviewTechnicalDetails">/);
+  assert.match(panel, /<MetaRow label="document_id"/);
+  assert.match(panel, /<MetaRow label="content_hash"/);
+  assert.doesNotMatch(panel, /<h3>来源摘要<\/h3>/);
+});
+
+test("Search layout gives the established PDF preview a readable desktop rail and one viewer scroll host", async () => {
+  const styles = await readFile(new URL("../src/styles/search-product.css", import.meta.url), "utf8");
+  assert.match(styles, /grid-template-columns: minmax\(360px, 54fr\) minmax\(520px, 46fr\)/);
+  assert.match(styles, /\.searchPreviewContent\.isPdfView[\s\S]*?overflow: hidden/);
+  assert.match(styles, /\.searchPreviewPdfStage \.pdfPreviewScroller[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto/);
 });
 
 test("fragment annotation coordinates are only adapted into the legacy coordinate contract", () => {

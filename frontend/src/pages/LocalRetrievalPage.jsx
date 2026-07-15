@@ -328,7 +328,7 @@ export default function LocalRetrievalPage() {
       <header className="localRetrievalHeader">
         <div>
           <span>SEARCH</span>
-          <h1>搜索资料与阅读笔记</h1>
+          <h1>搜索</h1>
         </div>
         <div className="localRetrievalIndexState">
           <span className={
@@ -407,6 +407,9 @@ export default function LocalRetrievalPage() {
               }}
             onCopyFragment={copyResult}
             onCopiedId={() => setNotice("已复制完整 fragment ID。")}
+            onViewChange={(view) => setPreviewState((current) => current.status === "ready"
+              ? { ...current, data: { ...current.data, preview_view: view } }
+              : current)}
           />
           <EvidenceBasketPanel
             items={basket}

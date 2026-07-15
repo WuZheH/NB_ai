@@ -39,13 +39,15 @@ function PdfLocationPreview({
   pdf_page_end,
   chunkId,
   quote,
-  highlightText
+  highlightText,
+  fitWidthOnLoad = false
 }) {
   const canvasRef = useRef(null);
   const scrollerRef = useRef(null);
   const autoFocusKeyRef = useRef("");
   const manualZoomKeyRef = useRef("");
   const pendingFocusRef = useRef(null);
+  const autoFitKeyRef = useRef("");
   const [scale, setScale] = useState(DEFAULT_SCALE);
   const [renderState, setRenderState] = useState({
     status: "idle",
@@ -235,6 +237,17 @@ function PdfLocationPreview({
   }, [resolvedPdfUrl, pdfPage, scale]);
 
   useEffect(() => {
+    if (!fitWidthOnLoad || renderState.status !== "ready" || !scrollerRef.current) return;
+    const baseWidth = pageWidth || renderState.baseWidth;
+    if (!baseWidth) return;
+    const fitKey = `${resolvedPdfUrl}:${pdfPage}:${Math.round(scrollerRef.current.clientWidth)}`;
+    if (autoFitKeyRef.current === fitKey) return;
+    autoFitKeyRef.current = fitKey;
+    const fitScale = clampScale(Math.max(120, scrollerRef.current.clientWidth - 24) / baseWidth);
+    if (Math.abs(fitScale - scale) > 0.05) setZoom(fitScale, { manual: false });
+  }, [fitWidthOnLoad, renderState.status, renderState.baseWidth, pageWidth, resolvedPdfUrl, pdfPage, scale]);
+
+  useEffect(() => {
     if (renderState.status !== "ready" || !canFocusHighlight || !focusKey || !scrollerRef.current || !pageWidth || !pageHeight) return;
     if (!shouldApplyAutoFocus({
       focusKey,
@@ -255,11 +268,15 @@ function PdfLocationPreview({
     });
     if (!focus) return;
 
-    pendingFocusRef.current = { key: focusKey, focus, desiredScale: focus.desiredScale };
-    if (Math.abs(focus.desiredScale - scale) > 0.05) {
-      setScale(clampScale(focus.desiredScale));
+    const fitScale = fitWidthOnLoad && scroller.clientWidth && pageWidth
+      ? clampScale(Math.max(120, scroller.clientWidth - 24) / pageWidth)
+      : focus.desiredScale;
+    const desiredScale = fitWidthOnLoad ? Math.min(focus.desiredScale, fitScale) : focus.desiredScale;
+    pendingFocusRef.current = { key: focusKey, focus, desiredScale };
+    if (Math.abs(desiredScale - scale) > 0.05) {
+      setScale(clampScale(desiredScale));
     }
-  }, [renderState.status, canFocusHighlight, focusKey, rects, pageWidth, pageHeight, focusMode, scale]);
+  }, [renderState.status, canFocusHighlight, focusKey, rects, pageWidth, pageHeight, focusMode, scale, fitWidthOnLoad]);
 
   useEffect(() => {
     const pending = pendingFocusRef.current;
