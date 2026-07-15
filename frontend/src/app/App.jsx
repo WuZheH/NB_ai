@@ -17,6 +17,7 @@ import RightInspector from "../components/RightInspector.jsx";
 import { ReadShelfPage, DocumentDetailPage, EvidenceDetailPage } from "../features/library/index.js";
 import { SearchPage } from "../features/search/index.js";
 import { LocalRetrievalPage } from "../features/retrieval/index.js";
+import { captureSearchSessionBeforeNavigation } from "../features/retrieval/state/searchSession.js";
 import { ObjectDetailPage } from "../features/objects/index.js";
 import { ImportPreviewPage, ImportReviewPage } from "../features/importing/index.js";
 import { NotebookWorkspaceShell, ResearchWorkspacePage } from "../features/workspace/index.js";
@@ -149,6 +150,9 @@ function App() {
 
   function applyParsedRoute(parsed, { push = false } = {}) {
     if (!parsed) return;
+    if (parsed.redirectPath && typeof window !== "undefined") {
+      window.history.replaceState({}, "", parsed.redirectPath);
+    }
     if (parsed.view === "workspace") {
       openWorkspaceRoute(parsed.workspaceRoute, { push });
       return;
@@ -176,6 +180,7 @@ function App() {
     const documentId = numericId(route.documentId);
     const chapterId = numericId(route.chapterId);
     const nextRoute = { documentId, chapterId };
+    captureSearchSessionBeforeNavigation();
     clearSelection();
     setWorkspaceRoute(nextRoute);
     setAdvancedWorkflowRoute(null);
@@ -187,6 +192,7 @@ function App() {
   function openLegacyView(view, { push = true } = {}) {
     const nextView = normalizeLegacyView(view);
     if (!nextView) return;
+    if (nextView !== "retrieval") captureSearchSessionBeforeNavigation();
     clearSelection();
     setWorkspaceRoute({});
     setAdvancedWorkflowRoute(null);
@@ -199,6 +205,7 @@ function App() {
     const nextDocumentId = numericId(documentId);
     const nextChapterId = numericId(chapterId);
     if (!nextDocumentId) return;
+    captureSearchSessionBeforeNavigation();
     clearSelection();
     setAdvancedWorkflowRoute({
       documentId: nextDocumentId,
@@ -225,6 +232,7 @@ function App() {
           onOpenWorkspace={(route) => openWorkspaceRoute(route)}
           onOpenImport={() => openLegacyView("importPreview")}
           onOpenAdvancedWorkflow={openAdvancedWorkflow}
+          onBackToSearch={() => openLegacyView("retrieval")}
         />
       </NotebookWorkspaceShell>
     );

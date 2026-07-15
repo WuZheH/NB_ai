@@ -18,7 +18,7 @@ import {
 
 export { buildDeterministicWorkspaceFallbackState };
 
-export default function ResearchWorkspacePage({ route = {}, onOpenWorkspace, onOpenImport, onOpenAdvancedWorkflow }) {
+export default function ResearchWorkspacePage({ route = {}, onOpenWorkspace, onOpenImport, onOpenAdvancedWorkflow, onBackToSearch }) {
   const documentId = route.documentId ? Number(route.documentId) : null;
   const chapterId = route.chapterId ? Number(route.chapterId) : null;
   const [workspaceState, setWorkspaceState] = useState({ status: "idle", data: null, error: "" });
@@ -140,12 +140,17 @@ export default function ResearchWorkspacePage({ route = {}, onOpenWorkspace, onO
 
   if (!documentId || !chapterId) {
     return (
-      <NotebookWorkspaceHome
-        documentId={documentId}
-        homeState={homeState}
-        onOpenWorkspace={onOpenWorkspace}
-        onOpenImport={onOpenImport}
-      />
+      <div className="researchWorkspacePage notebookLmInspiredWorkspace">
+        <div className="researchWorkspaceReturnBar">
+          <button type="button" className="workspacePillButton" onClick={onBackToSearch}>← 返回搜索</button>
+        </div>
+        <NotebookWorkspaceHome
+          documentId={documentId}
+          homeState={homeState}
+          onOpenWorkspace={onOpenWorkspace}
+          onOpenImport={onOpenImport}
+        />
+      </div>
     );
   }
 
@@ -177,6 +182,7 @@ export default function ResearchWorkspacePage({ route = {}, onOpenWorkspace, onO
           )}
         </div>
         <div className="researchWorkspaceTopActions">
+          <button type="button" className="workspacePillButton" onClick={onBackToSearch}>← 返回搜索</button>
           <button type="button" className="workspacePillButton">分享</button>
           <button type="button" className="workspacePillButton">设置</button>
           <button type="button" className="workspacePillButton">导出</button>

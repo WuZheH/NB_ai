@@ -498,55 +498,6 @@ select { min-height: var(--search-control-prominent); }
 .searchPreviewTab.isActive { border-bottom-color: var(--search-brand); color: var(--search-text-primary); font-weight: 700; }
 .searchPreviewTab:focus-visible { outline: 2px solid var(--search-brand); outline-offset: 2px; }
 
-.searchPdfPreview {
-  display: grid;
-  grid-template-rows: auto auto minmax(280px, 1fr);
-  gap: var(--search-space-2);
-  min-width: 0;
-  min-height: 0;
-}
-
-.searchPdfToolbar {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  padding: var(--search-space-1);
-  border: 1px solid var(--search-border);
-  border-radius: var(--search-radius-standard);
-  background: var(--search-surface-subtle);
-}
-
-.searchPdfToolbarSpacer { flex: 1 1 auto; min-width: var(--search-space-1); }
-.searchPdfPageCounter,
-.searchPdfZoom { color: var(--search-text-secondary); font-family: var(--search-font-mono); font-size: 0.72rem; white-space: nowrap; }
-.searchPdfStatus { margin: 0; color: var(--search-text-secondary); font-size: 0.78rem; }
-
-.searchPdfScroller {
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  padding: var(--search-space-2);
-  border: 1px solid var(--search-border);
-  border-radius: var(--search-radius-standard);
-  background: #dfe5ea;
-}
-
-.searchPdfScroller:focus-visible { outline: 2px solid var(--search-brand); outline-offset: 2px; }
-.searchPdfPage { position: relative; margin: 0 auto; background: #fff; box-shadow: 0 1px 2px rgb(23 33 43 / 12%); }
-.searchPdfCanvas { display: block; width: 100%; height: 100%; }
-.searchPdfHighlightLayer { position: absolute; inset: 0; pointer-events: none; }
-.searchPdfHighlight {
-  position: absolute;
-  box-sizing: border-box;
-  border: 2px solid rgb(55 141 229 / 92%);
-  border-radius: 2px;
-  background: rgb(255 220 91 / 42%);
-  box-shadow: 0 0 0 1px rgb(255 255 255 / 46%);
-}
-
 .searchResultRail .localEvidenceBasket {
   width: 100%;
   height: 100%;

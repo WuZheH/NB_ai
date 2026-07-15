@@ -7,8 +7,7 @@ export function useAppNavigation({ clearSelection, importPreviewSelection, impor
   const currentTitle = useMemo(() => {
     if (view === "readShelf") return "已读书架";
     if (view === "workspace") return "Research Workspace";
-    if (view === "search") return "资料库搜索";
-    if (view === "retrieval") return "本地证据检索";
+    if (view === "search" || view === "retrieval") return "搜索";
     if (view === "document") return "文档详情";
     if (view === "evidence") return "证据详情";
     if (view === "object") return "对象详情";
@@ -19,7 +18,7 @@ export function useAppNavigation({ clearSelection, importPreviewSelection, impor
 
   function selectNav(item) {
     if (item.status === "soon") return;
-    if (item.id === "readShelf" || item.id === "search") {
+    if (item.id === "readShelf" || item.id === "search" || item.id === "retrieval") {
       clearSelection();
     }
     if (item.id === "importPreview") {

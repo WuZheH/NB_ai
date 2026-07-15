@@ -317,16 +317,19 @@ function PdfLocationPreview({
   function rectStyle(rect) {
     const safeWidth = pageWidth || 1;
     const safeHeight = pageHeight || 1;
+    const top = location?.coordinate_origin === "pdf_bottom_left"
+      ? safeHeight - rect.y1
+      : rect.y0;
     return {
       left: `${(rect.x0 / safeWidth) * 100}%`,
-      top: `${(rect.y0 / safeHeight) * 100}%`,
+      top: `${(top / safeHeight) * 100}%`,
       width: `${((rect.x1 - rect.x0) / safeWidth) * 100}%`,
       height: `${((rect.y1 - rect.y0) / safeHeight) * 100}%`
     };
   }
 
   return (
-    <section className="pdfPreviewPanel" aria-label="PDF 定位预览">
+    <section className="pdfPreviewPanel" aria-label="PDF 定位预览" data-testid="pdf-location-preview">
       <div className="pdfPreviewHeader">
         <div>
           <h3>PDF 定位预览</h3>
@@ -365,13 +368,14 @@ function PdfLocationPreview({
         </div>
       )}
       <div className="pdfPreviewScroller" ref={scrollerRef}>
-        <div className="pdfPageCanvasWrap" style={canvasSizeStyle}>
-          <canvas ref={canvasRef} />
+        <div className="pdfPageCanvasWrap" style={canvasSizeStyle} data-testid="pdf-page-wrap">
+          <canvas ref={canvasRef} data-testid="pdf-page-canvas" />
           {renderState.status === "ready" && shouldShowHighlights && (
-            <div className="pdfHighlightLayer" aria-hidden="true">
+            <div className="pdfHighlightLayer" aria-hidden="true" data-testid="pdf-highlight-layer" data-strategy={pdfHighlightMode(location)}>
               {rects.map((rect, index) => (
                 <span
                   className="pdfHighlight"
+                  data-testid="pdf-highlight-rect"
                   data-mode={pdfHighlightMode(location)}
                   key={`${rect.x0}-${rect.y0}-${rect.x1}-${rect.y1}-${index}`}
                   style={rectStyle(rect)}
@@ -392,8 +396,8 @@ async function loadPdfJsForPreview() {
   }
   if (!pdfjsLoadPromise) {
     pdfjsLoadPromise = Promise.all([
-      import("pdfjs-dist"),
-      import("pdfjs-dist/build/pdf.worker.mjs?url")
+      import("pdfjs-dist/legacy/build/pdf.mjs"),
+      import("pdfjs-dist/legacy/build/pdf.worker.mjs?url")
     ]).then(([pdfjsLib, workerModule]) => {
       pdfjsLib.GlobalWorkerOptions.workerSrc = workerModule.default;
       return pdfjsLib;

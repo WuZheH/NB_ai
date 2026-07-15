@@ -144,6 +144,34 @@ try {
     };
   })()`);
 
+  const navigationScroll = await window.webContents.executeJavaScript(`(() => {
+    const results = document.querySelector('[data-testid="retrieval-results-scroll"]');
+    const preview = document.querySelector('[data-testid="search-preview-scroll"]');
+    const basket = document.querySelector('[data-testid="evidence-basket-scroll"]');
+    results.scrollTop = Math.min(480, results.scrollHeight - results.clientHeight);
+    preview.scrollTop = Math.min(100, preview.scrollHeight - preview.clientHeight);
+    basket.scrollTop = Math.min(50, basket.scrollHeight - basket.clientHeight);
+    results.dispatchEvent(new Event('scroll'));
+    preview.dispatchEvent(new Event('scroll'));
+    basket.dispatchEvent(new Event('scroll'));
+    return { results: results.scrollTop, preview: preview.scrollTop, basket: basket.scrollTop };
+  })()`);
+  await clickButton(window.webContents, "Research Workspace");
+  await waitFor(window.webContents, "[...document.querySelectorAll('button')].some((item) => item.textContent.trim() === '← 返回搜索')");
+  await clickButton(window.webContents, "← 返回搜索");
+  await waitFor(window.webContents, "document.querySelector('.localRetrievalQueryField input')?.value === '滚动测试' && document.querySelectorAll('[data-result-index]').length === 12 && document.querySelectorAll('.localEvidenceBasketItem').length === 12");
+  await waitFor(window.webContents, `Math.abs(document.querySelector('[data-testid="retrieval-results-scroll"]').scrollTop - ${navigationScroll.results}) <= 1`);
+  const navigationRestore = await window.webContents.executeJavaScript(`(() => ({
+    query: document.querySelector('.localRetrievalQueryField input')?.value,
+    resultCount: document.querySelectorAll('[data-result-index]').length,
+    basketCount: document.querySelectorAll('.localEvidenceBasketItem').length,
+    previewTitle: document.querySelector('[data-testid="search-preview-panel"] h2')?.textContent,
+    resultsScroll: document.querySelector('[data-testid="retrieval-results-scroll"]')?.scrollTop,
+    previewScroll: document.querySelector('[data-testid="search-preview-scroll"]')?.scrollTop,
+    basketScroll: document.querySelector('[data-testid="evidence-basket-scroll"]')?.scrollTop,
+    expectedScroll: ${JSON.stringify(navigationScroll)},
+  }))()`);
+
   const interactionMetrics = await exerciseNativeScrolling(window.webContents);
   console.log("SEARCH_SCROLL_PROBE_STAGE=interactions-complete");
   const metrics = await window.webContents.executeJavaScript(`(() => {
@@ -191,6 +219,7 @@ try {
     };
   })()`);
   metrics.interactions = interactionMetrics;
+  metrics.navigationRestore = navigationRestore;
   console.log(`SEARCH_SCROLL_METRICS=${JSON.stringify(metrics)}`);
   await sendCallback({ status: "ok", metrics });
 } catch (error) {

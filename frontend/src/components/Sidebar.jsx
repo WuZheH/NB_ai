@@ -6,8 +6,7 @@ const NAV_GROUPS = [
     label: "资料库",
     items: [
       { id: "readShelf", label: "已读书架", status: "active" },
-      { id: "search", label: "资料库搜索", status: "active" },
-      { id: "retrieval", label: "本地证据检索", status: "active" }
+      { id: "retrieval", label: "搜索", status: "active" }
     ]
   },
   {

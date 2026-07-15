@@ -85,14 +85,12 @@ async function runProbe() {
     const first = await window.webContents.executeJavaScript(`(() => ({ strategy: document.querySelector('[data-testid="pdf-highlight-layer"]')?.dataset.strategy, highlightCount: document.querySelectorAll('[data-testid="pdf-highlight-rect"]').length }))()`);
     const textInitial = await waitForHighlightGeometry("text_initial");
     await clickPreview(2);
-    await waitFor("document.querySelector('[data-testid=\"pdf-highlight-layer\"]')?.dataset.strategy === 'bbox' && document.querySelectorAll('[data-testid=\"pdf-highlight-rect\"]').length === 2", 16000, "pdf_second_preview");
+    await waitFor("document.querySelector('[data-testid=\"pdf-highlight-layer\"]')?.dataset.strategy === 'exact' && document.querySelectorAll('[data-testid=\"pdf-highlight-rect\"]').length === 2", 16000, "pdf_second_preview");
     const bboxInitial = await waitForHighlightGeometry("bbox_initial");
-    await window.webContents.executeJavaScript("document.querySelector('[aria-label=\"放大 PDF\"]').click()");
-    await waitFor("document.querySelector('.searchPdfZoom')?.textContent.trim() === '135%'", 8000, "pdf_zoom");
+    const zoomBefore = await window.webContents.executeJavaScript("Number.parseInt(document.querySelector('.pdfZoomControls span')?.textContent || '0', 10)");
+    await window.webContents.executeJavaScript(`(() => { const button=[...document.querySelectorAll('.pdfZoomControls button')].find((item)=>item.textContent.trim()==='+'); if(!button) throw new Error('pdf_zoom_button_missing'); button.click(); })()`);
+    await waitFor(`Number.parseInt(document.querySelector('.pdfZoomControls span')?.textContent || '0', 10) > ${zoomBefore}`, 8000, "pdf_zoom");
     const bboxZoomed = await waitForHighlightGeometry("bbox_zoomed");
-    await window.webContents.executeJavaScript("document.querySelector('[aria-label=\"旋转 PDF\"]').click()");
-    await waitFor("document.querySelector('[data-testid=\"pdf-fragment-preview\"]')?.dataset.pdfRotation === '90'", 8000, "pdf_rotation");
-    const bboxRotated = await waitForHighlightGeometry("bbox_rotated");
     const metrics = await window.webContents.executeJavaScript(`(() => {
       const pane=document.querySelector('[data-testid="retrieval-results-scroll"]');
       return {
@@ -102,7 +100,6 @@ async function runProbe() {
         second: { strategy: document.querySelector('[data-testid="pdf-highlight-layer"]')?.dataset.strategy, highlightCount: document.querySelectorAll('[data-testid="pdf-highlight-rect"]').length },
         bboxInitial: ${JSON.stringify(bboxInitial)},
         bboxZoomed: ${JSON.stringify(bboxZoomed)},
-        bboxRotated: ${JSON.stringify(bboxRotated)},
         resultScroll: { before: ${JSON.stringify(before)}, after: pane.scrollTop, sameNode: globalThis.__pdfPreviewResultsPane === pane },
         remoteWorkerRequested: ${JSON.stringify(remoteWorkerRequested)},
       };
@@ -167,6 +164,10 @@ function startFixtureServer() {
     if (request.method === "OPTIONS") return response.writeHead(204).end();
     if (url.pathname === "/api/v1/retrieval/notebook-search") return json(response, searchFixture());
     if (url.pathname.endsWith("/locator")) return json(response, locatorFixture(url.pathname.includes("fixture-02") ? 2 : 1));
+    if (url.pathname.startsWith("/api/v1/library/evidence/") && url.pathname.endsWith("/pdf-location")) {
+      const chunkId = Number(url.pathname.split("/").at(-2));
+      return json(response, { location: legacyLocationFixture(chunkId) });
+    }
     if (url.pathname.startsWith("/api/v1/retrieval/fragments/")) return json(response, detailFixture(url.pathname.includes("fixture-02") ? 2 : 1));
     if (url.pathname === "/api/v1/library/documents/1/pdf") {
       response.writeHead(200, { "content-type": "application/pdf", "accept-ranges": "bytes", "content-length": pdf.length });
@@ -186,7 +187,7 @@ function searchFixture() {
 }
 
 function resultFixture(rank) {
-  return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, document_title: `PDF fixture document ${rank}`, pdf_page: 1, final_rank: rank, final_score: 0.9, reranker_score: 0.8, semantic_score: 0.7, tags: [], provenance: [], text: "PDF preview target text across the rendered page" };
+  return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, chunk_id: rank, document_title: `PDF fixture document ${rank}`, pdf_page: 1, final_rank: rank, final_score: 0.9, reranker_score: 0.8, semantic_score: 0.7, tags: [], provenance: [], text: "PDF preview target text across the rendered page" };
 }
 
 function detailFixture(rank) {
@@ -196,6 +197,23 @@ function detailFixture(rank) {
 function locatorFixture(rank) {
   const bbox = rank === 2 ? [{ x0: 72, y0: 690, x1: 200, y1: 712 }, { x0: 205, y0: 690, x1: 300, y1: 712 }] : [];
   return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, pdf_page: 1, page_index: 0, page_label: "1", bbox: bbox.length ? { pageIndex: 0, rects: bbox.map((rect) => [rect.x0, rect.y0, rect.x1, rect.y1]) } : null, rects: bbox, selected_text: "PDF preview target text across the rendered page", locator_strategy: bbox.length ? "bbox" : "text", pdf_available: true, pdf_endpoint: "/api/v1/library/documents/1/pdf#page=1", warnings: [] };
+}
+
+function legacyLocationFixture(chunkId) {
+  const rects = chunkId === 2
+    ? [{ x0: 72, y0: 80, x1: 200, y1: 102 }, { x0: 205, y0: 80, x1: 300, y1: 102 }]
+    : [{ x0: 72, y0: 80, x1: 300, y1: 102 }];
+  return {
+    status: "located",
+    locator_status: "exact_text_location",
+    locator_reason: "fixture legacy locator",
+    pdf_page: 1,
+    page_width: 612,
+    page_height: 792,
+    rects,
+    highlight_count: rects.length,
+    visual_mode: "text_highlight",
+  };
 }
 
 async function submitSearch(query) {

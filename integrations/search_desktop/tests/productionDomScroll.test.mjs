@@ -44,6 +44,13 @@ test("production renderer keeps window fixed while results, preview, and evidenc
   assert.equal(metrics.resultState.previewSameNode, true, JSON.stringify(metrics.resultState));
   assert.ok(metrics.resultState.previewScrollBefore > 0, JSON.stringify(metrics.resultState));
   assert.ok(Math.abs(metrics.resultState.previewScrollAfter - metrics.resultState.previewScrollBefore) <= 1, JSON.stringify(metrics.resultState));
+  assert.equal(metrics.navigationRestore.query, "滚动测试", JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.resultCount, 12, JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.basketCount, 12, JSON.stringify(metrics.navigationRestore));
+  assert.match(metrics.navigationRestore.previewTitle, /生产构建滚动测试文档/, JSON.stringify(metrics.navigationRestore));
+  assert.ok(Math.abs(metrics.navigationRestore.resultsScroll - metrics.navigationRestore.expectedScroll.results) <= 1, JSON.stringify(metrics.navigationRestore));
+  assert.ok(Math.abs(metrics.navigationRestore.previewScroll - metrics.navigationRestore.expectedScroll.preview) <= 1, JSON.stringify(metrics.navigationRestore));
+  assert.ok(Math.abs(metrics.navigationRestore.basketScroll - metrics.navigationRestore.expectedScroll.basket) <= 1, JSON.stringify(metrics.navigationRestore));
   console.log(`production DOM scroll metrics: ${JSON.stringify(metrics)}`);
 });
 

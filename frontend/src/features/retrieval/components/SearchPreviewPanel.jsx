@@ -1,22 +1,20 @@
 import { useEffect, useState } from "react";
 import FragmentIdBlock from "../../../shared/components/FragmentIdBlock.jsx";
 import SourceBadge from "../../../shared/components/SourceBadge.jsx";
+import PdfLocationPreview from "../../../PdfLocationPreview.jsx";
+import { buildSearchPdfLocationPreview } from "../adapters/searchPdfLocationPreview.js";
 import { formatScore, pageLabel } from "../utils/notebookSearch.js";
-import PdfFragmentPreview from "./PdfFragmentPreview.jsx";
 
 export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onCopiedId }) {
   const result = state?.data;
   const isPdf = result?.source_type === "pdf_chunk";
   const locator = result?.locator;
+  const pdfPreview = buildSearchPdfLocationPreview(result);
   const [view, setView] = useState("text");
 
   useEffect(() => {
-    setView(locator?.pdf_available ? "pdf" : "text");
-  }, [result?.fragment_id, locator?.pdf_available]);
-
-  function showTextAfterPdfFailure() {
-    setView("text");
-  }
+    setView(pdfPreview.available ? "pdf" : "text");
+  }, [result?.fragment_id, pdfPreview.available]);
 
   return (
     <aside className="search-preview-panel searchPreviewPanel" aria-label="片段预览" data-testid="search-preview-panel">
@@ -45,7 +43,7 @@ export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onC
       {state?.status === "ready" && result && (
         <>
           <div className="searchPreviewTabs" role="tablist" aria-label="预览视图">
-            {locator?.pdf_available && (
+            {pdfPreview.available && (
               <button type="button" role="tab" aria-selected={view === "pdf"} className={`searchPreviewTab${view === "pdf" ? " isActive" : ""}`} onClick={() => setView("pdf")}>PDF</button>
             )}
             <button type="button" role="tab" aria-selected={view === "text"} className={`searchPreviewTab${view === "text" ? " isActive" : ""}`} onClick={() => setView("text")}>文本</button>
@@ -66,8 +64,8 @@ export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onC
             )}
           </div>
 
-          {view === "pdf" && locator?.pdf_available ? (
-            <PdfFragmentPreview fragment={result} locator={locator} onUnavailable={showTextAfterPdfFailure} />
+          {view === "pdf" && pdfPreview.available ? (
+            <PdfLocationPreview {...pdfPreview.props} />
           ) : (
             <TextPreview result={result} isPdf={isPdf} />
           )}

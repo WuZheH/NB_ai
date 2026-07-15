@@ -1989,3 +1989,8 @@
   align-items: center;
   gap: 12px;
 }
+.researchWorkspaceReturnBar {
+  display: flex;
+  justify-content: flex-start;
+  padding: 12px 16px 0;
+}

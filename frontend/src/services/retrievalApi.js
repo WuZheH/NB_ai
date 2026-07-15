@@ -26,6 +26,14 @@ export function fetchRetrievalFragmentLocator(fragmentId, options = {}) {
   return getJson(`${RETRIEVAL_FRAGMENT_ENDPOINT}/${encodeURIComponent(normalizedId)}/locator`, options);
 }
 
+export function fetchEvidencePdfLocation(chunkId, options = {}) {
+  const normalizedId = Number(chunkId);
+  if (!Number.isInteger(normalizedId) || normalizedId <= 0) {
+    return Promise.reject(new Error("chunk_id is required"));
+  }
+  return getJson(`/api/v1/library/evidence/${normalizedId}/pdf-location`, options);
+}
+
 export function resolveRetrievalSelection(selector) {
   return postJson(RETRIEVAL_SELECTION_ENDPOINT, selector);
 }
