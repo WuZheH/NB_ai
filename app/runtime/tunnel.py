@@ -80,7 +80,7 @@ class TunnelDriverBoundary:
                         self.config.tunnel.profile,
                         "--explain",
                     ],
-                    cwd=str(self.config.paths.project_root),
+                    cwd=str(self.config.paths.runtime_root),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -115,7 +115,7 @@ class TunnelDriverBoundary:
             name="tunnel",
             executable=executable,
             arguments=("run", "--profile", self.config.tunnel.profile),
-            cwd=self.config.paths.project_root,
+            cwd=self.config.paths.runtime_root,
             environment={},
         )
 
@@ -142,7 +142,7 @@ class TunnelDriverBoundary:
                     "--mcp-server-url",
                     self.config.tunnel_target,
                 ],
-                cwd=str(self.config.paths.project_root),
+                cwd=str(self.config.paths.runtime_root),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

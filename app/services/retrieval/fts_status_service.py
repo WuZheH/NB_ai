@@ -13,7 +13,7 @@ from app.core.paths import (
     FTS_DB_PATH,
     FTS_INDEX_DIR,
     FTS_MANIFEST_PATH,
-    PROJECT_ROOT,
+    RUNTIME_PROJECT_ROOT,
 )
 from app.services.retrieval.fts_schema import (
     INDEX_SCHEMA_VERSION,
@@ -48,7 +48,7 @@ from app.services.retrieval.sources.zotero_native_annotation_adapter import (
 DEFAULT_INDEX_DIR = FTS_INDEX_DIR
 DEFAULT_INDEX_PATH = FTS_DB_PATH
 DEFAULT_MANIFEST_PATH = FTS_MANIFEST_PATH
-DEFAULT_QUERY_ALIASES_PATH = PROJECT_ROOT / "config" / "retrieval_query_aliases.json"
+DEFAULT_QUERY_ALIASES_PATH = RUNTIME_PROJECT_ROOT / "config" / "retrieval_query_aliases.json"
 
 EXPECTED_ADAPTER_VERSIONS = {
     "pdf_chunk": PDF_CHUNK_ADAPTER_VERSION,

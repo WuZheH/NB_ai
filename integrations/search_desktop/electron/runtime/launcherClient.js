@@ -24,17 +24,26 @@ export class LauncherClient {
     if (!ALLOWED_COMMANDS.has(command)) throw new Error("runtime_command_not_allowed");
     if (!extraArguments.every(isSafeArgument)) throw new Error("runtime_argument_not_allowed");
     const args = ["-B", this.config.runtimeScript, command, ...extraArguments];
+    const environment = {
+      ...process.env,
+      NOTEBOOK_AI_RUNTIME_ROOT: this.config.runtimeRoot,
+      NOTEBOOK_AI_DATA_PROJECT_ROOT: this.config.dataProjectRoot,
+      NOTEBOOK_AI_PYTHON_EXE: this.config.pythonExe,
+      NOTEBOOK_AI_NODE_EXE: this.config.nodeExe,
+    };
+    // The formal runtime must never import from a developer worktree through
+    // an ambient shell setting. The packaged runtime root is inserted by the
+    // launcher itself and all executables are explicit.
+    delete environment.PYTHONPATH;
+    delete environment.NODE_PATH;
+    delete environment.NOTEBOOK_AI_PROJECT_ROOT;
     return new Promise((resolve, reject) => {
       const child = this.spawnProcess(this.config.pythonExe, args, {
-        cwd: this.config.projectRoot,
+        cwd: this.config.runtimeRoot,
         windowsHide: true,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          NOTEBOOK_AI_PYTHON_EXE: this.config.pythonExe,
-          NOTEBOOK_AI_NODE_EXE: this.config.nodeExe,
-        },
+        env: environment,
       });
       let stdout = "";
       let stderr = "";

@@ -27,6 +27,6 @@ def build_autostart_contract(config: RuntimeConfig) -> AutostartContract:
         task_name=AUTOSTART_TASK_NAME,
         executable=config.python_exe,
         arguments=("-B", str(config.paths.launcher_script), "start"),
-        working_directory=config.paths.project_root,
+        working_directory=config.paths.runtime_root,
         delay_seconds=AUTOSTART_DELAY_SECONDS,
     )

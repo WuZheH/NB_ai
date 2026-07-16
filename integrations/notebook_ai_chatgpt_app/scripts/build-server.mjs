@@ -12,7 +12,6 @@ await build({
   entryPoints: [resolve(packageRoot, "server", "index.ts")],
   outfile: resolve(outputDirectory, "index.js"),
   bundle: true,
-  packages: "external",
   platform: "node",
   format: "esm",
   target: "node20",

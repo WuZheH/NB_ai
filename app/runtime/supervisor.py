@@ -266,7 +266,7 @@ class RuntimeSupervisor:
             name="zotero_note_index",
             executable=self.config.python_exe,
             arguments=(),
-            cwd=self.config.paths.project_root,
+            cwd=self.config.paths.runtime_root,
         )
         try:
             process = self.process_manager.attach(spec, previous.identity)
@@ -450,7 +450,7 @@ class RuntimeSupervisor:
                 "--port",
                 str(self.config.backend_port),
             ),
-            cwd=self.config.paths.project_root,
+            cwd=self.config.paths.runtime_root,
             environment={"PYTHONDONTWRITEBYTECODE": "1"},
             port=self.config.backend_port,
         )
@@ -893,7 +893,7 @@ class RuntimeSupervisor:
         try:
             process = subprocess.Popen(
                 [str(self.config.python_exe), "-B", str(script)],
-                cwd=str(self.config.paths.project_root),
+                cwd=str(self.config.paths.runtime_root),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -935,7 +935,7 @@ class RuntimeSupervisor:
                 name="zotero_note_index",
                 executable=self.config.python_exe,
                 arguments=("-B", str(script)),
-                cwd=self.config.paths.project_root,
+                cwd=self.config.paths.runtime_root,
             ),
             identity,
             process,
@@ -1133,7 +1133,7 @@ class RuntimeController:
                 str(self.config.paths.launcher_script),
                 "supervise",
             ),
-            cwd=self.config.paths.project_root,
+            cwd=self.config.paths.runtime_root,
             environment={"PYTHONDONTWRITEBYTECODE": "1"},
         )
         try:

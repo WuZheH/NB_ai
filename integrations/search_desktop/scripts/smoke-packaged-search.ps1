@@ -20,7 +20,7 @@ if (-not $ExecutablePath) {
     $ExecutablePath = Join-Path $DesktopRoot "dist\win-unpacked\Search.exe"
 }
 if (-not $ProjectRoot) {
-    $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $DesktopRoot "..\.."))
+    $ProjectRoot = "D:\LEARNING\Tools\notebook_ai"
 }
 if (-not $TestRoot) {
     $TestRoot = Join-Path $ProjectRoot ".codex_tmp\search-desktop-startup-0.1.3\packaged-smoke"
@@ -30,12 +30,17 @@ $ExecutablePath = [System.IO.Path]::GetFullPath($ExecutablePath)
 $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
 $PythonExe = [System.IO.Path]::GetFullPath($PythonExe)
 $TestRoot = [System.IO.Path]::GetFullPath($TestRoot)
-$LauncherScript = Join-Path $ProjectRoot "scripts\runtime\notebook_ai_launcher.py"
+$RuntimeRoot = Join-Path (Split-Path -Parent $ExecutablePath) "resources\app\runtime-project"
+$RuntimeRoot = [System.IO.Path]::GetFullPath($RuntimeRoot)
+$LauncherScript = Join-Path $RuntimeRoot "scripts\runtime\notebook_ai_launcher.py"
 
 foreach ($RequiredPath in @($ExecutablePath, $PythonExe, $LauncherScript)) {
     if (-not (Test-Path -LiteralPath $RequiredPath -PathType Leaf)) {
         throw "search_packaged_smoke_required_file_missing:$RequiredPath"
     }
+}
+if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot "data") -PathType Container)) {
+    throw "search_packaged_smoke_data_project_root_missing:$ProjectRoot"
 }
 
 function Get-ExactSearchProcesses {
@@ -211,6 +216,11 @@ $OriginalEnvironment = @{
     TEMP = $env:TEMP
     TMP = $env:TMP
     ELECTRON_DISABLE_CRASH_REPORTING = $env:ELECTRON_DISABLE_CRASH_REPORTING
+    NOTEBOOK_AI_RUNTIME_ROOT = $env:NOTEBOOK_AI_RUNTIME_ROOT
+    NOTEBOOK_AI_DATA_PROJECT_ROOT = $env:NOTEBOOK_AI_DATA_PROJECT_ROOT
+    NOTEBOOK_AI_PROJECT_ROOT = $env:NOTEBOOK_AI_PROJECT_ROOT
+    PYTHONPATH = $env:PYTHONPATH
+    NODE_PATH = $env:NODE_PATH
 }
 $PortOwnersBefore = Get-PortOwners -Ports @(8000, 8787)
 $SearchProcess = $null
@@ -225,6 +235,11 @@ try {
     $env:TEMP = $TempDirectory
     $env:TMP = $TempDirectory
     $env:ELECTRON_DISABLE_CRASH_REPORTING = "1"
+    $env:NOTEBOOK_AI_RUNTIME_ROOT = $RuntimeRoot
+    $env:NOTEBOOK_AI_DATA_PROJECT_ROOT = $ProjectRoot
+    Remove-Item "Env:NOTEBOOK_AI_PROJECT_ROOT" -ErrorAction SilentlyContinue
+    Remove-Item "Env:PYTHONPATH" -ErrorAction SilentlyContinue
+    Remove-Item "Env:NODE_PATH" -ErrorAction SilentlyContinue
 
     # The packaged-executable assertion is timed against an already healthy
     # local runtime, matching the normal persistent Desktop runtime.  This

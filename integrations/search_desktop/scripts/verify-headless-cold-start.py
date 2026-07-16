@@ -36,7 +36,10 @@ def main() -> int:
     if os.name != "nt":
         raise RuntimeError("headless_cold_start_windows_only")
     executable = arguments.executable.resolve(strict=True)
-    project_root = arguments.project_root.resolve(strict=True)
+    data_project_root = arguments.project_root.resolve(strict=True)
+    runtime_root = (
+        executable.parent / "resources" / "app" / "runtime-project"
+    ).resolve(strict=True)
     python_exe = arguments.python_exe.resolve(strict=True)
     node_exe = arguments.node_exe.resolve(strict=True)
     test_root = arguments.test_root.resolve()
@@ -59,7 +62,8 @@ def main() -> int:
             "TMP": str(temp_dir),
             "PYTHONDONTWRITEBYTECODE": "1",
             "ELECTRON_DISABLE_CRASH_REPORTING": "1",
-            "NOTEBOOK_AI_PROJECT_ROOT": str(project_root),
+            "NOTEBOOK_AI_RUNTIME_ROOT": str(runtime_root),
+            "NOTEBOOK_AI_DATA_PROJECT_ROOT": str(data_project_root),
             "NOTEBOOK_AI_PYTHON_EXE": str(python_exe),
             "NOTEBOOK_AI_NODE_EXE": str(node_exe),
             "NOTEBOOK_AI_BACKEND_PORT": str(arguments.backend_port),
@@ -67,7 +71,10 @@ def main() -> int:
             "NOTEBOOK_AI_MCP_PORT": str(arguments.mcp_port),
         }
     )
-    launcher = project_root / "scripts" / "runtime" / "notebook_ai_launcher.py"
+    environment.pop("NOTEBOOK_AI_PROJECT_ROOT", None)
+    environment.pop("PYTHONPATH", None)
+    environment.pop("NODE_PATH", None)
+    launcher = runtime_root / "scripts" / "runtime" / "notebook_ai_launcher.py"
     stdout_path = test_root / "search.stdout.log"
     stderr_path = test_root / "search.stderr.log"
     baseline = snapshot_windows()
@@ -114,7 +121,7 @@ def main() -> int:
         status = wait_runtime_owned_ready(
             python_exe,
             launcher,
-            project_root,
+            runtime_root,
             environment,
             timeout_seconds=15.0,
         )
@@ -183,7 +190,7 @@ def main() -> int:
         primary_error = exc
     finally:
         try:
-            run_launcher(python_exe, launcher, project_root, environment, "stop")
+            run_launcher(python_exe, launcher, runtime_root, environment, "stop")
         except BaseException as exc:
             if primary_error is None:
                 primary_error = exc
@@ -298,7 +305,7 @@ def is_forbidden_window(window: dict[str, Any]) -> bool:
 def run_launcher(
     python_exe: Path,
     launcher: Path,
-    project_root: Path,
+    runtime_root: Path,
     environment: dict[str, str],
     command: str,
 ) -> dict[str, Any]:
@@ -307,7 +314,7 @@ def run_launcher(
     startup_info.wShowWindow = subprocess.SW_HIDE
     completed = subprocess.run(
         [str(python_exe), "-B", str(launcher), command],
-        cwd=str(project_root),
+        cwd=str(runtime_root),
         env=environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -330,7 +337,7 @@ def run_launcher(
 def wait_runtime_owned_ready(
     python_exe: Path,
     launcher: Path,
-    project_root: Path,
+    runtime_root: Path,
     environment: dict[str, str],
     *,
     timeout_seconds: float,
@@ -338,7 +345,7 @@ def wait_runtime_owned_ready(
     deadline = time.monotonic() + timeout_seconds
     last: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        last = run_launcher(python_exe, launcher, project_root, environment, "status")
+        last = run_launcher(python_exe, launcher, runtime_root, environment, "status")
         components = last.get("components") or {}
         if all(
             (components.get(name) or {}).get("owned") is True

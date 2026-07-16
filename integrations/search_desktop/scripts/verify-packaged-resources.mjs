@@ -14,6 +14,16 @@ export const PACKAGED_RESOURCE_CONTRACT = Object.freeze([
   "resources/app/electron/main/index.js",
   "resources/app/electron/preload/index.cjs",
   "resources/app/assets/search.ico",
+  "resources/app/runtime-project/app/main.py",
+  "resources/app/runtime-project/app/runtime/config.py",
+  "resources/app/runtime-project/app/models/__init__.py",
+  "resources/app/runtime-project/scripts/runtime/notebook_ai_launcher.py",
+  "resources/app/runtime-project/scripts/index/status_zotero_note_vectors.py",
+  "resources/app/runtime-project/scripts/index/sync_zotero_note_vectors.py",
+  "resources/app/runtime-project/config/retrieval_query_aliases.json",
+  "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/package.json",
+  "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/index.js",
+  "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/web/dist/widget.html",
 ]);
 
 const SOURCE_RESOURCE_CONTRACT = Object.freeze(new Map([
@@ -24,6 +34,16 @@ const SOURCE_RESOURCE_CONTRACT = Object.freeze(new Map([
   ["resources/app/electron/main/index.js", join(DESKTOP_ROOT, "electron/main/index.js")],
   ["resources/app/electron/preload/index.cjs", join(DESKTOP_ROOT, "electron/preload/index.cjs")],
   ["resources/app/assets/search.ico", join(DESKTOP_ROOT, "assets/search.ico")],
+  ["resources/app/runtime-project/app/main.py", resolve(DESKTOP_ROOT, "../../app/main.py")],
+  ["resources/app/runtime-project/app/runtime/config.py", resolve(DESKTOP_ROOT, "../../app/runtime/config.py")],
+  ["resources/app/runtime-project/app/models/__init__.py", resolve(DESKTOP_ROOT, "../../app/models/__init__.py")],
+  ["resources/app/runtime-project/scripts/runtime/notebook_ai_launcher.py", resolve(DESKTOP_ROOT, "../../scripts/runtime/notebook_ai_launcher.py")],
+  ["resources/app/runtime-project/scripts/index/status_zotero_note_vectors.py", resolve(DESKTOP_ROOT, "../../scripts/index/status_zotero_note_vectors.py")],
+  ["resources/app/runtime-project/scripts/index/sync_zotero_note_vectors.py", resolve(DESKTOP_ROOT, "../../scripts/index/sync_zotero_note_vectors.py")],
+  ["resources/app/runtime-project/config/retrieval_query_aliases.json", resolve(DESKTOP_ROOT, "../../config/retrieval_query_aliases.json")],
+  ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/package.json", resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app/package.json")],
+  ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/index.js", resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app/dist/server/index.js")],
+  ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/web/dist/widget.html", resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app/web/dist/widget.html")],
 ]));
 
 export async function verifySourceResources() {
@@ -31,6 +51,11 @@ export async function verifySourceResources() {
     await requireNonEmptyFile(sourcePath, packagedPath);
   }
   await verifyRequiredTokens(SOURCE_RESOURCE_CONTRACT.get("resources/search-assets/design-system/tokens.css"));
+  await verifySelfContainedMcp(
+    SOURCE_RESOURCE_CONTRACT.get(
+      "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/index.js",
+    ),
+  );
   return Object.freeze({ status: "ready", scope: "source", count: SOURCE_RESOURCE_CONTRACT.size });
 }
 
@@ -40,7 +65,48 @@ export async function verifyPackagedResources(packagedRoot = DEFAULT_PACKAGED_RO
     await requireNonEmptyFile(join(root, ...relativePath.split("/")), relativePath);
   }
   await verifyRequiredTokens(join(root, "resources", "search-assets", "design-system", "tokens.css"));
+  await verifySelfContainedMcp(join(
+    root,
+    "resources",
+    "app",
+    "runtime-project",
+    "integrations",
+    "notebook_ai_chatgpt_app",
+    "dist",
+    "server",
+    "index.js",
+  ));
+  for (const forbidden of [
+    "resources/app/runtime-project/data",
+    "resources/app/runtime-project/model_cache",
+    "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/node_modules",
+  ]) {
+    await requireMissingPath(join(root, ...forbidden.split("/")), forbidden);
+  }
   return Object.freeze({ status: "ready", scope: "packaged", count: PACKAGED_RESOURCE_CONTRACT.length });
+}
+
+async function verifySelfContainedMcp(serverPath) {
+  const source = await readFile(serverPath, "utf8");
+  const executableSource = source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  if (
+    /(?:^|\n)\s*(?:import|export)\b[^\n]*from\s+["'](?:@modelcontextprotocol\/|zod["'])/.test(executableSource)
+    || /(?:import|require)\(\s*["'](?:@modelcontextprotocol\/|zod["'])/.test(executableSource)
+  ) {
+    throw new Error("search_packaging_mcp_external_dependency_detected");
+  }
+}
+
+async function requireMissingPath(path, contractPath) {
+  try {
+    await stat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`search_packaging_forbidden_payload:${contractPath}`);
 }
 
 export async function verifyRequiredTokens(tokensPath) {

@@ -41,7 +41,7 @@ test("startup logger preserves stage and original error details", async () => {
   const logger = createStartupLogger({
     userDataPath,
     version: "0.1.3",
-    buildId: "20260717-unified-backend-r4-headless-final",
+    buildId: "20260717-formal-runtime-self-contained",
     isPackaged: true,
     resourcesPath: "D:\\Search\\resources",
     now: () => new Date("2026-07-14T10:00:00.000Z"),
@@ -63,7 +63,7 @@ test("startup logger preserves stage and original error details", async () => {
   assert.equal(entries[1].errorMessage, error.message);
   assert.match(entries[1].errorStack, /search_design_token_missing/);
   assert.equal(entries[1].version, "0.1.3");
-  assert.equal(entries[1].buildId, "20260717-unified-backend-r4-headless-final");
+  assert.equal(entries[1].buildId, "20260717-formal-runtime-self-contained");
   assert.equal(entries[1].isPackaged, true);
 });
 
@@ -92,7 +92,7 @@ test("stage completion records the last successful startup stage", async () => {
   const logger = createStartupLogger({
     userDataPath: join(TEST_ROOT, "completed-stage"),
     version: "0.1.3",
-    buildId: "20260717-unified-backend-r4-headless-final",
+    buildId: "20260717-formal-runtime-self-contained",
     isPackaged: false,
     resourcesPath: "D:\\Search\\resources",
   });
@@ -138,7 +138,7 @@ test("startup failure reaches stderr, the log, and exit code 1", async () => {
   const logger = createStartupLogger({
     userDataPath: join(TEST_ROOT, "reported-failure"),
     version: "0.1.3",
-    buildId: "20260717-unified-backend-r4-headless-final",
+    buildId: "20260717-formal-runtime-self-contained",
     isPackaged: true,
     resourcesPath: "D:\\Search\\resources",
   });

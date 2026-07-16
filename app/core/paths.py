@@ -1,8 +1,24 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_data_project_root() -> Path:
+    configured = os.environ.get("NOTEBOOK_AI_DATA_PROJECT_ROOT", "").strip()
+    if not configured:
+        return RUNTIME_PROJECT_ROOT
+    if "\x00" in configured:
+        raise RuntimeError("NOTEBOOK_AI_DATA_PROJECT_ROOT is invalid")
+    return Path(configured).expanduser().resolve()
+
+
+# Python code may live inside the packaged Electron application while all
+# production data remains in the stable NOTEBOOK_AI project directory.
+PROJECT_ROOT = _resolve_data_project_root()
+DATA_PROJECT_ROOT = PROJECT_ROOT
 DATA_DIR = PROJECT_ROOT / "data"
 DB_DIR = DATA_DIR / "db"
 DEFAULT_DB_PATH = DB_DIR / "research_memory.db"
@@ -30,7 +46,9 @@ ZOTERO_NOTE_VECTOR_DIR = VECTOR_STORE_DIR / "zotero_user_notes_v1"
 # The checked-in project sits next to the shared model_cache directory.  The
 # model services retain their existing environment-variable resolution and
 # defaults; these constants centralize the same default locations only.
-MODEL_CACHE_ROOT = PROJECT_ROOT.parent / "model_cache"
+MODEL_CACHE_ROOT = Path(
+    os.environ.get("NOTEBOOK_AI_MODEL_CACHE_ROOT", r"D:\LEARNING\Tools\model_cache")
+).expanduser().resolve()
 EMBEDDING_MODEL_PATH = MODEL_CACHE_ROOT / "Qwen3-Embedding-0.6B"
 RERANKER_MODEL_PATH = MODEL_CACHE_ROOT / "Qwen3-Reranker-0.6B"
 

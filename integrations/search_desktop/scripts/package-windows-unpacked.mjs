@@ -10,10 +10,13 @@ import {
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = resolve(SCRIPT_DIR, "..");
+const MCP_ROOT = resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app");
 const FINAL_EXECUTABLE = join(DEFAULT_PACKAGED_ROOT, "Search.exe");
 
 export async function packageWindowsUnpacked() {
   try {
+    await runNode(join(MCP_ROOT, "scripts", "build-widget.mjs"));
+    await runNode(join(MCP_ROOT, "scripts", "build-server.mjs"));
     await verifySourceResources();
     await runNode(join(DESKTOP_ROOT, "node_modules", "electron-builder", "cli.js"), [
       "--win",

@@ -2,42 +2,88 @@ import assert from "node:assert/strict";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { resolveDesktopConfig } from "../electron/main/config.js";
+import {
+  DEFAULT_DATA_PROJECT_ROOT,
+  resolveDesktopConfig,
+} from "../electron/main/config.js";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const FIXTURE = join(ROOT, ".test-work-packaged-config");
 
-test("packaged Search resolves runtime from its local sidecar and UI from resources", async () => {
-  const projectRoot = join(FIXTURE, "project");
+test("packaged Search resolves code from resources/app and data from the stable sidecar", async () => {
   const executablePath = join(FIXTURE, "Search.exe");
   const resourcesPath = join(FIXTURE, "resources");
+  const runtimeRoot = join(resourcesPath, "app", "runtime-project");
   const pythonExe = join(FIXTURE, "python.exe");
+  const nodeExe = join(FIXTURE, "node.exe");
   try {
-    await mkdir(join(projectRoot, "app"), { recursive: true });
-    await mkdir(join(projectRoot, "scripts", "runtime"), { recursive: true });
+    await writeRuntimeFixture(runtimeRoot);
     await mkdir(join(resourcesPath, "search-assets", "frontend"), { recursive: true });
     await mkdir(join(resourcesPath, "search-assets", "design-system"), { recursive: true });
-    await writeFile(join(projectRoot, "app", "main.py"), "", "utf8");
-    await writeFile(join(projectRoot, "scripts", "runtime", "notebook_ai_launcher.py"), "", "utf8");
     await writeFile(executablePath, "", "utf8");
     await writeFile(pythonExe, "", "utf8");
+    await writeFile(nodeExe, "", "utf8");
     await writeFile(
       join(FIXTURE, "search-desktop.local.json"),
-      JSON.stringify({ schemaVersion: 1, projectRoot, pythonExe }),
+      JSON.stringify({
+        schemaVersion: 2,
+        dataProjectRoot: DEFAULT_DATA_PROJECT_ROOT,
+        pythonExe,
+        nodeExe,
+      }),
       "utf8",
     );
 
     const config = resolveDesktopConfig({
-      env: {},
+      env: { NOTEBOOK_AI_PROJECT_ROOT: join(FIXTURE, "ignored-development-root") },
       executablePath,
       resourcesPath,
       isPackaged: true,
     });
-    assert.equal(config.projectRoot, projectRoot);
+    assert.equal(config.runtimeRoot, runtimeRoot);
+    assert.equal(config.dataProjectRoot, resolve(DEFAULT_DATA_PROJECT_ROOT));
+    assert.equal(config.projectRoot, config.dataProjectRoot);
     assert.equal(config.pythonExe, pythonExe);
+    assert.equal(config.nodeExe, nodeExe);
     assert.equal(config.frontendDist, join(resourcesPath, "search-assets", "frontend"));
     assert.equal(config.designSystemRoot, join(resourcesPath, "search-assets", "design-system"));
+    assert.equal(config.runtimeAvailable, true);
   } finally {
     await rm(FIXTURE, { recursive: true, force: true });
   }
 });
+
+test("packaged Search rejects a data root under notebook_ai_worktrees", async () => {
+  const executablePath = join(FIXTURE, "Search.exe");
+  const resourcesPath = join(FIXTURE, "resources");
+  try {
+    await writeRuntimeFixture(join(resourcesPath, "app", "runtime-project"));
+    await writeFile(executablePath, "", "utf8");
+    assert.throws(
+      () => resolveDesktopConfig({
+        env: { NOTEBOOK_AI_DATA_PROJECT_ROOT: FIXTURE },
+        executablePath,
+        resourcesPath,
+        isPackaged: true,
+      }),
+      /search_data_project_root_must_be_stable/,
+    );
+  } finally {
+    await rm(FIXTURE, { recursive: true, force: true });
+  }
+});
+
+async function writeRuntimeFixture(runtimeRoot) {
+  const files = [
+    "app/main.py",
+    "scripts/runtime/notebook_ai_launcher.py",
+    "config/retrieval_query_aliases.json",
+    "integrations/notebook_ai_chatgpt_app/dist/server/index.js",
+    "integrations/notebook_ai_chatgpt_app/web/dist/widget.html",
+  ];
+  for (const relativePath of files) {
+    const path = join(runtimeRoot, ...relativePath.split("/"));
+    await mkdir(resolve(path, ".."), { recursive: true });
+    await writeFile(path, "fixture", "utf8");
+  }
+}

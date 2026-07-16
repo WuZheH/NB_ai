@@ -4,8 +4,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 // by the Desktop contract suite before packaging.
 const productMetadata = Object.freeze({
   version: "0.1.3",
-  buildId: "20260717-unified-backend-r4-headless-final",
-  rendererAssetVersion: "0.1.3-unified-backend-r4-headless-final",
+  buildId: "20260717-formal-runtime-self-contained",
+  rendererAssetVersion: "0.1.3-formal-runtime-self-contained",
 });
 
 const channels = Object.freeze({

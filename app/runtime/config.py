@@ -8,7 +8,7 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import PROJECT_ROOT, RUNTIME_PROJECT_ROOT
 from app.runtime.contracts import TunnelDriver
 
 
@@ -28,7 +28,8 @@ FORBIDDEN_SECRET_CONFIG_KEYS = frozenset(
 
 @dataclass(frozen=True)
 class RuntimePaths:
-    project_root: Path
+    runtime_root: Path
+    data_project_root: Path
     local_app_data: Path
     runtime_dir: Path
     logs_dir: Path
@@ -49,20 +50,34 @@ class RuntimePaths:
     def resolve(
         cls,
         *,
-        project_root: str | Path = PROJECT_ROOT,
+        runtime_root: str | Path | None = None,
+        data_project_root: str | Path | None = None,
+        project_root: str | Path | None = None,
         env: Mapping[str, str] | None = None,
     ) -> "RuntimePaths":
         environment = os.environ if env is None else env
         local_value = environment.get("LOCALAPPDATA")
         if not local_value:
             raise RuntimeError("LOCALAPPDATA is required for the Windows runtime launcher")
-        root = Path(project_root).resolve()
+        if runtime_root is not None and project_root is not None:
+            if Path(runtime_root).resolve() != Path(project_root).resolve():
+                raise ValueError("runtime_root conflicts with legacy project_root")
+        configured_runtime_root = runtime_root or project_root or RUNTIME_PROJECT_ROOT
+        root = Path(configured_runtime_root).resolve()
+        configured_data_root = (
+            data_project_root
+            or environment.get("NOTEBOOK_AI_DATA_PROJECT_ROOT")
+            or project_root
+            or PROJECT_ROOT
+        )
+        data_root = Path(configured_data_root).resolve()
         local_root = Path(local_value).expanduser().resolve() / "NOTEBOOK_AI"
         runtime_dir = local_root / "runtime"
         logs_dir = local_root / "logs"
         config_dir = local_root / "config"
         return cls(
-            project_root=root,
+            runtime_root=root,
+            data_project_root=data_root,
             local_app_data=local_root,
             runtime_dir=runtime_dir,
             logs_dir=logs_dir,
@@ -86,6 +101,12 @@ class RuntimePaths:
                 / "index.js"
             ),
         )
+
+    @property
+    def project_root(self) -> Path:
+        """Compatibility alias for code that still names the runtime cwd root."""
+
+        return self.runtime_root
 
     def ensure(self) -> None:
         for directory in (
@@ -155,11 +176,18 @@ class RuntimeConfig:
     def load(
         cls,
         *,
-        project_root: str | Path = PROJECT_ROOT,
+        runtime_root: str | Path | None = None,
+        data_project_root: str | Path | None = None,
+        project_root: str | Path | None = None,
         env: Mapping[str, str] | None = None,
     ) -> "RuntimeConfig":
         environment = os.environ if env is None else env
-        paths = RuntimePaths.resolve(project_root=project_root, env=environment)
+        paths = RuntimePaths.resolve(
+            runtime_root=runtime_root,
+            data_project_root=data_project_root,
+            project_root=project_root,
+            env=environment,
+        )
         stored: dict[str, Any] = {}
         if paths.runtime_config_file.is_file():
             stored = json.loads(paths.runtime_config_file.read_text(encoding="utf-8"))

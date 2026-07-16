@@ -16,8 +16,8 @@ test("product brand is Search while NOTEBOOK_AI runtime compatibility remains", 
   assert.equal(packageJson.version, "0.1.3");
   assert.deepEqual(productMetadata, {
     version: "0.1.3",
-    buildId: "20260717-unified-backend-r4-headless-final",
-    rendererAssetVersion: "0.1.3-unified-backend-r4-headless-final",
+    buildId: "20260717-formal-runtime-self-contained",
+    rendererAssetVersion: "0.1.3-formal-runtime-self-contained",
   });
   assert.equal(packageJson.devDependencies.electron, "37.2.6");
   const config = await readFile(join(ROOT, "electron", "main", "config.js"), "utf8");
@@ -34,6 +34,12 @@ test("runtime launcher is a direct hidden child with controlled output pipes", a
   assert.match(launcher, /stdio:\s*\["ignore",\s*"pipe",\s*"pipe"\]/);
   assert.match(launcher, /NOTEBOOK_AI_PYTHON_EXE:\s*this\.config\.pythonExe/);
   assert.match(launcher, /NOTEBOOK_AI_NODE_EXE:\s*this\.config\.nodeExe/);
+  assert.match(launcher, /NOTEBOOK_AI_RUNTIME_ROOT:\s*this\.config\.runtimeRoot/);
+  assert.match(launcher, /NOTEBOOK_AI_DATA_PROJECT_ROOT:\s*this\.config\.dataProjectRoot/);
+  assert.match(launcher, /cwd:\s*this\.config\.runtimeRoot/);
+  assert.match(launcher, /delete environment\.PYTHONPATH/);
+  assert.match(launcher, /delete environment\.NODE_PATH/);
+  assert.match(launcher, /delete environment\.NOTEBOOK_AI_PROJECT_ROOT/);
   assert.doesNotMatch(launcher, /powershell\.exe|cmd\.exe|\.cmd["']|\.bat["']/i);
 });
 

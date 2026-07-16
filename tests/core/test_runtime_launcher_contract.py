@@ -131,7 +131,29 @@ def test_runtime_paths_are_scoped_to_current_user_local_app_data(tmp_path: Path)
     assert config.paths.logs_dir == (tmp_path / "local" / "NOTEBOOK_AI" / "logs").resolve()
     assert config.paths.config_dir == (tmp_path / "local" / "NOTEBOOK_AI" / "config").resolve()
     assert config.python_exe.name == "python.exe"
+    assert config.paths.runtime_root == (tmp_path / "project").resolve()
+    assert config.paths.data_project_root == config.paths.runtime_root
     assert config.paths.mcp_server_entry.as_posix().endswith("dist/server/index.js")
+
+
+def test_runtime_paths_split_packaged_code_from_stable_data(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "package" / "runtime-project"
+    data_root = tmp_path / "stable-project"
+    runtime_root.mkdir(parents=True)
+    data_root.mkdir()
+    config = RuntimeConfig.load(
+        runtime_root=runtime_root,
+        data_project_root=data_root,
+        env={
+            "LOCALAPPDATA": str(tmp_path / "local"),
+            "NOTEBOOK_AI_PYTHON_EXE": str(tmp_path / "python.exe"),
+            "NOTEBOOK_AI_NODE_EXE": str(tmp_path / "node.exe"),
+        },
+    )
+    assert config.paths.runtime_root == runtime_root.resolve()
+    assert config.paths.data_project_root == data_root.resolve()
+    assert config.paths.launcher_script.is_relative_to(runtime_root)
+    assert config.paths.mcp_server_entry.is_relative_to(runtime_root)
 
 
 def test_runtime_cli_exposes_lifecycle_and_tunnel_commands() -> None:

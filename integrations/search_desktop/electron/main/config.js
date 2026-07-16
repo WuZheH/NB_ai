@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 export const DESKTOP_ROOT = resolve(MODULE_DIR, "../..");
 export const SOURCE_PROJECT_ROOT = resolve(DESKTOP_ROOT, "../..");
+export const PACKAGED_RUNTIME_DIRECTORY = "runtime-project";
+export const DEFAULT_DATA_PROJECT_ROOT = "D:\\LEARNING\\Tools\\notebook_ai";
 export const DEFAULT_PYTHON_EXE =
   "D:\\LEARNING\\Tools\\ANACONDA\\envs\\NOTEBOOK_AI\\python.exe";
 export const DEFAULT_NODE_EXE = "D:\\LEARNING\\Tools\\node.js\\node.exe";
@@ -17,17 +19,34 @@ export function resolveDesktopConfig({
   isPackaged = false,
 } = {}) {
   const localConfig = isPackaged ? readLocalConfig(executablePath) : {};
-  const projectRoot = resolveProjectRoot({ env, executablePath, isPackaged, localConfig });
+  const runtimeRoot = resolveRuntimeRoot({ env, resourcesPath, isPackaged });
+  const dataProjectRoot = resolveDataProjectRoot({ env, isPackaged, localConfig });
   const pythonExe = resolve(env.NOTEBOOK_AI_PYTHON_EXE || localConfig.pythonExe || DEFAULT_PYTHON_EXE);
   const nodeExe = resolve(env.NOTEBOOK_AI_NODE_EXE || localConfig.nodeExe || DEFAULT_NODE_EXE);
-  const runtimeScript = join(projectRoot, "scripts", "runtime", "notebook_ai_launcher.py");
+  const runtimeScript = join(runtimeRoot, "scripts", "runtime", "notebook_ai_launcher.py");
+  const mcpServerEntry = join(
+    runtimeRoot,
+    "integrations",
+    "notebook_ai_chatgpt_app",
+    "dist",
+    "server",
+    "index.js",
+  );
+  const mcpWidget = join(
+    runtimeRoot,
+    "integrations",
+    "notebook_ai_chatgpt_app",
+    "web",
+    "dist",
+    "widget.html",
+  );
   const packagedAssets = isPackaged ? join(resolve(resourcesPath), "search-assets") : null;
   const frontendDist = isPackaged
     ? join(packagedAssets, "frontend")
-    : join(projectRoot, "frontend", "dist");
+    : join(runtimeRoot, "frontend", "dist");
   const designSystemRoot = isPackaged
     ? join(packagedAssets, "design-system")
-    : join(projectRoot, "packages", "search-design-system", "src");
+    : join(runtimeRoot, "packages", "search-design-system", "src");
   const backendUrl = validateLoopbackUrl(
     env.NOTEBOOK_AI_BACKEND_URL || "http://127.0.0.1:8000",
     "backend URL",
@@ -35,11 +54,17 @@ export function resolveDesktopConfig({
   const settingsPath = userDataPath ? join(userDataPath, "search-desktop-settings.json") : null;
   return Object.freeze({
     productName: "Search",
-    projectRoot,
+    runtimeRoot,
+    dataProjectRoot,
+    // Keep the public field for renderer/tests that still use the historical
+    // name. It now denotes the stable data project, never the packaged code.
+    projectRoot: dataProjectRoot,
     desktopRoot: DESKTOP_ROOT,
     pythonExe,
     nodeExe,
     runtimeScript,
+    mcpServerEntry,
+    mcpWidget,
     frontendDist,
     designSystemRoot,
     desktopIcon: join(DESKTOP_ROOT, "assets", "search.ico"),
@@ -49,23 +74,42 @@ export function resolveDesktopConfig({
     rendererPort: 5173,
     defaultRoute: "/retrieval",
     settingsPath,
-    runtimeAvailable: existsSync(pythonExe) && existsSync(nodeExe) && existsSync(runtimeScript),
+    runtimeAvailable: [
+      pythonExe,
+      nodeExe,
+      runtimeScript,
+      join(runtimeRoot, "app", "main.py"),
+      mcpServerEntry,
+      mcpWidget,
+    ].every((path) => existsSync(path)),
   });
 }
 
-function resolveProjectRoot({ env, executablePath, isPackaged, localConfig }) {
-  const configured = String(env.NOTEBOOK_AI_PROJECT_ROOT || localConfig.projectRoot || "").trim();
-  if (configured) return requireProjectRoot(resolve(configured));
-  if (!isPackaged) return requireProjectRoot(SOURCE_PROJECT_ROOT);
+function resolveRuntimeRoot({ env, resourcesPath, isPackaged }) {
+  const configured = String(
+    env.NOTEBOOK_AI_RUNTIME_ROOT || (!isPackaged ? env.NOTEBOOK_AI_PROJECT_ROOT : "") || "",
+  ).trim();
+  const candidate = isPackaged
+    ? join(resolve(resourcesPath), "app", PACKAGED_RUNTIME_DIRECTORY)
+    : resolve(configured || SOURCE_PROJECT_ROOT);
+  return requireRuntimeRoot(candidate);
+}
 
-  let candidate = dirname(resolve(executablePath));
-  for (let depth = 0; depth < 8; depth += 1) {
-    if (isProjectRoot(candidate)) return candidate;
-    const parent = dirname(candidate);
-    if (parent === candidate) break;
-    candidate = parent;
+function resolveDataProjectRoot({ env, isPackaged, localConfig }) {
+  const configured = String(
+    env.NOTEBOOK_AI_DATA_PROJECT_ROOT
+      || (!isPackaged ? env.NOTEBOOK_AI_PROJECT_ROOT : "")
+      || localConfig.dataProjectRoot
+      || (!isPackaged ? SOURCE_PROJECT_ROOT : DEFAULT_DATA_PROJECT_ROOT),
+  ).trim();
+  const candidate = resolve(configured);
+  if (isPackaged && isWorktreePath(candidate)) {
+    throw new Error("search_data_project_root_must_be_stable");
   }
-  throw new Error("search_project_root_unavailable");
+  if (!existsSync(join(candidate, "data"))) {
+    throw new Error("search_data_project_root_unavailable");
+  }
+  return candidate;
 }
 
 function readLocalConfig(executablePath) {
@@ -73,9 +117,14 @@ function readLocalConfig(executablePath) {
   if (!existsSync(path)) return {};
   try {
     const value = JSON.parse(readFileSync(path, "utf8"));
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+    if (
+      !value
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || value.schemaVersion !== 2
+    ) throw new Error();
     return {
-      projectRoot: typeof value.projectRoot === "string" ? value.projectRoot : "",
+      dataProjectRoot: typeof value.dataProjectRoot === "string" ? value.dataProjectRoot : "",
       pythonExe: typeof value.pythonExe === "string" ? value.pythonExe : "",
       nodeExe: typeof value.nodeExe === "string" ? value.nodeExe : "",
     };
@@ -84,24 +133,33 @@ function readLocalConfig(executablePath) {
   }
 }
 
-function requireProjectRoot(path) {
-  if (!isProjectRoot(path)) throw new Error("search_project_root_unavailable");
-  return path;
+function requireRuntimeRoot(path) {
+  if (!isRuntimeRoot(path)) throw new Error("search_packaged_runtime_unavailable");
+  return resolve(path);
 }
 
-function isProjectRoot(path) {
-  return existsSync(join(path, "app", "main.py")) &&
-    existsSync(join(path, "scripts", "runtime", "notebook_ai_launcher.py"));
+function isRuntimeRoot(path) {
+  return [
+    join(path, "app", "main.py"),
+    join(path, "scripts", "runtime", "notebook_ai_launcher.py"),
+    join(path, "config", "retrieval_query_aliases.json"),
+    join(path, "integrations", "notebook_ai_chatgpt_app", "dist", "server", "index.js"),
+    join(path, "integrations", "notebook_ai_chatgpt_app", "web", "dist", "widget.html"),
+  ].every((candidate) => existsSync(candidate));
+}
+
+function isWorktreePath(path) {
+  return resolve(path).toLowerCase().split(/[\\/]+/).includes("notebook_ai_worktrees");
 }
 
 export function validateLoopbackUrl(value, label = "URL") {
   const parsed = new URL(String(value));
   if (
-    parsed.protocol !== "http:" ||
-    !["127.0.0.1", "localhost"].includes(parsed.hostname) ||
-    parsed.username ||
-    parsed.password ||
-    parsed.hash
+    parsed.protocol !== "http:"
+    || !["127.0.0.1", "localhost"].includes(parsed.hostname)
+    || parsed.username
+    || parsed.password
+    || parsed.hash
   ) {
     throw new Error(`${label} must be an explicit loopback HTTP URL`);
   }
