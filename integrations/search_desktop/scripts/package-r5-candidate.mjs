@@ -22,7 +22,7 @@ const metadata = JSON.parse(await readFile(join(DESKTOP_ROOT, "electron", "produ
 const candidateBase = join(
   DESKTOP_ROOT,
   "dist-candidates",
-  `Search-${packageJson.version}-R5-self-contained`,
+  "r5",
 );
 const packagedRoot = join(candidateBase, "win-unpacked");
 const packagedFrontend = join(packagedRoot, "resources", "search-assets", "frontend");
