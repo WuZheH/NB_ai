@@ -37,6 +37,8 @@ test("Windows packaging avoids privileged symlink extraction and applies Search 
   assert.match(r5Packager, /frontend["'],\s*["']node_modules["'],\s*["']vite/);
   assert.match(r5Packager, /\["build"\]/);
   assert.match(r5Packager, /packagedRoot:\s*["']\.["']/);
+  assert.match(r5Packager, /verifyWindowsRuntimePathLengths/);
+  assert.match(r5Packager, /maximum\s*>=\s*240/);
   assert.ok(r5Packager.indexOf("await verifyNoWorktreeReferences") > r5Packager.indexOf("r5-build-manifest.json"));
 });
 

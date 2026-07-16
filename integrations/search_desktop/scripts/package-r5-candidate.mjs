@@ -22,7 +22,7 @@ const metadata = JSON.parse(await readFile(join(DESKTOP_ROOT, "electron", "produ
 const candidateBase = join(
   DESKTOP_ROOT,
   "dist-candidates",
-  `Search-${packageJson.version}-${metadata.buildId}`,
+  `Search-${packageJson.version}-R5-self-contained`,
 );
 const packagedRoot = join(candidateBase, "win-unpacked");
 const packagedFrontend = join(packagedRoot, "resources", "search-assets", "frontend");
@@ -61,6 +61,7 @@ await verifyPackagedResources(packagedRoot);
 
 const frontendAssets = await compareTrees(FRONTEND_DIST, packagedFrontend);
 const runtimeAggregate = await aggregateTree(packagedRuntime);
+const maxRuntimePathLength = await verifyWindowsRuntimePathLengths(packagedRuntime);
 const executable = join(packagedRoot, "Search.exe");
 const manifest = {
   status: "ready",
@@ -79,6 +80,7 @@ const manifest = {
   runtimeRoot: "resources/app/runtime-project",
   runtimeFileCount: runtimeAggregate.fileCount,
   runtimeAggregateSha256: runtimeAggregate.sha256,
+  maxRuntimePathLength,
   dataProjectRoot: DATA_PROJECT_ROOT,
   worktreeReferences: 0,
   productionDataBundled: false,
@@ -137,6 +139,15 @@ async function aggregateTree(root) {
     fileCount: rows.length,
     sha256: createHash("sha256").update(`${rows.join("\n")}\n`).digest("hex").toUpperCase(),
   };
+}
+
+async function verifyWindowsRuntimePathLengths(root) {
+  const lengths = (await listFiles(root)).map((path) => join(root, path).length);
+  const maximum = Math.max(...lengths);
+  if (maximum >= 240) {
+    throw new Error(`search_r5_runtime_path_too_long:${maximum}`);
+  }
+  return maximum;
 }
 
 async function listFiles(root) {
