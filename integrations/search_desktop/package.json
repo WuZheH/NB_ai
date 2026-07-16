@@ -85,6 +85,10 @@
         "to": "app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/index.js"
       },
       {
+        "from": "../notebook_ai_chatgpt_app/dist/server/build-manifest.json",
+        "to": "app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/build-manifest.json"
+      },
+      {
         "from": "../notebook_ai_chatgpt_app/web/dist/widget.html",
         "to": "app/runtime-project/integrations/notebook_ai_chatgpt_app/web/dist/widget.html"
       },

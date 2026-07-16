@@ -37,6 +37,11 @@ if (isWorktreePath(DATA_PROJECT_ROOT)) {
 
 await runNode(join(MCP_ROOT, "scripts", "build-widget.mjs"));
 await runNode(join(MCP_ROOT, "scripts", "build-server.mjs"));
+await runNode(
+  join(PROJECT_ROOT, "frontend", "node_modules", "vite", "bin", "vite.js"),
+  ["build"],
+  join(PROJECT_ROOT, "frontend"),
+);
 await verifySourceResources();
 await runNode(join(DESKTOP_ROOT, "node_modules", "electron-builder", "cli.js"), [
   "--win",
@@ -53,7 +58,6 @@ await runNode(join(SCRIPT_DIR, "write-local-config.mjs"), [
   DATA_PROJECT_ROOT,
 ]);
 await verifyPackagedResources(packagedRoot);
-await verifyNoWorktreeReferences(packagedRoot);
 
 const frontendAssets = await compareTrees(FRONTEND_DIST, packagedFrontend);
 const runtimeAggregate = await aggregateTree(packagedRuntime);
@@ -65,14 +69,14 @@ const manifest = {
   buildId: metadata.buildId,
   rendererAssetVersion: metadata.rendererAssetVersion,
   sourceCommit: await gitHead(),
-  packagedRoot,
-  executable,
+  packagedRoot: ".",
+  executable: "Search.exe",
   executableSha256: await sha256(executable),
   frontendAssetCount: frontendAssets.length,
   frontendAssets,
-  frontendSource: FRONTEND_DIST,
+  frontendSource: "frontend/dist",
   frontendSourceReusedFromOlderCandidate: false,
-  runtimeRoot: packagedRuntime,
+  runtimeRoot: "resources/app/runtime-project",
   runtimeFileCount: runtimeAggregate.fileCount,
   runtimeAggregateSha256: runtimeAggregate.sha256,
   dataProjectRoot: DATA_PROJECT_ROOT,
@@ -86,6 +90,7 @@ await writeFile(
   `${JSON.stringify(manifest, null, 2)}\n`,
   "utf8",
 );
+await verifyNoWorktreeReferences(packagedRoot);
 process.stdout.write(`${JSON.stringify(manifest)}\n`);
 
 async function verifyNoWorktreeReferences(root) {
@@ -184,10 +189,10 @@ function isWorktreePath(path) {
   return resolve(path).toLowerCase().split(/[\\/]+/).includes("notebook_ai_worktrees");
 }
 
-function runNode(script, args = []) {
+function runNode(script, args = [], cwd = DESKTOP_ROOT) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, [script, ...args], {
-      cwd: DESKTOP_ROOT,
+      cwd,
       shell: false,
       stdio: "inherit",
       windowsHide: true,

@@ -1,5 +1,6 @@
-import { readFile, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -23,6 +24,7 @@ export const PACKAGED_RESOURCE_CONTRACT = Object.freeze([
   "resources/app/runtime-project/config/retrieval_query_aliases.json",
   "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/package.json",
   "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/index.js",
+  "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/build-manifest.json",
   "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/web/dist/widget.html",
 ]);
 
@@ -43,6 +45,7 @@ const SOURCE_RESOURCE_CONTRACT = Object.freeze(new Map([
   ["resources/app/runtime-project/config/retrieval_query_aliases.json", resolve(DESKTOP_ROOT, "../../config/retrieval_query_aliases.json")],
   ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/package.json", resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app/package.json")],
   ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/index.js", resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app/dist/server/index.js")],
+  ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/build-manifest.json", resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app/dist/server/build-manifest.json")],
   ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/web/dist/widget.html", resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app/web/dist/widget.html")],
 ]));
 
@@ -54,6 +57,9 @@ export async function verifySourceResources() {
   await verifySelfContainedMcp(
     SOURCE_RESOURCE_CONTRACT.get(
       "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/index.js",
+    ),
+    SOURCE_RESOURCE_CONTRACT.get(
+      "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/build-manifest.json",
     ),
   );
   return Object.freeze({ status: "ready", scope: "source", count: SOURCE_RESOURCE_CONTRACT.size });
@@ -75,6 +81,16 @@ export async function verifyPackagedResources(packagedRoot = DEFAULT_PACKAGED_RO
     "dist",
     "server",
     "index.js",
+  ), join(
+    root,
+    "resources",
+    "app",
+    "runtime-project",
+    "integrations",
+    "notebook_ai_chatgpt_app",
+    "dist",
+    "server",
+    "build-manifest.json",
   ));
   for (const forbidden of [
     "resources/app/runtime-project/data",
@@ -83,20 +99,87 @@ export async function verifyPackagedResources(packagedRoot = DEFAULT_PACKAGED_RO
   ]) {
     await requireMissingPath(join(root, ...forbidden.split("/")), forbidden);
   }
+  await verifyForbiddenRuntimePayload(join(root, "resources", "app", "runtime-project"));
   return Object.freeze({ status: "ready", scope: "packaged", count: PACKAGED_RESOURCE_CONTRACT.length });
 }
 
-async function verifySelfContainedMcp(serverPath) {
-  const source = await readFile(serverPath, "utf8");
-  const executableSource = source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
+async function verifySelfContainedMcp(serverPath, manifestPath) {
+  const serverBytes = await readFile(serverPath);
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch {
+    throw new Error("search_packaging_mcp_bundle_manifest_invalid");
+  }
+  const actualHash = createHash("sha256").update(serverBytes).digest("hex").toUpperCase();
   if (
-    /(?:^|\n)\s*(?:import|export)\b[^\n]*from\s+["'](?:@modelcontextprotocol\/|zod["'])/.test(executableSource)
-    || /(?:import|require)\(\s*["'](?:@modelcontextprotocol\/|zod["'])/.test(executableSource)
+    manifest?.schemaVersion !== 1
+    || manifest?.serverSha256 !== actualHash
+    || !Array.isArray(manifest?.externalPackages)
   ) {
+    throw new Error("search_packaging_mcp_bundle_manifest_invalid");
+  }
+  if (manifest.externalPackages.length) {
     throw new Error("search_packaging_mcp_external_dependency_detected");
   }
+}
+
+async function verifyForbiddenRuntimePayload(runtimeRoot) {
+  const forbiddenDirectories = new Set([
+    ".git",
+    "credentials",
+    "data",
+    "model_cache",
+    "node_modules",
+  ]);
+  const forbiddenExtensions = new Set([
+    ".arrow",
+    ".bin",
+    ".db",
+    ".gguf",
+    ".key",
+    ".lance",
+    ".npy",
+    ".npz",
+    ".onnx",
+    ".p12",
+    ".parquet",
+    ".pem",
+    ".pfx",
+    ".pt",
+    ".pth",
+    ".safetensors",
+    ".sqlite",
+    ".sqlite3",
+  ]);
+  for (const path of await listRuntimeEntries(runtimeRoot)) {
+    const segments = path.toLowerCase().split("/");
+    if (segments.some((segment) => forbiddenDirectories.has(segment))) {
+      throw new Error(`search_packaging_forbidden_payload:${path}`);
+    }
+    const name = segments.at(-1);
+    if (
+      name === ".env"
+      || name?.includes("credential")
+      || forbiddenExtensions.has(extname(name || ""))
+    ) {
+      throw new Error(`search_packaging_forbidden_payload:${path}`);
+    }
+  }
+}
+
+async function listRuntimeEntries(root) {
+  const entries = [];
+  async function visit(directory) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      const path = relative(root, absolute).replaceAll("\\", "/");
+      entries.push(path);
+      if (entry.isDirectory()) await visit(absolute);
+    }
+  }
+  await visit(root);
+  return entries;
 }
 
 async function requireMissingPath(path, contractPath) {
