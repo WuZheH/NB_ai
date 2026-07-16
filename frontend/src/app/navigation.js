@@ -14,6 +14,8 @@ export function useAppNavigation({ clearSelection, importPreviewSelection, impor
     if (view === "object") return "对象详情";
     if (view === "importPreview") return "导入 PDF";
     if (view === "importReview") return "对象审核工作台";
+    if (view === "systemStatus") return "系统状态";
+    if (view === "settings") return "设置";
     return "工作台";
   }, [view]);
 

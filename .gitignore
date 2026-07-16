@@ -19,6 +19,7 @@ frontend/dist/
 frontend/.vite/
 integrations/search_desktop/node_modules/
 integrations/search_desktop/dist/
+integrations/search_desktop/dist-candidates/
 integrations/search_desktop/.npm-cache/
 
 # Private local corpus, databases, derived indexes, and runtime data
@@ -27,6 +28,8 @@ data/
 # Local model weights
 model_cache/
 models/
+!/app/models/
+!/app/models/**/*.py
 *.safetensors
 *.gguf
 pytorch_model*.bin

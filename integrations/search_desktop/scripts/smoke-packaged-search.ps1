@@ -23,7 +23,7 @@ if (-not $ProjectRoot) {
     $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $DesktopRoot "..\.."))
 }
 if (-not $TestRoot) {
-    $TestRoot = Join-Path $ProjectRoot ".codex_tmp\search-desktop-startup-0.1.2\packaged-smoke"
+    $TestRoot = Join-Path $ProjectRoot ".codex_tmp\search-desktop-startup-0.1.3\packaged-smoke"
 }
 
 $ExecutablePath = [System.IO.Path]::GetFullPath($ExecutablePath)
@@ -159,8 +159,14 @@ function Test-LocalRuntimeReady {
     param([Parameter(Mandatory = $true)]$Status)
 
     $AcceptableState = $Status.state -in @("ready", "local_ready_tunnel_missing")
-    $FastApiState = [string]$Status.components.fastapi.state
-    $McpState = [string]$Status.components.mcp.state
+    $FastApi = if ($Status.components -and $Status.components.PSObject.Properties.Name -contains "fastapi") {
+        $Status.components.fastapi
+    } else { $null }
+    $Mcp = if ($Status.components -and $Status.components.PSObject.Properties.Name -contains "mcp") {
+        $Status.components.mcp
+    } else { $null }
+    $FastApiState = if ($FastApi) { [string]$FastApi.state } else { "" }
+    $McpState = if ($Mcp) { [string]$Mcp.state } else { "" }
     $AcceptableComponentStates = @("ready", "external")
     $AcceptableState -and
         $FastApiState -in $AcceptableComponentStates -and
@@ -208,6 +214,7 @@ $OriginalEnvironment = @{
 }
 $PortOwnersBefore = Get-PortOwners -Ports @(8000, 8787)
 $SearchProcess = $null
+$SecondProcess = $null
 $SmokeProcessIds = @()
 $SmokeResult = $null
 $PrimaryError = $null
@@ -256,29 +263,74 @@ try {
         throw "search_packaged_smoke_process_identity_mismatch"
     }
 
-    $SearchProcess.Refresh()
-    $WindowHandle = [int64]$SearchProcess.MainWindowHandle
-    $WindowTitle = [string]$SearchProcess.MainWindowTitle
-    if ($WindowHandle -eq 0) {
-        throw "search_packaged_smoke_window_missing"
-    }
-    if ($WindowTitle -notmatch "Search") {
-        throw "search_packaged_smoke_window_title_invalid"
+    $WindowProcess = $null
+    $ReadyEntries = @()
+    $WindowDeadline = (Get-Date).AddSeconds($RuntimeReadyTimeoutSeconds)
+    while ((Get-Date) -lt $WindowDeadline) {
+        $SearchProcess.Refresh()
+        if ($SearchProcess.HasExited) {
+            throw "search_packaged_smoke_process_exited:$($SearchProcess.ExitCode)"
+        }
+        if (Test-Path -LiteralPath $StartupLog -PathType Leaf) {
+            $Entries = @(Get-Content -LiteralPath $StartupLog -Encoding UTF8 |
+                Where-Object { $_.Trim() } |
+                ForEach-Object { $_ | ConvertFrom-Json })
+            $ReadyEntries = @($Entries | Where-Object {
+                $_.event -eq "stage_completed" -and
+                $_.stage -eq "ready" -and
+                $_.lastSuccessfulStage -eq "ready"
+            })
+        }
+        foreach ($Candidate in @(Get-ExactSearchProcesses -ExpectedExecutable $ExecutablePath)) {
+            $CandidateProcess = Get-Process -Id ([int]$Candidate.ProcessId) -ErrorAction SilentlyContinue
+            if ($CandidateProcess -and [int64]$CandidateProcess.MainWindowHandle -ne 0) {
+                $WindowProcess = $CandidateProcess
+                break
+            }
+        }
+        if ($WindowProcess -and $ReadyEntries.Count -gt 0) { break }
+        Start-Sleep -Milliseconds 250
     }
     if (-not (Test-Path -LiteralPath $StartupLog -PathType Leaf)) {
         throw "search_packaged_smoke_startup_log_missing"
     }
-
-    $Entries = @(Get-Content -LiteralPath $StartupLog -Encoding UTF8 |
-        Where-Object { $_.Trim() } |
-        ForEach-Object { $_ | ConvertFrom-Json })
-    $ReadyEntries = @($Entries | Where-Object {
-        $_.event -eq "stage_completed" -and
-        $_.stage -eq "ready" -and
-        $_.lastSuccessfulStage -eq "ready"
-    })
     if ($ReadyEntries.Count -eq 0) {
         throw "search_packaged_smoke_ready_stage_missing"
+    }
+    if (-not $WindowProcess) {
+        throw "search_packaged_smoke_window_missing"
+    }
+    $WindowHandle = [int64]$WindowProcess.MainWindowHandle
+    $WindowTitle = [string]$WindowProcess.MainWindowTitle
+    if ($WindowTitle -notmatch "Search") {
+        throw "search_packaged_smoke_window_title_invalid"
+    }
+
+    # A second launch must hand off to the existing single instance without
+    # creating another backend or another persistent Search process tree.
+    $FirstInstanceIds = @(
+        Get-ExactSearchProcesses -ExpectedExecutable $ExecutablePath |
+            Select-Object -ExpandProperty ProcessId |
+            Sort-Object
+    )
+    $SecondProcess = Start-Process `
+        -FilePath $ExecutablePath `
+        -ArgumentList $Arguments `
+        -WorkingDirectory (Split-Path -Parent $ExecutablePath) `
+        -RedirectStandardOutput (Join-Path $RunRoot "second.stdout.log") `
+        -RedirectStandardError (Join-Path $RunRoot "second.stderr.log") `
+        -PassThru
+    if (-not $SecondProcess.WaitForExit(10000)) {
+        throw "search_packaged_smoke_second_instance_did_not_exit"
+    }
+    Start-Sleep -Milliseconds 500
+    $SecondInstanceIds = @(
+        Get-ExactSearchProcesses -ExpectedExecutable $ExecutablePath |
+            Select-Object -ExpandProperty ProcessId |
+            Sort-Object
+    )
+    if (Compare-Object -ReferenceObject $FirstInstanceIds -DifferenceObject $SecondInstanceIds) {
+        throw "search_packaged_smoke_second_instance_changed_process_tree"
     }
 
     $RuntimeSeconds = [Math]::Round(((Get-Date) - $StartedAt).TotalSeconds, 3)
@@ -288,6 +340,7 @@ try {
         runtime_seconds = $RuntimeSeconds
         main_window_handle = $WindowHandle
         main_window_title = $WindowTitle
+        duplicate_instance_reused = $true
         startup_log = $StartupLog
         last_startup_stage = "ready"
         runtime_fixture_state = [string]$RuntimeFixture.state

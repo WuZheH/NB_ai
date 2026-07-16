@@ -8,22 +8,33 @@ import { normalizeSettingsPatch } from "../electron/ipc/settingsStore.js";
 import { validateLoopbackUrl } from "../electron/main/config.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const productMetadata = JSON.parse(await readFile(join(ROOT, "electron", "product-metadata.json"), "utf8"));
 
 test("product brand is Search while NOTEBOOK_AI runtime compatibility remains", async () => {
   const packageJson = JSON.parse(await readFile(join(ROOT, "package.json"), "utf8"));
-  const productMetadata = JSON.parse(await readFile(join(ROOT, "electron", "product-metadata.json"), "utf8"));
   assert.equal(packageJson.productName, "Search");
-  assert.equal(packageJson.version, "0.1.2");
+  assert.equal(packageJson.version, "0.1.3");
   assert.deepEqual(productMetadata, {
-    version: "0.1.2",
-    buildId: "20260714-startup2",
-    rendererAssetVersion: "0.1.2-startup2",
+    version: "0.1.3",
+    buildId: "20260717-unified-backend-r4-headless-final",
+    rendererAssetVersion: "0.1.3-unified-backend-r4-headless-final",
   });
   assert.equal(packageJson.devDependencies.electron, "37.2.6");
   const config = await readFile(join(ROOT, "electron", "main", "config.js"), "utf8");
   assert.match(config, /NOTEBOOK_AI_PYTHON_EXE/);
+  assert.match(config, /NOTEBOOK_AI_NODE_EXE/);
   assert.match(config, /notebook_ai_launcher\.py/);
   assert.match(config, /rendererPort:\s*5173/);
+});
+
+test("runtime launcher is a direct hidden child with controlled output pipes", async () => {
+  const launcher = await readFile(join(ROOT, "electron", "runtime", "launcherClient.js"), "utf8");
+  assert.match(launcher, /windowsHide:\s*true/);
+  assert.match(launcher, /shell:\s*false/);
+  assert.match(launcher, /stdio:\s*\["ignore",\s*"pipe",\s*"pipe"\]/);
+  assert.match(launcher, /NOTEBOOK_AI_PYTHON_EXE:\s*this\.config\.pythonExe/);
+  assert.match(launcher, /NOTEBOOK_AI_NODE_EXE:\s*this\.config\.nodeExe/);
+  assert.doesNotMatch(launcher, /powershell\.exe|cmd\.exe|\.cmd["']|\.bat["']/i);
 });
 
 test("Electron security and lifecycle contracts are explicit", async () => {
@@ -39,8 +50,8 @@ test("Electron security and lifecycle contracts are explicit", async () => {
   assert.match(windowSource, /event\.preventDefault\(\)/);
   assert.match(tray, /打开 Search/);
   assert.match(tray, /完全退出/);
-  assert.match(tray, /暂停 ChatGPT 连接/);
-  assert.match(tray, /恢复 ChatGPT 连接/);
+  assert.match(tray, /重新检查/);
+  assert.doesNotMatch(tray, /重新启动后台|暂停 ChatGPT 连接|恢复 ChatGPT 连接/);
   const application = await readFile(join(ROOT, "electron", "main", "application.js"), "utf8");
   assert.ok(application.indexOf("await coordinator.ensureReady()") < application.indexOf("await windowController.create()"));
 });
@@ -68,6 +79,9 @@ test("preload surface is allowlisted and contains no raw process or filesystem b
   assert.doesNotMatch(preload, /ipcRenderer\.send\(/);
   assert.match(preload, /productVersion/);
   assert.match(preload, /rendererAssetVersion/);
+  assert.match(preload, new RegExp(productMetadata.buildId));
+  assert.match(preload, new RegExp(productMetadata.rendererAssetVersion));
+  assert.doesNotMatch(preload, /require\(["']\.\.\/product-metadata\.json["']\)/);
 });
 
 test("desktop startup never installs, builds, or rebuilds indexes", async () => {

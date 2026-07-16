@@ -60,12 +60,11 @@ export async function createSearchDesktop(electron, { startupLogger } = {}) {
     rendererOrigin,
   });
   await startStage(startupLogger, STARTUP_STAGE.RUNTIME_CHECKED);
-  try {
-    await coordinator.ensureReady();
-  } catch (error) {
-    coordinator.update({ status: "error", error_code: safeErrorCode(error) });
-  }
-  await completeStage(startupLogger, STARTUP_STAGE.RUNTIME_CHECKED);
+  const runtimeCheck = coordinator.ensureReady()
+    .catch((error) => {
+      coordinator.update({ status: "error", error_code: safeErrorCode(error) });
+    })
+    .finally(() => completeStage(startupLogger, STARTUP_STAGE.RUNTIME_CHECKED));
   await startStage(startupLogger, STARTUP_STAGE.WINDOW_CREATED);
   await windowController.create();
   await completeStage(startupLogger, STARTUP_STAGE.WINDOW_CREATED);
@@ -100,6 +99,11 @@ export async function createSearchDesktop(electron, { startupLogger } = {}) {
   await completeStage(startupLogger, STARTUP_STAGE.TRAY_CREATED);
   await startStage(startupLogger, STARTUP_STAGE.READY);
   await completeStage(startupLogger, STARTUP_STAGE.READY);
+
+  // Keep backend bootstrap observable without blocking the desktop window.
+  // A slow or unavailable backend must leave Search usable so the compact
+  // status view can report the real failure and offer a recheck.
+  void runtimeCheck;
 
   return { config, coordinator, renderer, windowController, fullyQuit };
 }

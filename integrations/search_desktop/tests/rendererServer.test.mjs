@@ -46,6 +46,35 @@ test("established renderer port conflict fails closed instead of loading another
   assert.equal(server.origin, null);
 });
 
+test("desktop status routes use the production SPA and navigation bridge", async (context) => {
+  const server = new RendererServer({
+    frontendDist: resolve(ROOT, "tests", "fixtures", "frontend"),
+    fallbackFile: resolve(ROOT, "renderer", "missing-build.html"),
+    designSystemRoot: resolve(ROOT, "..", "..", "packages", "search-design-system", "src"),
+    rendererAssets: resolve(ROOT, "renderer"),
+    backendUrl: "http://127.0.0.1:8000",
+    port: 0,
+  });
+  context.after(() => server.stop());
+  const origin = await server.start();
+  const retrieval = await get(`${origin}/retrieval`);
+  assert.equal(retrieval.status, 200);
+  assert.match(retrieval.body, /desktop-route-bridge\.js/);
+  const status = await get(`${origin}/system-status`);
+  assert.equal(status.status, 200);
+  assert.match(status.body, /desktop-route-bridge\.js/);
+  assert.match(status.body, /<div id="root"><\/div>/);
+  const settings = await get(`${origin}/settings`);
+  assert.equal(settings.status, 200);
+  assert.match(settings.body, /desktop-route-bridge\.js/);
+  assert.match(settings.body, /<div id="root"><\/div>/);
+  const script = await get(`${origin}/__search_desktop__/desktop-route-bridge.js`);
+  assert.equal(script.status, 200);
+  assert.match(script.headers["content-type"], /text\/javascript/);
+  assert.match(script.body, /\/system-status/);
+  assert.match(script.body, /\/settings/);
+});
+
 function get(url) {
   return new Promise((resolvePromise, reject) => {
     const operation = request(url, (response) => {

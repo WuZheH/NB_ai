@@ -25,6 +25,71 @@
   font-family: var(--search-font-sans);
 }
 
+.desktopSettingsPage {
+  width: min(960px, 100%);
+  margin: 0 auto;
+  padding: var(--search-space-6);
+}
+
+.desktopSettingsPage > header > span {
+  color: var(--search-primary-active);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.desktopSettingsPage > header h1 { margin: var(--search-space-1) 0; }
+.desktopSettingsPage > header p { margin: 0; color: var(--search-text-secondary); }
+.desktopServiceList { margin-top: var(--search-space-5); padding: var(--search-space-2) var(--search-space-4); }
+.desktopServiceRow {
+  display: grid;
+  grid-template-columns: minmax(128px, 0.8fr) minmax(110px, 0.6fr) minmax(240px, 2fr);
+  align-items: center;
+  gap: var(--search-space-3);
+  min-height: 52px;
+  border-top: 1px solid var(--search-border);
+}
+.desktopServiceRow:first-child { border-top: 0; }
+.desktopServiceRow small { color: var(--search-text-secondary); }
+.desktopServiceValue { justify-self: start; }
+.status-ready { color: var(--search-success); }
+.status-warning { color: var(--search-warning); }
+.status-error { color: var(--search-danger); }
+.desktopSettingsFooter {
+  display: flex;
+  align-items: center;
+  gap: var(--search-space-3);
+  margin-top: var(--search-space-3);
+  color: var(--search-text-secondary);
+}
+.desktopTechnicalDetails { margin-top: var(--search-space-3); padding: var(--search-space-3) var(--search-space-4); }
+.desktopTechnicalDetails summary { cursor: pointer; font-weight: 700; }
+.desktopTechnicalDetails dl { display: grid; gap: var(--search-space-2); margin-bottom: 0; }
+.desktopTechnicalDetails dl div { display: grid; grid-template-columns: 128px 1fr; gap: var(--search-space-3); }
+.desktopTechnicalDetails dt { color: var(--search-text-secondary); }
+.desktopTechnicalDetails dd { margin: 0; overflow-wrap: anywhere; font-family: var(--search-font-mono); }
+.desktopControlPanel,
+.desktopHostNotice { margin-top: var(--search-space-5); padding: var(--search-space-4); }
+.desktopControlPanel h2 { margin-top: 0; font-size: 1rem; }
+.desktopSettingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--search-space-4);
+  padding: var(--search-space-3) 0;
+  border-top: 1px solid var(--search-border);
+}
+.desktopSettingRow span { display: grid; gap: var(--search-space-1); }
+.desktopSettingRow small,
+.desktopHostNotice p { color: var(--search-text-secondary); }
+.desktopSettingRow input { width: 20px; height: 20px; accent-color: var(--search-primary); }
+
+@media (max-width: 800px) {
+  .desktopSettingsPage { padding: var(--search-space-3); }
+  .desktopServiceRow { grid-template-columns: 1fr auto; padding: var(--search-space-2) 0; }
+  .desktopServiceRow small { grid-column: 1 / -1; }
+}
+
 body,
 #root,
 .appShell,

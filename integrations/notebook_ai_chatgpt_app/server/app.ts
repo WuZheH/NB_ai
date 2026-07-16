@@ -12,7 +12,7 @@ export interface NotebookMcpServerOptions {
 
 export function createNotebookMcpServer(options: NotebookMcpServerOptions = {}): McpServer {
   const server = new McpServer({
-    name: "notebook-ai-research-search",
+    name: "search",
     version: "0.1.0",
   });
   const client = options.client ?? new NotebookClient(options.clientOptions);

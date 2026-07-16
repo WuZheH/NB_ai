@@ -1,5 +1,7 @@
 import { App, PostMessageTransport } from "@modelcontextprotocol/ext-apps";
 
+import type { PinnedEvidence } from "./evidenceSelection";
+import { persistHostWidgetState, type NotebookWidgetState } from "./widgetState";
 import type { ToolEnvelope } from "../types";
 
 type ToolResultListener = (result: ToolEnvelope) => void;
@@ -23,7 +25,7 @@ class McpAppsBridge {
     }
 
     const app = new App(
-      { name: "NOTEBOOK_AI Research Search", version: "0.1.0" },
+      { name: "Search", version: "0.1.0" },
       {},
       { autoResize: true, strict: true },
     );
@@ -75,32 +77,27 @@ class McpAppsBridge {
     throw this.connectionError ?? new Error("No MCP Apps host bridge is available.");
   }
 
-  async updateModelContext(summary: string, fragmentIds: string[]): Promise<void> {
+  async pinSelection(evidence: PinnedEvidence[]): Promise<void> {
+    const compactPayload = { selected_evidence: evidence };
+    const prompt = JSON.stringify(compactPayload);
     const params = {
-      content: [{ type: "text" as const, text: summary }],
-      structuredContent: { selected_fragment_ids: fragmentIds },
+      content: [{ type: "text" as const, text: prompt }],
+      structuredContent: compactPayload,
     };
     const app = await this.connectedApp();
     if (app) {
-      await app.updateModelContext(params).catch(() => undefined);
+      await app.updateModelContext(params);
+      return;
     }
-    await window.openai?.setWidgetState?.({ selected_fragment_ids: fragmentIds });
+    if (window.openai?.sendFollowUpMessage) {
+      await window.openai.sendFollowUpMessage({ prompt, scrollToBottom: true });
+      return;
+    }
+    throw this.connectionError ?? new Error("The host cannot pin evidence to the current chat.");
   }
 
-  async openLink(href: string): Promise<void> {
-    const app = await this.connectedApp();
-    if (app) {
-      const result = await app.openLink({ url: href });
-      if (result.isError) {
-        throw new Error("The MCP Apps host declined to open this link.");
-      }
-      return;
-    }
-    if (window.openai?.openExternal) {
-      await window.openai.openExternal({ href });
-      return;
-    }
-    window.open(href, "_blank", "noopener,noreferrer");
+  async persistWidgetState(state: NotebookWidgetState): Promise<boolean> {
+    return persistHostWidgetState(state);
   }
 
   private async connectedApp(): Promise<App | null> {

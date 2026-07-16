@@ -2,6 +2,7 @@ import {
   type EvidenceExportInput,
   type EvidenceExportResponse,
   type FragmentResponse,
+  type NotebookFragment,
   type NotebookResult,
   type NotebookSearchInput,
   type NotebookSearchResponse,
@@ -61,8 +62,8 @@ export class NotebookClient {
     };
   }
 
-  async fetchFragment(fragmentId: string): Promise<FragmentResponse | NotebookResult> {
-    const response = await this.requestJson<FragmentResponse | NotebookResult>(
+  async fetchFragment(fragmentId: string): Promise<FragmentResponse | NotebookFragment> {
+    const response = await this.requestJson<FragmentResponse | NotebookFragment>(
       `/api/v1/retrieval/fragments/${encodeURIComponent(fragmentId)}`,
       { method: "GET" },
     );
@@ -72,7 +73,7 @@ export class NotebookClient {
     if ("result" in response && response.result) {
       return { ...response, result: this.resolveOpenTarget(response.result) };
     }
-    return this.resolveOpenTarget(response as NotebookResult);
+    return this.resolveOpenTarget(response as NotebookFragment);
   }
 
   async exportEvidence(input: EvidenceExportInput): Promise<EvidenceExportResponse | string> {
@@ -128,7 +129,7 @@ export class NotebookClient {
         throw error;
       }
       if (error instanceof Error && error.name === "AbortError") {
-        throw new NotebookBackendError("NOTEBOOK_AI backend request timed out.", 504, "BACKEND_TIMEOUT");
+        throw new NotebookBackendError("Search backend request timed out.", 504, "BACKEND_TIMEOUT");
       }
       throw error;
     } finally {
@@ -136,7 +137,7 @@ export class NotebookClient {
     }
   }
 
-  private resolveOpenTarget(result: NotebookResult): NotebookResult {
+  private resolveOpenTarget<T extends NotebookFragment>(result: T): T {
     if (!result.open_target) {
       return result;
     }

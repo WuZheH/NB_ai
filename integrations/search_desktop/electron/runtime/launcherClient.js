@@ -30,7 +30,11 @@ export class LauncherClient {
         windowsHide: true,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
-        env: process.env,
+        env: {
+          ...process.env,
+          NOTEBOOK_AI_PYTHON_EXE: this.config.pythonExe,
+          NOTEBOOK_AI_NODE_EXE: this.config.nodeExe,
+        },
       });
       let stdout = "";
       let stderr = "";

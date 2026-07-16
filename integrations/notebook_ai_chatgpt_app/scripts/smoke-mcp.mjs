@@ -60,7 +60,7 @@ try {
     endpoint: endpoint.toString(),
     tools: names,
     search_result_count: results.length,
-    fetched_fragment_id: first.fragment_id,
+    fetch_has_provenance: Boolean(fetched.structuredContent?.fragment?.provenance),
     fetched_source_type: first.source_type,
     export_format: exported.structuredContent?.format,
     export_content_length: exported.structuredContent?.content_length,

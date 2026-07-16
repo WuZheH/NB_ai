@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
 
@@ -85,10 +85,14 @@ export class RendererServer {
     }
     const requested = safeAssetPath(this.frontendDist, url.pathname);
     if (requested && existsSync(requested) && statSync(requested).isFile()) {
-      serveFile(requested, response);
+      if (requested === join(this.frontendDist, "index.html")) {
+        serveFrontendIndex(requested, response);
+      } else {
+        serveFile(requested, response);
+      }
       return;
     }
-    serveFile(join(this.frontendDist, "index.html"), response);
+    serveFrontendIndex(join(this.frontendDist, "index.html"), response);
   }
 
   proxyApi(request, response, url) {
@@ -148,6 +152,28 @@ function serveFile(path, response, statusCode = 200) {
     "cache-control": extname(path) === ".html" ? "no-store" : "public, max-age=31536000, immutable",
   });
   createReadStream(path).on("error", () => response.end()).pipe(response);
+}
+
+function serveFrontendIndex(path, response) {
+  let source;
+  try {
+    source = readFileSync(path, "utf8");
+  } catch {
+    response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Search renderer unavailable");
+    return;
+  }
+  const bridge = '<script src="/__search_desktop__/desktop-route-bridge.js"></script>';
+  if (!source.includes(bridge)) {
+    source = source.includes("<head>")
+      ? source.replace("<head>", `<head>${bridge}`)
+      : `${bridge}${source}`;
+  }
+  response.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(source);
 }
 
 function setSecurityHeaders(response, backendOrigin) {

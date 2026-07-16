@@ -191,6 +191,7 @@ try {
     };
   })()`);
   metrics.interactions = interactionMetrics;
+  metrics.workspaceReturn = await exerciseWorkspaceReturn(window.webContents);
   console.log(`SEARCH_SCROLL_METRICS=${JSON.stringify(metrics)}`);
   await sendCallback({ status: "ok", metrics });
 } catch (error) {
@@ -306,6 +307,29 @@ async function clickButton(webContents, label) {
     button.click();
   })()`;
   await webContents.executeJavaScript(expression);
+}
+
+async function exerciseWorkspaceReturn(webContents) {
+  const fromPath = await webContents.executeJavaScript("window.location.pathname");
+  await webContents.executeJavaScript(`(() => {
+    const entry = [...document.querySelectorAll('.navItem')]
+      .find((item) => item.textContent.trim() === 'Research Workspace');
+    if (!entry) throw new Error('workspace_navigation_missing');
+    entry.click();
+  })()`);
+  await waitFor(webContents, "window.location.pathname === '/workspace'");
+  const workspacePath = await webContents.executeJavaScript("window.location.pathname");
+  await clickButton(webContents, "返回本地证据检索");
+  await waitFor(webContents, "window.location.pathname === '/retrieval'");
+  await waitFor(webContents, "document.querySelector('[data-testid=\"retrieval-workspace\"]')");
+  return {
+    fromPath,
+    workspacePath,
+    returnedPath: await webContents.executeJavaScript("window.location.pathname"),
+    retrievalRestored: await webContents.executeJavaScript(
+      "Boolean(document.querySelector('[data-testid=\"retrieval-workspace\"]'))",
+    ),
+  };
 }
 
 async function exerciseNativeScrolling(webContents) {

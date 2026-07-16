@@ -1,11 +1,12 @@
 import WorkspaceStatusPill from "../../../components/workspace/WorkspaceStatusPill.jsx";
 import {
+  DEFAULT_HOME_WORKFLOW_TARGET,
   buildMachineLearningNotebook,
   openMachineLearningNotebook,
   openSourceWorkspace,
 } from "../utils/researchWorkspace.js";
 
-export function NotebookWorkspaceHome({ documentId, homeState, onOpenWorkspace, onOpenImport }) {
+export function NotebookWorkspaceHome({ documentId, homeState, onOpenWorkspace, onOpenImport, onBackToRetrieval }) {
   const sources = homeState.sources || [];
   const machineLearningNotebook = buildMachineLearningNotebook(sources, homeState.status);
   return (
@@ -20,6 +21,9 @@ export function NotebookWorkspaceHome({ documentId, homeState, onOpenWorkspace, 
           </div>
         </div>
         <div className="notebookHomeToolbar" aria-label="笔记本主页视图控制">
+          <button type="button" className="workspacePillButton secondary" onClick={onBackToRetrieval}>
+            返回本地证据检索
+          </button>
           <span className="notebookHomeSearchShell">搜索笔记本</span>
           <span>网格</span>
           <span>最近</span>

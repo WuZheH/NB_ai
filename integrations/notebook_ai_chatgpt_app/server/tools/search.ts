@@ -10,6 +10,7 @@ import {
   errorCode,
   errorToolResult,
   jsonContent,
+  notebookResultOutputSchema,
   toolMetadata,
   truncate,
 } from "./shared.js";
@@ -23,6 +24,17 @@ export const searchInputShape = {
 };
 
 export const searchInputSchema = z.object(searchInputShape);
+
+export const searchOutputShape = {
+  status: z.string(),
+  query: z.string(),
+  mode: z.string(),
+  embedding_model: z.string(),
+  reranker_model: z.string(),
+  result_count: z.number().int().nonnegative(),
+  results: z.array(notebookResultOutputSchema),
+  warnings: z.array(z.string()),
+};
 
 function compactResult(result: NotebookResult, includeContext: boolean): Record<string, unknown> {
   return {
@@ -83,12 +95,13 @@ export function registerSearchTool(server: McpServer, client: NotebookClient): v
   server.registerTool(
     "search",
     {
-      title: "Search NOTEBOOK_AI research evidence",
+      title: "Search private research evidence",
       description:
-        "Use this when the user asks about their papers, literature, research methods, PDF evidence, Zotero reading notes, or ideas recorded while reading. Search NOTEBOOK_AI before answering claims about the user's corpus. Distinguish PDF source text from the user's Zotero notes, cite document title, page, and fragment_id, call fetch for full context, and do not claim the collection has no relevant material until this search returns no results.",
+        "Use this when the user asks about their papers, literature, research methods, PDF evidence, Zotero reading notes, or ideas recorded while reading. Use Search before answering claims about the user's corpus. Distinguish PDF source text from the user's Zotero notes, cite document title, page, and fragment_id, call fetch for full context, and do not claim the collection has no relevant material until this search returns no results.",
       inputSchema: searchInputShape,
+      outputSchema: searchOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,
-      _meta: toolMetadata("Searching NOTEBOOK_AI…", "NOTEBOOK_AI search complete"),
+      _meta: toolMetadata("Searching private research evidence…", "Search complete", { rendersWidget: true }),
     },
     async (input) => runSearchTool(client, input),
   );

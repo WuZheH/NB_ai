@@ -5,10 +5,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createNotebookMcpServer } from "./app";
-import type { NotebookResult, NotebookSearchInput } from "./contracts";
-import { NotebookClient } from "./notebookClient";
+import type { NotebookFragment, NotebookResult, NotebookSearchInput } from "./contracts";
+import { NotebookBackendError, NotebookClient } from "./notebookClient";
 import { requireUnauthenticatedDevelopment } from "./security";
 import { NOTEBOOK_TOOL_NAMES } from "./tools";
+import { errorCode } from "./tools/shared";
 import { RESOURCE_MIME_TYPE } from "./widgetResource";
 
 function result(sourceType: NotebookResult["source_type"] = "pdf_chunk"): NotebookResult {
@@ -36,6 +37,12 @@ function result(sourceType: NotebookResult["source_type"] = "pdf_chunk"): Notebo
   };
 }
 
+function fragment(sourceType: NotebookFragment["source_type"] = "zotero_child_note"): NotebookFragment {
+  const { final_rank: _rank, final_score: _score, reranker_score: _reranker, semantic_score: _semantic, ...value } =
+    result(sourceType);
+  return value;
+}
+
 class MockNotebookClient extends NotebookClient {
   readonly calls: Array<{ tool: string; input: unknown }> = [];
 
@@ -61,7 +68,7 @@ class MockNotebookClient extends NotebookClient {
 
   override async fetchFragment(fragmentId: string) {
     this.calls.push({ tool: "fetch", input: fragmentId });
-    return { status: "ok", fragment: result("zotero_child_note") };
+    return { status: "ok", fragment: fragment() };
   }
 
   override async exportEvidence(input: { fragment_ids: string[]; format: "markdown" | "jsonl" | "json"; query?: string }) {
@@ -90,19 +97,69 @@ test("tools/list exposes the three read-only tools and widget resource", async (
         idempotentHint: true,
         openWorldHint: false,
       });
+      assert.equal(tool.outputSchema?.type, "object", `${tool.name} declares an object outputSchema`);
+      assert.ok(tool.outputSchema?.properties?.status, `${tool.name} outputSchema declares status`);
+      const meta = tool._meta as { ui?: { resourceUri?: string; visibility?: string[] } } | undefined;
+      assert.deepEqual(meta?.ui?.visibility, ["model", "app"]);
+      assert.equal(
+        meta?.ui?.resourceUri,
+        tool.name === "search" ? "ui://notebook-ai/research-search-v1.html" : undefined,
+        "only search mounts the results widget",
+      );
     }
 
     const resource = await client.readResource({ uri: "ui://notebook-ai/research-search-v1.html" });
     assert.equal(resource.contents[0]?.mimeType, RESOURCE_MIME_TYPE);
     assert.equal(resource.contents[0]?.mimeType, "text/html;profile=mcp-app");
     const resourceMeta = resource.contents[0]?._meta as
-      | { ui?: { permissions?: { clipboardWrite?: Record<string, never> } } }
+      | {
+          ui?: {
+            permissions?: { clipboardWrite?: Record<string, never> };
+            csp?: { connectDomains?: string[]; resourceDomains?: string[] };
+            domain?: string;
+          };
+          "openai/widgetCSP"?: { connect_domains?: string[]; resource_domains?: string[] };
+          "notebookAi/widgetDomainMode"?: string;
+        }
       | undefined;
     assert.deepEqual(resourceMeta?.ui?.permissions, { clipboardWrite: {} });
+    assert.deepEqual(resourceMeta?.ui?.csp, { connectDomains: [], resourceDomains: [] });
+    assert.deepEqual(resourceMeta?.["openai/widgetCSP"], { connect_domains: [], resource_domains: [] });
+    assert.equal(resourceMeta?.ui?.domain, undefined);
+    assert.equal(resourceMeta?.["notebookAi/widgetDomainMode"], "development-only");
   } finally {
     await client.close();
     await server.close();
   }
+});
+
+test("widget domain is emitted only for an explicitly configured HTTPS origin", async () => {
+  const backend = new MockNotebookClient();
+  const server = createNotebookMcpServer({
+    client: backend,
+    widget: { html: "<html></html>", widgetDomain: "https://widget.example/some/path" },
+  });
+  const client = new Client({ name: "notebook-ai-test", version: "0.1.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const resource = await client.readResource({ uri: "ui://notebook-ai/research-search-v1.html" });
+    const meta = resource.contents[0]?._meta as
+      | { ui?: { domain?: string }; "openai/widgetDomain"?: string; "notebookAi/widgetDomainMode"?: string }
+      | undefined;
+    assert.equal(meta?.ui?.domain, "https://widget.example");
+    assert.equal(meta?.["openai/widgetDomain"], "https://widget.example");
+    assert.equal(meta?.["notebookAi/widgetDomainMode"], "configured");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+
+  assert.throws(
+    () => createNotebookMcpServer({ client: backend, widget: { html: "<html></html>", widgetDomain: "http://widget.example" } }),
+    /must use HTTPS/,
+  );
 });
 
 test("search, fetch, and export_evidence call only the backend adapter", async () => {
@@ -121,8 +178,9 @@ test("search, fetch, and export_evidence call only the backend adapter", async (
     assert.equal(modelResults[1].selected_text, "Selected source");
 
     const fetched = await client.callTool({ name: "fetch", arguments: { fragment_id: "fragment-1" } });
-    const fragment = (fetched.structuredContent as { fragment: NotebookResult }).fragment;
-    assert.deepEqual(fragment.provenance, [{ source: "test" }]);
+    const fetchedFragment = (fetched.structuredContent as { fragment: NotebookFragment }).fragment;
+    assert.deepEqual(fetchedFragment.provenance, [{ source: "test" }]);
+    assert.equal("final_rank" in fetchedFragment, false, "fetch accepts the real unranked fragment contract");
 
     const exported = await client.callTool({
       name: "export_evidence",
@@ -143,4 +201,12 @@ test("anonymous startup is refused without the explicit development switch", () 
     port: 8787,
     unauthenticatedDevelopment: true,
   });
+});
+
+test("backend error codes are metadata-safe before logging", () => {
+  assert.equal(errorCode(new NotebookBackendError("failure", 500, "BACKEND_TIMEOUT")), "BACKEND_TIMEOUT");
+  assert.equal(
+    errorCode(new NotebookBackendError("failure", 500, "private note body\nfragment_id=secret")),
+    "MCP_ADAPTER_ERROR",
+  );
 });

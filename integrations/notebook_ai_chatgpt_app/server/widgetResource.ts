@@ -33,8 +33,10 @@ export function registerWidgetResource(server: McpServer, options: WidgetResourc
     "notebook-ai-research-search-widget",
     WIDGET_RESOURCE_URI,
     {
-      title: "NOTEBOOK_AI Research Search",
-      description: "Interactive PDF and Zotero reading-note evidence results from the user's NOTEBOOK_AI collection.",
+      title: "Search",
+      description:
+        "Interactive PDF and Zotero reading-note evidence results from the user's Search collection." +
+        (widgetDomain ? "" : " Widget domain mode is development-only until a real HTTPS origin is configured."),
       mimeType: RESOURCE_MIME_TYPE,
     },
     async () => {
@@ -53,8 +55,9 @@ export function registerWidgetResource(server: McpServer, options: WidgetResourc
             text: html,
             _meta: {
               ui,
+              "notebookAi/widgetDomainMode": widgetDomain ? "configured" : "development-only",
               "openai/widgetDescription":
-                "Shows NOTEBOOK_AI PDF passages and the user's Zotero reading notes with evidence selection and export controls.",
+                "Shows Search PDF passages and the user's Zotero reading notes with preview, fragment ID copy, evidence selection, and export controls.",
               "openai/widgetPrefersBorder": true,
               "openai/widgetCSP": { connect_domains: [], resource_domains: [] },
               ...(widgetDomain ? { "openai/widgetDomain": widgetDomain } : {}),

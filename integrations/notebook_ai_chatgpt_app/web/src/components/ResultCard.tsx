@@ -1,4 +1,5 @@
 import { SourceBadge } from "./SourceBadge";
+import { FragmentIdBlock } from "./FragmentIdBlock";
 import type { SearchResult } from "../types";
 
 interface ResultCardProps {
@@ -8,22 +9,12 @@ interface ResultCardProps {
   loadingDetail: boolean;
   onSelect: () => void;
   onExpand: () => void;
-  onCopy: () => void;
-  onOpen: (href: string) => void;
+  onCopyFragment: () => void;
+  onCopyId: () => void;
 }
 
 function score(value: number | null): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(4) : "—";
-}
-
-function openUrl(result: SearchResult): string | null {
-  const target = result.open_target;
-  if (!target) return null;
-  for (const key of ["url", "href", "pdf_url", "zotero_url", "open_url"]) {
-    const value = target[key];
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return null;
 }
 
 function resultPage(result: SearchResult): string {
@@ -38,10 +29,9 @@ export function ResultCard({
   loadingDetail,
   onSelect,
   onExpand,
-  onCopy,
-  onOpen,
+  onCopyFragment,
+  onCopyId,
 }: ResultCardProps) {
-  const target = openUrl(result);
   const isPdf = result.source_type === "pdf_chunk";
   const contextAvailable = Boolean(result.context_before || result.context_after);
 
@@ -50,17 +40,23 @@ export function ResultCard({
       <header className="result-header">
         <div className="result-kicker">
           <SourceBadge sourceType={result.source_type} />
-          <span>最终排名 #{result.final_rank ?? "—"}</span>
+          <span>{resultPage(result)}</span>
         </div>
-        <label className="select-evidence">
-          <input type="checkbox" checked={selected} onChange={onSelect} />
-          加入证据篮子
-        </label>
+        <button
+          type="button"
+          className="search-button search-toggle-button search-button-compact select-evidence"
+          aria-pressed={selected}
+          title={selected ? "从证据篮子移除" : "加入证据篮子"}
+          onClick={onSelect}
+        >
+          <span aria-hidden="true">{selected ? "✓" : "+"}</span>
+          {selected ? "已加入" : "加入证据"}
+        </button>
       </header>
 
       <h2>{result.document_title || "未命名文档"}</h2>
       <div className="result-meta">
-        <span>{resultPage(result)}</span>
+        <span>最终排名 #{result.final_rank ?? "—"}</span>
         <span>reranker {score(result.reranker_score)}</span>
       </div>
 
@@ -98,26 +94,21 @@ export function ResultCard({
         </section>
       )}
 
-      <details className="provenance">
-        <summary>查看 provenance</summary>
-        <pre>{JSON.stringify(result.provenance ?? {}, null, 2)}</pre>
-      </details>
+      {expanded && (
+        <details className="provenance">
+          <summary>来源摘要</summary>
+          <pre>{JSON.stringify(result.provenance ?? {}, null, 2)}</pre>
+        </details>
+      )}
+
+      <FragmentIdBlock fragmentId={result.fragment_id} onCopy={onCopyId} />
 
       <footer className="result-actions">
-        <button type="button" onClick={onExpand}>
-          {expanded ? "收起上下文" : "展开上下文"}
+        <button type="button" className="search-button search-button-subtle search-button-compact" onClick={onExpand}>
+          {expanded ? "收起预览" : "预览"}
         </button>
-        <button type="button" onClick={onCopy}>复制单条</button>
-        <button
-          type="button"
-          disabled={!target}
-          title={target ? undefined : isPdf ? "此结果没有可打开的 PDF 页目标。" : "此结果没有可打开的 Zotero 条目目标。"}
-          onClick={() => target && onOpen(target)}
-        >
-          {isPdf ? "打开 PDF 页" : "打开 Zotero 条目"}
-        </button>
+        <button type="button" className="search-button search-button-transparent search-button-compact" onClick={onCopyFragment}>复制片段</button>
       </footer>
-      <code className="fragment-id">{result.fragment_id}</code>
     </article>
   );
 }

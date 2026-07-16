@@ -1,15 +1,15 @@
-# NOTEBOOK_AI Research Search for ChatGPT
+# Search for ChatGPT
 
-This local Developer Mode app lets ChatGPT search the NOTEBOOK_AI collection, render PDF passages and Zotero reading notes in an embedded React widget, fetch one complete evidence fragment, and export selected evidence. The MCP server is deliberately a thin HTTP adapter: embedding, semantic recall, reranking, fragment resolution, and evidence formatting remain in the NOTEBOOK_AI Python backend.
+This local Developer Mode app lets ChatGPT search the private Search collection, render PDF passages and Zotero reading notes in an embedded React widget, fetch one complete evidence fragment, and export selected evidence. The MCP server is deliberately a thin HTTP adapter: embedding, semantic recall, reranking, fragment resolution, and evidence formatting remain in the Search Python backend.
 
-The app does **not** call the OpenAI API, run an external LLM, access SQLite from Node or the widget, or write to the NOTEBOOK_AI collection.
+The app does **not** call the OpenAI API, run an external LLM, access SQLite from Node or the widget, or write to the Search collection.
 
 ## Architecture
 
 ```text
 ChatGPT
   -> HTTPS tunnel -> MCP Streamable HTTP /mcp (loopback-only Node server)
-  -> NOTEBOOK_AI FastAPI on 127.0.0.1
+  -> Search FastAPI on 127.0.0.1
   -> existing Qwen3 embedding + semantic recall + Qwen3 reranker + final ranking
 ```
 
@@ -30,7 +30,7 @@ This extended `search` contract is intended for this private Developer Mode app;
 
 ## Requirements
 
-- NOTEBOOK_AI backend dependencies in the existing project conda environment.
+- Search backend dependencies in the existing project conda environment.
 - Node.js 20.19 or newer.
 - An HTTPS tunnel program already installed by the user for the short connection test.
 - ChatGPT Developer Mode access.
@@ -48,7 +48,7 @@ npm run check
 
 `npm ci` uses the committed lockfile. The build produces `web/dist/widget.html` and `dist/server/index.js`; neither `node_modules` nor local `.env` files belong in Git. MCP Inspector is kept outside the app dependency tree because it is a separate interactive testing application, not a runtime dependency.
 
-## Start NOTEBOOK_AI
+## Start Search
 
 From the repository root, use the project conda interpreter (do not use an unverified system Python):
 
@@ -101,7 +101,7 @@ Check the local endpoint:
 Invoke-RestMethod http://127.0.0.1:8787/healthz
 ```
 
-Run the official SDK Streamable HTTP smoke after both services are up. It performs the full read-only `search → fetch → export_evidence` sequence and prints only IDs/counts, never evidence text:
+Run the official SDK Streamable HTTP smoke after both services are up. It performs the full read-only `search → fetch → export_evidence` sequence and prints only compact status/count metadata, never evidence text or fragment IDs:
 
 ```powershell
 npm run smoke -- http://127.0.0.1:8787/mcp "避免脚步滑动"
@@ -127,9 +127,11 @@ In Inspector:
 
 The repository tests use the official MCP SDK in-memory transport and a real Streamable HTTP client smoke; they do not write production data. Installing Inspector itself is optional and separate from `npm ci`; if it is not already installed, obtain the pinned `@modelcontextprotocol/inspector@0.22.0` only under the user's normal package-install policy.
 
-## Create a short-lived HTTPS tunnel
+## Manual development fallback: short-lived HTTPS tunnel
 
-ChatGPT must reach an HTTPS `/mcp` URL. Start a tunnel only after both local services pass their checks. Use a tunnel program you already trust and have installed; do not put its token or generated URL in Git. Examples:
+Normal daily use goes through the OpenAI Secure MCP Tunnel managed by the local Launcher; see [Local runtime and Secure MCP Tunnel](../../docs/LOCAL_RUNTIME.md). The commands below are only a temporary, unauthenticated development fallback. They are never started by the Launcher or Zotero and must not be configured for login autostart.
+
+For a brief manual Developer Mode diagnostic, start a tunnel only after both local services pass their checks. Use a tunnel program you already trust and have installed; do not put its token or generated URL in Git. Examples:
 
 ```powershell
 # If cloudflared is already installed
@@ -148,10 +150,10 @@ Unauthenticated tunnel mode is for brief local Developer Mode testing only. A ho
 1. In ChatGPT open **Settings → Security and login → Developer mode** and enable Developer Mode.
 2. Open **Settings → Plugins** (or `chatgpt.com/plugins`).
 3. Select **Create** / the plus button for a new developer-mode app.
-4. Name it **NOTEBOOK_AI Research Search**.
+4. Name it **Search**.
 5. Use this description:
 
-   > Searches my private NOTEBOOK_AI collection for relevant PDF passages and Zotero reading notes before answering research and literature questions.
+   > Searches my private Search collection for relevant PDF passages and Zotero reading notes before answering research and literature questions.
 
 6. Enter the short-lived HTTPS tunnel URL ending in `/mcp`.
 7. Finish creating the app and enable it for a new chat.

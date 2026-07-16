@@ -15,8 +15,8 @@ function render(result: SearchResult): string {
       loadingDetail={false}
       onSelect={() => undefined}
       onExpand={() => undefined}
-      onCopy={() => undefined}
-      onOpen={() => undefined}
+      onCopyFragment={() => undefined}
+      onCopyId={() => undefined}
     />,
   );
 }
@@ -42,7 +42,7 @@ const base = {
 
 test("PDF card labels its text as PDF source and never invents a user note", () => {
   const html = render({ ...base, source_type: "pdf_chunk", text: "Original PDF", selected_text: null, note_text: null });
-  assert.match(html, /PDF 片段/);
+  assert.match(html, /PDF 原文/);
   assert.match(html, /PDF 原文/);
   assert.match(html, /Original PDF/);
   assert.doesNotMatch(html, /用户笔记/);
@@ -56,9 +56,24 @@ test("Zotero note card keeps note_text and selected_text distinct", () => {
     note_text: "My interpretation",
     selected_text: "Quoted paper text",
   });
-  assert.match(html, /Zotero 批注笔记/);
+  assert.match(html, /Zotero 批注/);
   assert.match(html, /用户笔记/);
   assert.match(html, /My interpretation/);
   assert.match(html, /对应选中文本/);
   assert.match(html, /Quoted paper text/);
+});
+
+test("card exposes preview, fragment copy, and ID copy without direct app navigation", () => {
+  const html = render({ ...base, source_type: "pdf_chunk", text: "Original PDF", selected_text: null, note_text: null });
+  assert.match(html, />预览</);
+  assert.match(html, /复制片段/);
+  assert.match(html, /复制 ID/);
+  assert.doesNotMatch(html, /打开 PDF/);
+  assert.doesNotMatch(html, /打开 Zotero/);
+  assert.doesNotMatch(html, /打开 ChatGPT/);
+  assert.match(html, /search-button-subtle/);
+  assert.match(html, /search-button-transparent/);
+  assert.match(html, /search-toggle-button/);
+  assert.match(html, /aria-pressed="false"/);
+  assert.doesNotMatch(html, /search-button-primary/);
 });

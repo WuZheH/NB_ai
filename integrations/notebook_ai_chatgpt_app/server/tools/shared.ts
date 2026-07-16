@@ -1,4 +1,6 @@
 import { NotebookBackendError } from "../notebookClient.js";
+import { NOTEBOOK_SOURCE_TYPES } from "../contracts.js";
+import { z } from "zod";
 
 export const WIDGET_RESOURCE_URI = "ui://notebook-ai/research-search-v1.html";
 
@@ -9,10 +11,43 @@ export const READ_ONLY_ANNOTATIONS = Object.freeze({
   openWorldHint: false,
 });
 
-export function toolMetadata(invoking: string, invoked: string): Record<string, unknown> {
+export const notebookFragmentOutputSchema = z
+  .object({
+    fragment_id: z.string(),
+    source_type: z.enum(NOTEBOOK_SOURCE_TYPES),
+    document_id: z.number().int().nullable(),
+    document_title: z.string().nullable(),
+    pdf_page: z.number().int().nullable(),
+    page_label: z.string().nullable(),
+    text: z.string().nullable(),
+    note_text: z.string().nullable(),
+    selected_text: z.string().nullable(),
+    context_before: z.string().nullable(),
+    context_after: z.string().nullable(),
+    tags: z.array(z.string()),
+    provenance: z.unknown(),
+  })
+  .passthrough();
+
+export const notebookResultOutputSchema = notebookFragmentOutputSchema.extend({
+  final_rank: z.number().nullable(),
+  final_score: z.number().nullable(),
+  reranker_score: z.number().nullable(),
+  semantic_score: z.number().nullable(),
+});
+
+export function toolMetadata(
+  invoking: string,
+  invoked: string,
+  options: { rendersWidget?: boolean } = {},
+): Record<string, unknown> {
+  const rendersWidget = options.rendersWidget === true;
   return {
-    ui: { resourceUri: WIDGET_RESOURCE_URI },
-    "openai/outputTemplate": WIDGET_RESOURCE_URI,
+    ui: {
+      visibility: ["model", "app"],
+      ...(rendersWidget ? { resourceUri: WIDGET_RESOURCE_URI } : {}),
+    },
+    ...(rendersWidget ? { "openai/outputTemplate": WIDGET_RESOURCE_URI } : {}),
     "openai/toolInvocation/invoking": invoking,
     "openai/toolInvocation/invoked": invoked,
     "openai/widgetAccessible": true,
@@ -28,14 +63,20 @@ export function errorToolResult(error: unknown): {
   content: Array<{ type: "text"; text: string }>;
   structuredContent: { status: "error"; error_code: string; message: string };
 } {
-  const code = error instanceof NotebookBackendError ? error.code : "MCP_ADAPTER_ERROR";
-  const message = error instanceof Error ? error.message : "Unexpected NOTEBOOK_AI adapter error.";
+  const code = errorCode(error);
+  const message =
+    code === "BACKEND_TIMEOUT"
+      ? "Search backend request timed out."
+      : "Search request failed.";
   const structuredContent = { status: "error" as const, error_code: code, message };
   return { isError: true, content: jsonContent(structuredContent), structuredContent };
 }
 
 export function errorCode(error: unknown): string {
-  return error instanceof NotebookBackendError ? error.code : "MCP_ADAPTER_ERROR";
+  if (!(error instanceof NotebookBackendError)) {
+    return "MCP_ADAPTER_ERROR";
+  }
+  return /^[A-Za-z0-9_.-]{1,96}$/.test(error.code) ? error.code : "MCP_ADAPTER_ERROR";
 }
 
 export function elapsedMilliseconds(startedAt: number): number {

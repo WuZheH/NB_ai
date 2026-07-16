@@ -22,6 +22,14 @@ export const exportEvidenceInputShape = {
 
 export const exportEvidenceInputSchema = z.object(exportEvidenceInputShape);
 
+export const exportEvidenceOutputShape = {
+  status: z.string(),
+  format: z.enum(["markdown", "jsonl", "json"]),
+  item_count: z.number().int().nonnegative(),
+  content_length: z.number().int().nonnegative(),
+  content_preview: z.string().nullable(),
+};
+
 export async function runExportEvidenceTool(client: NotebookClient, rawInput: unknown) {
   const startedAt = performance.now();
   try {
@@ -63,10 +71,11 @@ export function registerExportEvidenceTool(server: McpServer, client: NotebookCl
   server.registerTool(
     "export_evidence",
     {
-      title: "Export selected NOTEBOOK_AI evidence",
+      title: "Export selected Search evidence",
       description:
-        "Use this when the user asks to organize, copy, or export selected NOTEBOOK_AI evidence. It returns Markdown, JSONL, or JSON without writing files or changing the collection.",
+        "Use this when the user asks to organize, copy, or export selected Search evidence. It returns Markdown, JSONL, or JSON without writing files or changing the collection.",
       inputSchema: exportEvidenceInputShape,
+      outputSchema: exportEvidenceOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,
       _meta: toolMetadata("Preparing evidence export…", "Evidence export ready"),
     },

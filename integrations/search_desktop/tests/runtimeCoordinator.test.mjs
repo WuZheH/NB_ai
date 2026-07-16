@@ -3,11 +3,14 @@ import test from "node:test";
 import { RuntimeCoordinator } from "../electron/runtime/runtimeCoordinator.js";
 import { desktopStatus, localRuntimeReady } from "../electron/runtime/status.js";
 
-function readyStatus(tunnelState = "tunnel_not_configured") {
+function readyStatus(tunnelState = "tunnel_not_configured", owned = false) {
   return {
     state: tunnelState === "tunnel_ready" ? "ready" : "local_ready_tunnel_missing",
     tunnel_state: tunnelState,
-    components: { fastapi: { state: "ready" }, mcp: { state: "ready" } },
+    components: {
+      fastapi: { state: "ready", owned },
+      mcp: { state: "ready", owned },
+    },
   };
 }
 
@@ -25,8 +28,11 @@ test("healthy pre-existing runtime is reused and never stopped by desktop", asyn
     async stop() { calls.push("stop"); return { state: "stopped" }; },
   };
   const coordinator = new RuntimeCoordinator(client, { sleep: async () => {} });
-  await coordinator.ensureReady();
+  const status = await coordinator.ensureReady();
   assert.equal(coordinator.startedByDesktop, false);
+  assert.equal(status.runtime_owner, "external");
+  assert.equal(status.components.fastapi.owner, "external");
+  await assert.rejects(() => coordinator.restart(), /external_runtime_restart_not_allowed/);
   assert.deepEqual(await coordinator.stopIfOwned(), { status: "reused_runtime_left_running" });
   assert.deepEqual(calls, ["status", "status"]);
 });
@@ -38,14 +44,16 @@ test("runtime started by desktop is stopped on fully quit", async () => {
     async status() {
       calls.push("status");
       statusCall += 1;
-      return statusCall === 1 ? { state: "stopped", components: {} } : readyStatus();
+      return statusCall === 1 ? { state: "stopped", components: {} } : readyStatus("tunnel_not_configured", true);
     },
     async start() { calls.push("start"); return { state: "starting" }; },
     async stop() { calls.push("stop"); return { state: "stopped", components: {} }; },
   };
   const coordinator = new RuntimeCoordinator(client, { sleep: async () => {} });
-  await coordinator.ensureReady();
+  const status = await coordinator.ensureReady();
   assert.equal(coordinator.startedByDesktop, true);
+  assert.equal(status.runtime_owner, "managed-by-search");
+  assert.equal(status.components.fastapi.owner, "managed-by-search");
   await coordinator.stopIfOwned();
   assert.deepEqual(calls, ["status", "start", "status", "stop"]);
 });

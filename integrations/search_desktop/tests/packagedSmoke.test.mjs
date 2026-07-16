@@ -25,7 +25,7 @@ test("packaged smoke validates window identity and final ready startup stage", (
 });
 
 test("packaged smoke keeps all mutable paths inside the task temp root", () => {
-  assert.match(smoke, /\.codex_tmp\\search-desktop-startup-0\.1\.2\\packaged-smoke/);
+  assert.match(smoke, /\.codex_tmp\\search-desktop-startup-0\.1\.3\\packaged-smoke/);
   assert.match(smoke, /--user-data-dir=\$UserData/);
   for (const name of ["LOCALAPPDATA", "APPDATA", "TEMP", "TMP"]) {
     assert.match(smoke, new RegExp(`\\$env:${name} =`));

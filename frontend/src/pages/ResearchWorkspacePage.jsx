@@ -18,7 +18,13 @@ import {
 
 export { buildDeterministicWorkspaceFallbackState };
 
-export default function ResearchWorkspacePage({ route = {}, onOpenWorkspace, onOpenImport, onOpenAdvancedWorkflow }) {
+export default function ResearchWorkspacePage({
+  route = {},
+  onOpenWorkspace,
+  onOpenImport,
+  onOpenAdvancedWorkflow,
+  onBackToRetrieval,
+}) {
   const documentId = route.documentId ? Number(route.documentId) : null;
   const chapterId = route.chapterId ? Number(route.chapterId) : null;
   const [workspaceState, setWorkspaceState] = useState({ status: "idle", data: null, error: "" });
@@ -145,6 +151,7 @@ export default function ResearchWorkspacePage({ route = {}, onOpenWorkspace, onO
         homeState={homeState}
         onOpenWorkspace={onOpenWorkspace}
         onOpenImport={onOpenImport}
+        onBackToRetrieval={onBackToRetrieval}
       />
     );
   }
@@ -177,6 +184,9 @@ export default function ResearchWorkspacePage({ route = {}, onOpenWorkspace, onO
           )}
         </div>
         <div className="researchWorkspaceTopActions">
+          <button type="button" className="workspacePillButton secondary" onClick={onBackToRetrieval}>
+            返回本地证据检索
+          </button>
           <button type="button" className="workspacePillButton">分享</button>
           <button type="button" className="workspacePillButton">设置</button>
           <button type="button" className="workspacePillButton">导出</button>

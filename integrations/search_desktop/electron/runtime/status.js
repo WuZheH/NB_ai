@@ -27,13 +27,21 @@ export function desktopStatus(status) {
   if (status.state === "starting") {
     return { code: "starting", label: "正在启动", localReady: false, mcpReady };
   }
-  if (fastapiReady && mcpReady && status.tunnel_state === "tunnel_ready") {
+  if (fastapiReady && mcpReady && status.tunnel_state === "persistent_tunnel_online") {
     return { code: "ready", label: "本地搜索与 MCP 已就绪", localReady: true, mcpReady: true };
+  }
+  if (fastapiReady && mcpReady && status.tunnel_state === "quick_tunnel_online") {
+    return {
+      code: "local_ready_tunnel_missing",
+      label: "本地后端已就绪 · ChatGPT 临时 Tunnel 在线",
+      localReady: true,
+      mcpReady: true,
+    };
   }
   if (fastapiReady && mcpReady) {
     return {
       code: "local_ready_tunnel_missing",
-      label: "本地搜索已就绪 · 安全通道未配置",
+      label: "本地后端已就绪 · ChatGPT 需要持久 Tunnel",
       localReady: true,
       mcpReady: true,
     };

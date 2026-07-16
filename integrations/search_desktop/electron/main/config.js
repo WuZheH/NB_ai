@@ -7,6 +7,7 @@ export const DESKTOP_ROOT = resolve(MODULE_DIR, "../..");
 export const SOURCE_PROJECT_ROOT = resolve(DESKTOP_ROOT, "../..");
 export const DEFAULT_PYTHON_EXE =
   "D:\\LEARNING\\Tools\\ANACONDA\\envs\\NOTEBOOK_AI\\python.exe";
+export const DEFAULT_NODE_EXE = "D:\\LEARNING\\Tools\\node.js\\node.exe";
 
 export function resolveDesktopConfig({
   env = process.env,
@@ -18,6 +19,7 @@ export function resolveDesktopConfig({
   const localConfig = isPackaged ? readLocalConfig(executablePath) : {};
   const projectRoot = resolveProjectRoot({ env, executablePath, isPackaged, localConfig });
   const pythonExe = resolve(env.NOTEBOOK_AI_PYTHON_EXE || localConfig.pythonExe || DEFAULT_PYTHON_EXE);
+  const nodeExe = resolve(env.NOTEBOOK_AI_NODE_EXE || localConfig.nodeExe || DEFAULT_NODE_EXE);
   const runtimeScript = join(projectRoot, "scripts", "runtime", "notebook_ai_launcher.py");
   const packagedAssets = isPackaged ? join(resolve(resourcesPath), "search-assets") : null;
   const frontendDist = isPackaged
@@ -36,6 +38,7 @@ export function resolveDesktopConfig({
     projectRoot,
     desktopRoot: DESKTOP_ROOT,
     pythonExe,
+    nodeExe,
     runtimeScript,
     frontendDist,
     designSystemRoot,
@@ -46,7 +49,7 @@ export function resolveDesktopConfig({
     rendererPort: 5173,
     defaultRoute: "/retrieval",
     settingsPath,
-    runtimeAvailable: existsSync(pythonExe) && existsSync(runtimeScript),
+    runtimeAvailable: existsSync(pythonExe) && existsSync(nodeExe) && existsSync(runtimeScript),
   });
 }
 
@@ -74,6 +77,7 @@ function readLocalConfig(executablePath) {
     return {
       projectRoot: typeof value.projectRoot === "string" ? value.projectRoot : "",
       pythonExe: typeof value.pythonExe === "string" ? value.pythonExe : "",
+      nodeExe: typeof value.nodeExe === "string" ? value.nodeExe : "",
     };
   } catch {
     throw new Error("search_desktop_local_config_invalid");

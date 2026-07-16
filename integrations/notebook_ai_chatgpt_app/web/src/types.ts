@@ -13,10 +13,10 @@ export interface SearchResult {
   final_score: number | null;
   reranker_score: number | null;
   semantic_score: number | null;
-  document_id: string | null;
+  document_id: number | null;
   document_title: string | null;
   document_type: string | null;
-  chunk_id: string | null;
+  chunk_id: number | null;
   pdf_page: number | null;
   page_label: string | null;
   text: string | null;
@@ -25,10 +25,18 @@ export interface SearchResult {
   context_before: string | null;
   context_after: string | null;
   tags: string[];
-  provenance: Record<string, unknown> | null;
+  provenance: Array<Record<string, unknown>>;
   open_target: Record<string, unknown> | null;
   [key: string]: unknown;
 }
+
+export type FragmentDetail = Omit<
+  SearchResult,
+  "final_rank" | "final_score" | "reranker_score" | "semantic_score"
+> &
+  Partial<
+    Pick<SearchResult, "final_rank" | "final_score" | "reranker_score" | "semantic_score">
+  >;
 
 export interface ToolEnvelope {
   content?: Array<{ type: string; text?: string }>;
@@ -52,8 +60,10 @@ declare global {
       toolInput?: Record<string, unknown>;
       toolOutput?: Record<string, unknown>;
       toolResponseMetadata?: Record<string, unknown>;
+      widgetState?: Record<string, unknown>;
       callTool?: (name: string, args: Record<string, unknown>) => Promise<ToolEnvelope>;
       setWidgetState?: (state: Record<string, unknown>) => Promise<void> | void;
+      sendFollowUpMessage?: (options: { prompt: string; scrollToBottom?: boolean }) => Promise<void> | void;
       openExternal?: (options: { href: string }) => Promise<void> | void;
     };
   }

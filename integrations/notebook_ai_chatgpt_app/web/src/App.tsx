@@ -5,10 +5,11 @@ import { ResultCard } from "./components/ResultCard";
 import { SourceFilters } from "./components/SourceFilters";
 import { StatePanel } from "./components/StatePanel";
 import { NOTEBOOK_SOURCES } from "./constants";
-import { selectedEvidence, selectionContext, toggleEvidence } from "./state/evidenceSelection";
+import { pinnedEvidence, selectedEvidence, toggleEvidence } from "./state/evidenceSelection";
 import { mcpBridge } from "./state/mcpBridge";
 import { exportedContent, fetchedFragment, searchViewModel } from "./state/toolData";
-import type { EvidenceFormat, SearchResult, SourceType, ToolEnvelope } from "./types";
+import { createWidgetState, readHostWidgetState, retainAvailableIds } from "./state/widgetState";
+import type { EvidenceFormat, FragmentDetail, SearchResult, SourceType, ToolEnvelope } from "./types";
 
 function hasSearchPayload(envelope: ToolEnvelope): boolean {
   const structured = envelope.structuredContent ?? {};
@@ -24,11 +25,17 @@ async function copyText(value: string): Promise<void> {
 }
 
 export default function App() {
-  const [view, setView] = useState(() => searchViewModel(mcpBridge.initialEnvelope()));
-  const [activeSources, setActiveSources] = useState<Set<SourceType>>(() => new Set(NOTEBOOK_SOURCES));
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
-  const [details, setDetails] = useState<Record<string, SearchResult>>({});
+  const [initialWidgetState] = useState(() => readHostWidgetState());
+  const [view, setView] = useState(() => {
+    const initialEnvelope = mcpBridge.initialEnvelope();
+    return hasSearchPayload(initialEnvelope ?? {}) ? searchViewModel(initialEnvelope) : searchViewModel(null);
+  });
+  const [activeSources, setActiveSources] = useState<Set<SourceType>>(
+    () => new Set(initialWidgetState.activeSources),
+  );
+  const [selectedIds, setSelectedIds] = useState<string[]>(initialWidgetState.selectedIds);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set(initialWidgetState.expandedIds));
+  const [details, setDetails] = useState<Record<string, FragmentDetail>>({});
   const [loadingDetail, setLoadingDetail] = useState<Set<string>>(() => new Set());
   const [exporting, setExporting] = useState(false);
   const [basketStatus, setBasketStatus] = useState("");
@@ -49,8 +56,18 @@ export default function App() {
   const selected = useMemo(() => selectedEvidence(view.results, selectedIds), [view.results, selectedIds]);
 
   useEffect(() => {
-    void mcpBridge.updateModelContext(selectionContext(view.results, selectedIds), selectedIds);
-  }, [view.results, selectedIds]);
+    void mcpBridge.persistWidgetState(createWidgetState(selectedIds, activeSources, expandedIds));
+  }, [activeSources, expandedIds, selectedIds]);
+
+  useEffect(() => {
+    if (view.status === "loading") return;
+    const availableIds = new Set(view.results.map((result) => result.fragment_id));
+    setSelectedIds((current) => retainAvailableIds(current, availableIds));
+    setExpandedIds((current) => new Set(retainAvailableIds([...current], availableIds)));
+    setDetails((current) =>
+      Object.fromEntries(Object.entries(current).filter(([fragmentId]) => availableIds.has(fragmentId))),
+    );
+  }, [view.results, view.status]);
 
   function toggleSource(sourceType: SourceType) {
     setActiveSources((current) => {
@@ -114,65 +131,108 @@ export default function App() {
     }
   }
 
+  async function pinSelection() {
+    const compactEvidence = pinnedEvidence(view.results, selectedIds);
+    if (!compactEvidence.length) return;
+    try {
+      await mcpBridge.pinSelection(compactEvidence);
+      setBasketStatus("已将紧凑证据定位信息固定到当前聊天；未发送正文或 provenance。");
+    } catch (error) {
+      setBasketStatus(error instanceof Error ? error.message : "当前宿主不支持固定到聊天。");
+    }
+  }
+
+  async function copyFragment(result: SearchResult) {
+    const content = result.source_type === "pdf_chunk"
+      ? String(result.text || "").trim()
+      : [result.note_text, result.selected_text].map((value) => String(value || "").trim()).filter(Boolean).join("\n\n");
+    if (!content) {
+      setBasketStatus("该结果没有可复制的片段正文。");
+      return;
+    }
+    try {
+      await copyText(content);
+      setBasketStatus("已复制片段正文。");
+    } catch (error) {
+      setBasketStatus(error instanceof Error ? error.message : "复制片段失败。");
+    }
+  }
+
+  async function copyFragmentId(fragmentId: string) {
+    try {
+      await copyText(fragmentId);
+      setBasketStatus("已复制完整 fragment ID。");
+    } catch (error) {
+      setBasketStatus(error instanceof Error ? error.message : "复制 fragment ID 失败。");
+    }
+  }
+
   return (
-    <main className="app-shell">
+    <main className="app-shell search-host-theme-aware">
       <header className="app-header">
         <div>
-          <p className="eyebrow">NOTEBOOK_AI · 高质量资料搜索</p>
+          <p className="eyebrow">Search · 高质量资料搜索</p>
           <h1>{view.query || "研究资料检索"}</h1>
           <p>{view.resultCount} 条结果 · PDF 原文与 Zotero 用户笔记保持独立</p>
         </div>
       </header>
 
       <SourceFilters active={activeSources} onToggle={toggleSource} />
-      {view.warnings.length > 0 && (
-        <div className="warnings" role="status">{view.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>
-      )}
+      <div className="widget-scroll-region search-scroll-region" tabIndex={0} role="region" aria-label="可滚动的 Search 检索结果">
+        {view.warnings.length > 0 && (
+          <div className="warnings" role="status">{view.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>
+        )}
 
-      {view.error ? (
-        <StatePanel kind="error">{view.error}</StatePanel>
-      ) : view.status === "loading" ? (
-        <StatePanel kind="loading">正在等待 NOTEBOOK_AI 搜索结果…</StatePanel>
-      ) : displayedResults.length === 0 ? (
-        <StatePanel kind="empty">当前来源筛选下没有结果。</StatePanel>
-      ) : (
-        <section className="results" aria-label="检索结果">
-          {displayedResults.map((baseResult) => {
-            const result = details[baseResult.fragment_id] ?? baseResult;
-            return (
-              <ResultCard
-                key={result.fragment_id}
-                result={result}
-                selected={selectedIds.includes(result.fragment_id)}
-                expanded={expandedIds.has(result.fragment_id)}
-                loadingDetail={loadingDetail.has(result.fragment_id)}
-                onSelect={() => setSelectedIds((current) => toggleEvidence(current, result.fragment_id))}
-                onExpand={() => void toggleExpanded(result)}
-                onCopy={() => void exportSelection("markdown", [result.fragment_id])}
-                onOpen={(href) => void mcpBridge.openLink(href)}
-              />
-            );
-          })}
-        </section>
-      )}
+        {view.error ? (
+          <StatePanel kind="error">{view.error}</StatePanel>
+        ) : view.status === "loading" ? (
+          <StatePanel kind="loading">正在等待 Search 检索结果…</StatePanel>
+        ) : displayedResults.length === 0 ? (
+          <StatePanel kind="empty">当前来源筛选下没有结果。</StatePanel>
+        ) : (
+          <section className="results" aria-label="检索结果">
+            {displayedResults.map((baseResult) => {
+              const detail = details[baseResult.fragment_id];
+              const result = detail ? { ...baseResult, ...detail } : baseResult;
+              return (
+                <ResultCard
+                  key={result.fragment_id}
+                  result={result}
+                  selected={selectedIds.includes(result.fragment_id)}
+                  expanded={expandedIds.has(result.fragment_id)}
+                  loadingDetail={loadingDetail.has(result.fragment_id)}
+                  onSelect={() => setSelectedIds((current) => toggleEvidence(current, result.fragment_id))}
+                  onExpand={() => void toggleExpanded(result)}
+                  onCopyFragment={() => void copyFragment(result)}
+                  onCopyId={() => void copyFragmentId(result.fragment_id)}
+                />
+              );
+            })}
+          </section>
+        )}
+
+        {exportPreview && (
+          <section className="export-preview">
+            <div>
+              <h2>导出预览</h2>
+              <button type="button" className="search-button search-button-transparent search-button-compact" onClick={() => setExportPreview("")}>关闭</button>
+            </div>
+            <textarea readOnly value={exportPreview} aria-label="导出内容" />
+          </section>
+        )}
+      </div>
 
       <EvidenceBasket
         selected={selected}
+        selectedCount={selectedIds.length}
+        canPin={selected.length > 0 && selected.length === selectedIds.length}
         exporting={exporting}
         status={basketStatus}
         onClear={() => setSelectedIds([])}
         onExport={(format) => void exportSelection(format)}
+        onPin={() => void pinSelection()}
       />
 
-      {exportPreview && (
-        <section className="export-preview">
-          <div>
-            <h2>导出预览</h2>
-            <button type="button" onClick={() => setExportPreview("")}>关闭</button>
-          </div>
-          <textarea readOnly value={exportPreview} aria-label="导出内容" />
-        </section>
-      )}
     </main>
   );
 }

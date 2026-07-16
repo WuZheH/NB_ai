@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Search · 系统状态</title>
+  <link rel="stylesheet" href="/__search_design__/tokens.css" />
+  <link rel="stylesheet" href="/__search_design__/base.css" />
+  <link rel="stylesheet" href="/__search_design__/components.css" />
+  <link rel="stylesheet" href="/__search_desktop__/desktop-shell.css" />
+</head>
+<body>
+  <div class="desktopShell">
+    <aside class="desktopSidebar">
+      <a class="desktopBrand" href="/retrieval"><b>S</b><span><strong>Search</strong><small>本地科研工作台</small></span></a>
+      <nav aria-label="工作台导航">
+        <span>资料库</span>
+        <a href="/read-shelf">已读书架</a>
+        <a href="/library-search">资料库搜索</a>
+        <a href="/retrieval">本地证据检索</a>
+        <span>研究</span>
+        <a href="/workspace">Research Workspace</a>
+        <span>导入</span>
+        <a href="/import">导入 PDF</a>
+        <a href="/object-review">对象审核工作台</a>
+        <span>系统</span>
+        <a href="/system-status" data-route="system-status">系统状态</a>
+        <a href="/settings" data-route="settings">设置</a>
+      </nav>
+    </aside>
+
+    <main class="desktopStatusPage">
+      <header>
+        <span>SEARCH DESKTOP</span>
+        <h1 id="pageTitle">系统状态</h1>
+        <p id="summary" role="status">正在检查统一后端…</p>
+      </header>
+
+      <section id="statusSection" class="desktopCard" aria-label="统一后端状态">
+        <div class="serviceRow"><span>检索后端</span><strong id="fastapiState">启动中</strong><small>127.0.0.1:8000</small></div>
+        <div class="serviceRow"><span>MCP 后端</span><strong id="mcpState">启动中</strong><small>127.0.0.1:8787/mcp</small></div>
+        <div class="serviceRow"><span>Codex MCP</span><strong id="codexState">启动中</strong><small>仅表示后端就绪，不代表 Codex 已调用</small></div>
+        <div class="serviceRow"><span>Zotero 后端</span><strong id="zoteroState">启动中</strong><small>仅表示后端就绪，不代表 Zotero 已打开</small></div>
+        <div class="serviceRow"><span>ChatGPT Tunnel</span><strong id="tunnelState">启动中</strong><small id="tunnelNote">正在进行只读检查</small></div>
+      </section>
+
+      <section id="settingsSection" class="desktopCard" hidden>
+        <h2>桌面行为</h2>
+        <label><span><strong>登录 Windows 后自动启动 Search</strong><small>当前用户 Task Scheduler；不修改注册表。</small></span><input id="autostart" type="checkbox" /></label>
+        <label><span><strong>关闭窗口时最小化到托盘</strong><small>完全退出仅处理本次 Search 明确启动的后端 PID。</small></span><input id="minimizeToTray" type="checkbox" /></label>
+      </section>
+
+      <div class="statusActions">
+        <button id="refresh" type="button">重新检查</button>
+        <span id="message" role="status"></span>
+      </div>
+
+      <details id="technical" class="desktopCard">
+        <summary>技术详情</summary>
+        <dl>
+          <div><dt>最后检查</dt><dd id="checkedAt">unknown</dd></div>
+          <div><dt>FastAPI</dt><dd id="fastapiDetail">unknown</dd></div>
+          <div><dt>MCP</dt><dd id="mcpDetail">unknown</dd></div>
+          <div><dt>ChatGPT Tunnel</dt><dd id="tunnelDetail">unknown</dd></div>
+          <div><dt>Desktop</dt><dd id="desktopDetail">unknown</dd></div>
+        </dl>
+      </details>
+    </main>
+  </div>
+  <script src="/__search_desktop__/desktop-shell.js"></script>
+</body>
+</html>

@@ -7,7 +7,13 @@ export interface ToolLogRecord {
 
 export function logToolInvocation(record: ToolLogRecord): void {
   // Deliberately excludes queries, excerpts, notes, fragment ids, and provenance.
-  console.info(JSON.stringify({ event: "mcp_tool", ...record }));
+  const safeErrorCode =
+    record.error_code && /^[A-Za-z0-9_.-]{1,96}$/.test(record.error_code)
+      ? record.error_code
+      : record.error_code
+        ? "MCP_ADAPTER_ERROR"
+        : undefined;
+  console.info(JSON.stringify({ event: "mcp_tool", ...record, error_code: safeErrorCode }));
 }
 
 export function logDevelopmentWarning(port: number): void {

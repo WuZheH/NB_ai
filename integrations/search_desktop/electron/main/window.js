@@ -49,7 +49,7 @@ export function createWindowController({ BrowserWindow, shell, config, rendererO
   }
 
   return {
-    tunnelPauseSupported: true,
+    tunnelPauseSupported: false,
     create,
     openRoute,
     getWebContents() {

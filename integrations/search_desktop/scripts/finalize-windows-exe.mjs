@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { rcedit } from "rcedit";
 
 const DESKTOP_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const executable = join(DESKTOP_ROOT, "dist", "win-unpacked", "Search.exe");
+const packagedRoot = resolve(commandArgument("--packaged-root") || join(DESKTOP_ROOT, "dist", "win-unpacked"));
+const executable = join(packagedRoot, "Search.exe");
 const icon = join(DESKTOP_ROOT, "assets", "search.ico");
 const packageMetadata = JSON.parse(readFileSync(join(DESKTOP_ROOT, "package.json"), "utf8"));
 const fileVersion = `${packageMetadata.version}.0`;
@@ -32,3 +33,8 @@ process.stdout.write(`${JSON.stringify({
   productName: "Search",
   productVersion: packageMetadata.version,
 })}\n`);
+
+function commandArgument(name) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : null;
+}

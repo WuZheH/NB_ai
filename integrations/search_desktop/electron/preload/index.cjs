@@ -1,5 +1,12 @@
 const { contextBridge, ipcRenderer } = require("electron");
-const productMetadata = require("../product-metadata.json");
+// Sandboxed preload scripts cannot require arbitrary sibling JSON files.
+// These public build identifiers are verified against product-metadata.json
+// by the Desktop contract suite before packaging.
+const productMetadata = Object.freeze({
+  version: "0.1.3",
+  buildId: "20260717-unified-backend-r4-headless-final",
+  rendererAssetVersion: "0.1.3-unified-backend-r4-headless-final",
+});
 
 const channels = Object.freeze({
   runtimeStatus: "search:runtime-status",

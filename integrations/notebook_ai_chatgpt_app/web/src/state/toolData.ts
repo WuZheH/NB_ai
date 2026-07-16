@@ -1,4 +1,4 @@
-import type { SearchResult, SearchViewModel, ToolEnvelope } from "../types";
+import type { FragmentDetail, SearchResult, SearchViewModel, ToolEnvelope } from "../types";
 
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -27,11 +27,11 @@ export function searchViewModel(envelope: ToolEnvelope | null): SearchViewModel 
   };
 }
 
-export function fetchedFragment(envelope: ToolEnvelope): SearchResult | null {
+export function fetchedFragment(envelope: ToolEnvelope): FragmentDetail | null {
   const meta = asObject(envelope._meta);
   const structured = asObject(envelope.structuredContent);
   const fragment = meta["notebookAi/fragment"] ?? structured.fragment;
-  return fragment && typeof fragment === "object" ? (fragment as SearchResult) : null;
+  return fragment && typeof fragment === "object" ? (fragment as FragmentDetail) : null;
 }
 
 export function exportedContent(envelope: ToolEnvelope): string {

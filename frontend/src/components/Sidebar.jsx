@@ -26,7 +26,10 @@ const NAV_GROUPS = [
   },
   {
     label: "系统",
-    items: [{ id: "settings", label: "设置", status: "soon" }]
+    items: [
+      { id: "systemStatus", label: "系统状态", status: "active" },
+      { id: "settings", label: "设置", status: "active" }
+    ]
   }
 ];
 
@@ -51,6 +54,7 @@ export default function Sidebar({ view, onSelectNav }) {
                 key={item.id}
                 type="button"
                 className={`navItem ${view === item.id ? "selected" : ""}`}
+                aria-current={view === item.id ? "page" : undefined}
                 disabled={item.status === "soon"}
                 onClick={() => onSelectNav(item)}
               >

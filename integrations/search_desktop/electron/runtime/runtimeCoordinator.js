@@ -31,7 +31,7 @@ export class RuntimeCoordinator extends EventEmitter {
     while (Date.now() <= deadline) {
       const status = await this.client.status();
       this.update(status);
-      if (localRuntimeReady(status)) return status;
+      if (localRuntimeReady(this.lastStatus)) return this.lastStatus;
       if (status?.state === "failed") throw new Error(status.error_code || "runtime_start_failed");
       await this.sleep(this.pollIntervalMs);
     }
@@ -41,10 +41,11 @@ export class RuntimeCoordinator extends EventEmitter {
   async refresh() {
     const status = await this.client.status();
     this.update(status);
-    return status;
+    return this.lastStatus;
   }
 
   async restart() {
+    if (!this.startedByDesktop) throw new Error("external_runtime_restart_not_allowed");
     await this.client.restart();
     this.startedByDesktop = true;
     return this.waitForLocalReady();
@@ -59,12 +60,32 @@ export class RuntimeCoordinator extends EventEmitter {
   }
 
   update(status) {
-    this.lastStatus = status;
-    this.emit("status", desktopStatus(status));
+    this.lastStatus = this.decorate(status);
+    this.emit("status", this.lastStatus);
   }
 
   presentation() {
     return desktopStatus(this.lastStatus);
+  }
+
+  decorate(status) {
+    if (!status || typeof status !== "object") return status;
+    const components = Object.fromEntries(
+      Object.entries(status.components || {}).map(([name, component]) => [
+        name,
+        {
+          ...component,
+          owner: this.startedByDesktop && component?.owned
+            ? "managed-by-search"
+            : "external",
+        },
+      ]),
+    );
+    return {
+      ...status,
+      runtime_owner: this.startedByDesktop ? "managed-by-search" : "external",
+      components,
+    };
   }
 }
 

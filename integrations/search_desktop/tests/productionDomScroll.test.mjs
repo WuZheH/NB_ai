@@ -44,6 +44,12 @@ test("production renderer keeps window fixed while results, preview, and evidenc
   assert.equal(metrics.resultState.previewSameNode, true, JSON.stringify(metrics.resultState));
   assert.ok(metrics.resultState.previewScrollBefore > 0, JSON.stringify(metrics.resultState));
   assert.ok(Math.abs(metrics.resultState.previewScrollAfter - metrics.resultState.previewScrollBefore) <= 1, JSON.stringify(metrics.resultState));
+  assert.deepEqual(metrics.workspaceReturn, {
+    fromPath: "/retrieval",
+    workspacePath: "/workspace",
+    returnedPath: "/retrieval",
+    retrievalRestored: true,
+  });
   console.log(`production DOM scroll metrics: ${JSON.stringify(metrics)}`);
 });
 

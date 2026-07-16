@@ -16,13 +16,9 @@ export interface NotebookSearchInput {
   include_context: boolean;
 }
 
-export interface NotebookResult {
+export interface NotebookFragment {
   fragment_id: string;
   source_type: NotebookSourceType;
-  final_rank: number | null;
-  final_score: number | null;
-  reranker_score: number | null;
-  semantic_score: number | null;
   document_id: number | null;
   document_title: string | null;
   document_type: string | null;
@@ -38,6 +34,13 @@ export interface NotebookResult {
   provenance: Array<Record<string, unknown>>;
   open_target: Record<string, unknown> | null;
   [key: string]: unknown;
+}
+
+export interface NotebookResult extends NotebookFragment {
+  final_rank: number | null;
+  final_score: number | null;
+  reranker_score: number | null;
+  semantic_score: number | null;
 }
 
 export interface NotebookSearchResponse {
@@ -56,8 +59,8 @@ export interface NotebookSearchResponse {
 
 export interface FragmentResponse {
   status?: string;
-  fragment?: NotebookResult;
-  result?: NotebookResult;
+  fragment?: NotebookFragment;
+  result?: NotebookFragment;
   [key: string]: unknown;
 }
 
@@ -78,14 +81,14 @@ export interface EvidenceExportResponse {
   [key: string]: unknown;
 }
 
-export function unwrapFragment(payload: FragmentResponse | NotebookResult): NotebookResult {
+export function unwrapFragment(payload: FragmentResponse | NotebookFragment): NotebookFragment {
   if ("fragment" in payload && payload.fragment) {
     return payload.fragment;
   }
   if ("result" in payload && payload.result) {
     return payload.result;
   }
-  return payload as NotebookResult;
+  return payload as NotebookFragment;
 }
 
 export function exportContent(payload: EvidenceExportResponse | string): string {

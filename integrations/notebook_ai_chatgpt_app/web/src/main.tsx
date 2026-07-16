@@ -4,6 +4,6 @@ import App from "./App";
 import "./styles.css";
 
 const root = document.getElementById("root");
-if (!root) throw new Error("NOTEBOOK_AI widget root is missing.");
+if (!root) throw new Error("Search widget root is missing.");
 
 createRoot(root).render(<App />);

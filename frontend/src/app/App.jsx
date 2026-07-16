@@ -20,6 +20,7 @@ import { LocalRetrievalPage } from "../features/retrieval/index.js";
 import { ObjectDetailPage } from "../features/objects/index.js";
 import { ImportPreviewPage, ImportReviewPage } from "../features/importing/index.js";
 import { NotebookWorkspaceShell, ResearchWorkspacePage } from "../features/workspace/index.js";
+import DesktopSettingsPage from "../pages/DesktopSettingsPage.jsx";
 
 export {
   ADVANCED_WORKFLOW_ROUTE_TEMPLATE,
@@ -30,6 +31,8 @@ export {
   LOCAL_RETRIEVAL_PATH,
   OBJECT_REVIEW_PATH,
   READ_SHELF_PATH,
+  SETTINGS_PATH,
+  SYSTEM_STATUS_PATH,
   WORKSPACE_BASE_PATH,
   WORKSPACE_BOOK_ROUTE_TEMPLATE,
   WORKSPACE_CHAPTER_ROUTE_TEMPLATE,
@@ -225,6 +228,7 @@ function App() {
           onOpenWorkspace={(route) => openWorkspaceRoute(route)}
           onOpenImport={() => openLegacyView("importPreview")}
           onOpenAdvancedWorkflow={openAdvancedWorkflow}
+          onBackToRetrieval={() => openLegacyView("retrieval")}
         />
       </NotebookWorkspaceShell>
     );
@@ -235,6 +239,15 @@ function App() {
       <div className="localRetrievalAppShell">
         <Sidebar view={navigation.view} onSelectNav={handleSelectNav} />
         <LocalRetrievalPage />
+      </div>
+    );
+  }
+
+  if (navigation.view === "systemStatus" || navigation.view === "settings") {
+    return (
+      <div className="localRetrievalAppShell">
+        <Sidebar view={navigation.view} onSelectNav={handleSelectNav} />
+        <DesktopSettingsPage section={navigation.view === "settings" ? "settings" : "status"} />
       </div>
     );
   }

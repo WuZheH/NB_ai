@@ -12,5 +12,16 @@ test("widget bridge uses the official ext-apps handshake before receiving tool r
   assert.ok(connect > handler, "toolresult handler is registered before connect");
   assert.match(source, /app\.callServerTool\(\{ name, arguments: args \}\)/);
   assert.match(source, /app\.updateModelContext\(params\)/);
-  assert.match(source, /app\.openLink\(\{ url: href \}\)/);
+  assert.match(source, /window\.openai\.sendFollowUpMessage\(\{ prompt, scrollToBottom: true \}\)/);
+  assert.doesNotMatch(source, /\.openLink\(|openExternal|window\.open\(/);
+});
+
+test("widget state uses the documented compact ChatGPT persistence surface", async () => {
+  const source = await readFile(resolve(process.cwd(), "web", "src", "state", "widgetState.ts"), "utf8");
+  assert.match(source, /host\?\.widgetState/);
+  assert.match(source, /host\.setWidgetState\(\{/);
+  assert.match(source, /selectedIds: state\.selectedIds/);
+  assert.match(source, /activeSources: state\.activeSources/);
+  assert.match(source, /expandedIds: state\.expandedIds/);
+  assert.doesNotMatch(source, /text: state\.|note_text: state\.|provenance: state\./);
 });

@@ -10,14 +10,20 @@ import {
   errorCode,
   errorToolResult,
   jsonContent,
+  notebookFragmentOutputSchema,
   toolMetadata,
 } from "./shared.js";
 
 export const fetchInputShape = {
-  fragment_id: z.string().trim().min(1).max(500).describe("Stable fragment_id returned by NOTEBOOK_AI search."),
+  fragment_id: z.string().trim().min(1).max(500).describe("Stable fragment_id returned by Search."),
 };
 
 export const fetchInputSchema = z.object(fetchInputShape);
+
+export const fetchOutputShape = {
+  status: z.literal("ok"),
+  fragment: notebookFragmentOutputSchema,
+};
 
 export async function runFetchTool(client: NotebookClient, rawInput: unknown) {
   const startedAt = performance.now();
@@ -41,10 +47,11 @@ export function registerFetchTool(server: McpServer, client: NotebookClient): vo
   server.registerTool(
     "fetch",
     {
-      title: "Fetch a NOTEBOOK_AI evidence fragment",
+      title: "Fetch a Search evidence fragment",
       description:
         "Fetch one search result by fragment_id when the full PDF passage, Zotero user note, selected source text, surrounding context, or provenance is needed. This is read-only.",
       inputSchema: fetchInputShape,
+      outputSchema: fetchOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,
       _meta: toolMetadata("Loading evidence context…", "Evidence context loaded"),
     },

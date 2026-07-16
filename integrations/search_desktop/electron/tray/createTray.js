@@ -10,33 +10,11 @@ export function createTrayController({ Tray, Menu, nativeImage, coordinator, win
   const icon = createTrayIcon(nativeImage, iconPath, designTokens);
   const tray = new Tray(icon);
   tray.setToolTip("Search");
-  let chatGptPaused = false;
-
   function rebuild(status = coordinator.presentation()) {
-    if (
-      coordinator.lastStatus?.components?.tunnel?.error_code ===
-      "tunnel_paused_by_user"
-    ) {
-      chatGptPaused = true;
-    }
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: "打开 Search", click: () => windowController.show() },
       { label: `服务状态：${STATUS_LABELS[status.code] || status.label}`, enabled: false },
-      { label: "重新启动后台", click: () => void coordinator.restart() },
-      {
-        label: chatGptPaused ? "恢复 ChatGPT 连接" : "暂停 ChatGPT 连接",
-        enabled: windowController.tunnelPauseSupported,
-        click: async () => {
-          try {
-            if (chatGptPaused) await coordinator.client.resumeTunnel();
-            else await coordinator.client.pauseTunnel();
-            chatGptPaused = !chatGptPaused;
-            rebuild();
-          } catch {
-            await coordinator.refresh().catch(() => {});
-          }
-        },
-      },
+      { label: "重新检查", click: () => void coordinator.refresh() },
       { label: "打开日志目录", click: () => void coordinator.client.logs().then((value) => windowController.openLogsDirectory(value.logs_dir)) },
       { type: "separator" },
       { label: "完全退出", click: () => void onFullyQuit() },
@@ -44,11 +22,12 @@ export function createTrayController({ Tray, Menu, nativeImage, coordinator, win
   }
 
   tray.on("click", () => windowController.show());
-  coordinator.on("status", rebuild);
+  const onStatus = () => rebuild();
+  coordinator.on("status", onStatus);
   rebuild();
   return {
     destroy() {
-      coordinator.off("status", rebuild);
+      coordinator.off("status", onStatus);
       tray.destroy();
     },
     rebuild,

@@ -8,6 +8,8 @@ export const LIBRARY_SEARCH_PATH = "/library-search";
 export const LOCAL_RETRIEVAL_PATH = "/retrieval";
 export const IMPORT_PATH = "/import";
 export const OBJECT_REVIEW_PATH = "/object-review";
+export const SYSTEM_STATUS_PATH = "/system-status";
+export const SETTINGS_PATH = "/settings";
 export const LEGACY_HOME_PATH = "/legacy";
 
 export function buildWorkspacePath(route = {}) {
@@ -24,6 +26,8 @@ export function buildLegacyPath(view) {
   if (view === "retrieval") return LOCAL_RETRIEVAL_PATH;
   if (view === "importPreview") return IMPORT_PATH;
   if (view === "importReview") return OBJECT_REVIEW_PATH;
+  if (view === "systemStatus") return SYSTEM_STATUS_PATH;
+  if (view === "settings") return SETTINGS_PATH;
   return LEGACY_HOME_PATH;
 }
 
@@ -55,6 +59,12 @@ export function parseAppRouteFromLocation(location = typeof window !== "undefine
   }
   if (pathname === OBJECT_REVIEW_PATH) {
     return { view: "importReview" };
+  }
+  if (pathname === SYSTEM_STATUS_PATH) {
+    return { view: "systemStatus" };
+  }
+  if (pathname === SETTINGS_PATH) {
+    return { view: "settings" };
   }
   const workspaceChapterMatch = pathname.match(/^\/workspace\/books\/(\d+)\/chapters\/(\d+)$/);
   if (workspaceChapterMatch) {
@@ -88,7 +98,7 @@ export function parseAppRouteFromLocation(location = typeof window !== "undefine
 }
 
 export function normalizeLegacyView(view) {
-  if (view === "readShelf" || view === "search" || view === "retrieval" || view === "importPreview" || view === "importReview") {
+  if (view === "readShelf" || view === "search" || view === "retrieval" || view === "importPreview" || view === "importReview" || view === "systemStatus" || view === "settings") {
     return view;
   }
   return null;
