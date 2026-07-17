@@ -8,7 +8,6 @@ import RelationSection from "../components/RelationSection.jsx";
 import PdfActionGroup from "../components/PdfActionGroup.jsx";
 import LocatorSummary from "../components/LocatorSummary.jsx";
 import { enhanceSourceWithZoteroCandidate } from "../utils/formatters.js";
-import { buildDocumentNoteFirstGate as buildNoteFirstGate } from "../utils/noteFirstWorkflow.js";
 import {
   NOTE_FILTERS,
   NOTE_TYPE_LABELS,
@@ -26,7 +25,6 @@ import {
   notesSourceSummary,
   primaryNoteType,
 } from "../features/library/utils/documentDetail.js";
-import BookDetailPage from "./BookDetailPage.jsx";
 
 export default function DocumentDetailPage({
   state,
@@ -34,7 +32,6 @@ export default function DocumentDetailPage({
   zoteroCandidateState,
   onBack,
   onOpenWorkspace,
-  advancedWorkflowRoute,
   onOpenEvidence,
   onOpenObject,
   onLocateEvidence,
@@ -48,20 +45,9 @@ export default function DocumentDetailPage({
     return <StateMessage title="未选择文档" body="从已读书架选择文档查看详情。" />;
   }
 
-  if (isBookLikeChapteredDocument(state.data.document, state.data.book_detail)) {
-    return (
-      <BookDetailPage
-        state={state}
-        onBack={onBack}
-        onOpenWorkspace={onOpenWorkspace}
-        initialChapterId={advancedWorkflowRoute?.chapterId}
-        initialWorkflow={advancedWorkflowRoute?.workflow}
-      />
-    );
-  }
-
   const {
     document,
+    book_detail: bookDetail = null,
     object_groups: objectGroups = [],
     evidence_preview: evidencePreview = [],
     notes_preview: notesPreview = [],
@@ -113,15 +99,24 @@ export default function DocumentDetailPage({
         <div className="documentHeroActions">
           <PdfActionGroup source={documentSource} />
           <PdfPageHint source={documentSource} />
+          {bookDetail && (
+            <button
+              className="quietButton"
+              type="button"
+              onClick={() => onOpenWorkspace?.(document.document_id, bookDetail.chapters?.[0]?.chapter_id)}
+            >
+              打开 Research Workspace
+            </button>
+          )}
         </div>
       </article>
 
-      <UnitProcessingPanel
-        document={document}
-        evidencePreview={evidencePreview}
-        inspirationNotes={inspirationNotesPreview}
-        objectGroups={objectGroups}
-      />
+      {bookDetail && (
+        <ReadOnlyChapterList
+          book={bookDetail}
+          onOpenWorkspace={(chapterId) => onOpenWorkspace?.(document.document_id, chapterId)}
+        />
+      )}
 
       <section className="documentObjectOverview">
         <div className="sectionHeader">
@@ -543,104 +538,6 @@ function DocumentObjectCard({
   );
 }
 
-function UnitProcessingPanel({ document, evidencePreview, inspirationNotes, objectGroups }) {
-  const units = inferPaperUnits(evidencePreview);
-  const objects = objectGroups.flatMap((group) => group.objects || []);
-  const unitKindLabel = document.document_type === "paper" && document.object_import_mode === "chaptered"
-    ? "paper_section_from_chaptered_import"
-    : document.document_type === "paper" ? "paper_section" : "document_unit";
-  return (
-    <section className="unitProcessingPanel" aria-label="按章/节处理笔记与对象">
-      <div className="sectionHeader">
-        <h3>按章/节处理笔记与对象</h3>
-        <span>{unitKindLabel}</span>
-      </div>
-      {units.warning && (
-        <p className="unitProcessingWarning">无法检测一级 section，当前回退为 whole_paper_unit。</p>
-      )}
-      <div className="unitProcessingList">
-        {units.items.map((unit) => {
-          const unitNotes = inspirationNotes.filter((note) => noteBelongsToUnit(note, unit));
-          const unitNoteSummary = noteProcessingSummary(unitNotes);
-          const unitObjects = objects.filter((object) => objectBelongsToUnit(object, unit));
-          const gate = buildNoteFirstGate(unitNoteSummary, unitObjects, "本节");
-          return (
-            <article key={unit.unit_id} className="unitProcessingCard">
-              <div className="unitProcessingMain">
-                <span className="unitTypeBadge">{unit.unit_type}</span>
-                <h4>{unit.title}</h4>
-                <p>{unit.pageLabel} · {unit.chunkIds.length} chunks · 双源流程：Zotero 笔记与原文片段进入对象审核，最后机制审核</p>
-              </div>
-              <div className="unitProcessingMetrics">
-                <MetricMini label="Zotero annotations" value={gate.annotationCount} />
-                <MetricMini label="用户笔记" value={gate.userNoteCount} />
-                <MetricMini label="仅高亮证据" value={gate.evidenceOnlyCount} />
-                <MetricMini label="已同步到 Search" value={gate.syncedNoteCount} />
-                <MetricMini label="note correction gate" value={gate.canCorrectNotes ? "ready" : "blocked"} />
-                <MetricMini label="object candidate gate" value={gate.canGenerateObjects ? "ready" : "blocked"} />
-                <MetricMini label="object candidates count" value={unitObjects.length} />
-                <MetricMini label="reviewed object count" value={gate.reviewedObjectCount} />
-                <MetricMini label="mechanism readiness" value={gate.reviewedObjectCount ? "ready gate" : "blocked"} />
-              </div>
-              {gate.evidenceOnlyCount > 0 && (
-                <p className="unitEvidenceNotice">有 {gate.evidenceOnlyCount} 条 Zotero 高亮没有笔记内容；不进入笔记纠错/分类审核，但可作为 source-led 原文片段来源。</p>
-              )}
-              <div className="unitProcessingActions">
-                <DisabledAction label="1 同步本节 Zotero 笔记" reason={gate.syncReason} />
-                <DisabledAction label="2 生成本节笔记纠错包" reason={gate.noteCorrectionReason} />
-                <DisabledAction label="3 笔记纠错审核" reason={gate.noteCorrectionReviewReason} />
-                <DisabledAction label="4 生成本节笔记分类包" reason={gate.noteClassificationReason} />
-                <DisabledAction label="5 笔记分类审核" reason={gate.noteClassificationReviewReason} />
-                <DisabledAction label="6 生成对象候选：笔记 / 高光 / 全文章节" reason={gate.objectCandidateReason} />
-                <DisabledAction label="7 对象审核" reason={gate.objectReviewReason} />
-                <DisabledAction label="8 生成双源机制候选包" reason={gate.mechanismCandidateReason} />
-                <DisabledAction label="9 机制审核" reason={gate.mechanismReviewReason} />
-              </div>
-              <ReviewGateSummary />
-              <p className="mechanismGateNotice">mechanism_blocked_until_objects_reviewed：对象审核完成后可生成双源机制候选包。</p>
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function ReviewGateSummary() {
-  return (
-    <div className="reviewGateSummary" aria-label="双源到机制流程">
-      <span>1 同步本节 Zotero 笔记</span>
-      <span>2 生成本节笔记纠错包</span>
-      <span>3 note_correction_review：笔记纠错审核</span>
-      <span>4 生成本节笔记分类包</span>
-      <span>5 note_classification_review：笔记分类审核</span>
-      <span>6 生成三路对象候选包：笔记 / 高光 / 全文章节</span>
-      <span>7 object_review：对象审核</span>
-      <span>8 生成双源机制候选包</span>
-      <span>9 mechanism_review：机制审核</span>
-      <small>mechanism_review layers：evidence_review / abstraction_review / classification_review / relationship_review / search_entry_review</small>
-    </div>
-  );
-}
-
-function DisabledAction({ label, reason }) {
-  return (
-    <span className="disabledActionWithReason">
-      <button type="button" disabled title={reason}>{label}</button>
-      <small>{reason}</small>
-    </span>
-  );
-}
-
-function MetricMini({ label, value }) {
-  return (
-    <span className="unitMetricMini">
-      <em>{label}</em>
-      <strong>{value}</strong>
-    </span>
-  );
-}
-
 function ObjectProcessingBadges({ object }) {
   const sourceNoteCount = sourceNoteIds(object).length;
   const badges = [
@@ -671,65 +568,46 @@ function sourceNoteIds(object = {}) {
   return [];
 }
 
-function inferPaperUnits(evidencePreview) {
-  const sections = new Map();
-  (evidencePreview || []).forEach((item) => {
-    const title = firstLevelSection(item.section_title || item.heading_path);
-    if (!title) return;
-    const existing = sections.get(title) || { title, chunkIds: [], pages: [] };
-    if (item.chunk_id) existing.chunkIds.push(item.chunk_id);
-    [item.pdf_page_start, item.pdf_page_end, item.pdf_page].forEach((page) => {
-      if (page != null) existing.pages.push(Number(page));
-    });
-    sections.set(title, existing);
-  });
-  if (!sections.size) {
-    return {
-      warning: true,
-      items: [{
-        unit_type: "whole_paper_unit",
-        unit_id: "whole_paper",
-        title: "Whole paper",
-        chunkIds: (evidencePreview || []).map((item) => item.chunk_id).filter(Boolean),
-        pageLabel: "whole_paper_unit warning",
-      }],
-    };
-  }
-  return {
-    warning: false,
-    items: Array.from(sections.values()).map((section) => ({
-      unit_type: "paper_section",
-      unit_id: section.title,
-      title: section.title,
-      chunkIds: section.chunkIds,
-      pageLabel: section.pages.length ? `p.${Math.min(...section.pages)}-${Math.max(...section.pages)}` : "页码暂不可用",
-    })),
-  };
+function ReadOnlyChapterList({ book, onOpenWorkspace }) {
+  const chapters = book?.chapters || [];
+  return (
+    <section className="bookChapterSection" aria-label="章节只读信息">
+      <div className="sectionHeader">
+        <h3>章节</h3>
+        <span>{chapters.length} 章</span>
+      </div>
+      {chapters.length ? (
+        <div className="bookChapterList">
+          {chapters.map((chapter) => (
+            <article key={chapter.chapter_id} className="bookChapterCard">
+              <div className="bookChapterSummary">
+                <span className="bookChapterTitle">{chapter.title || `章节 ${chapter.chapter_index || chapter.chapter_id}`}</span>
+                <span className="bookChapterMeta">
+                  {chapterPageRange(chapter)} · {Number(chapter.evidence_count || 0)} 条证据 · {Number(chapter.note_count || chapter.user_note_count || 0)} 条笔记
+                </span>
+              </div>
+              <button
+                className="quietButton"
+                type="button"
+                onClick={() => onOpenWorkspace?.(chapter.chapter_id)}
+              >
+                在 Workspace 中打开
+              </button>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <StateMessage title="暂无章节信息" body="仍可查看文档 PDF、笔记和证据。" />
+      )}
+    </section>
+  );
 }
 
-function firstLevelSection(value) {
-  const text = String(value || "").trim();
-  if (!text) return "";
-  const separators = [" / ", ">", "|"];
-  const separator = separators.find((item) => text.includes(item));
-  return separator ? text.split(separator)[0].trim() : text;
-}
-
-function isBookLikeChapteredDocument(document = {}, bookDetail = null) {
-  const isChaptered = document?.object_import_mode === "chaptered" || bookDetail?.object_import_mode === "chaptered";
-  return isChaptered && document?.document_type !== "paper";
-}
-
-function noteBelongsToUnit(note, unit) {
-  const chunkIds = noteMatchedChunkIds(note);
-  if (chunkIds.some((chunkId) => unit.chunkIds.includes(chunkId))) return true;
-  return firstLevelSection(note.section_title || note.heading_path) === unit.title;
-}
-
-function objectBelongsToUnit(object, unit) {
-  if (firstLevelSection(object.section_title || object.heading_path) === unit.title) return true;
-  const evidence = object.representative_evidence || [];
-  return evidence.some((item) => firstLevelSection(item.section_title || item.heading_path) === unit.title || unit.chunkIds.includes(item.chunk_id));
+function chapterPageRange(chapter = {}) {
+  const start = chapter.pdf_page_start;
+  const end = chapter.pdf_page_end;
+  if (start == null) return "页码暂不可用";
+  return `p.${start}-${end ?? start}`;
 }
 
 function LocatorReason({ item }) {

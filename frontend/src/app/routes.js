@@ -2,7 +2,7 @@ export const DEFAULT_HOME_PATH = "/";
 export const WORKSPACE_BASE_PATH = "/workspace";
 export const WORKSPACE_BOOK_ROUTE_TEMPLATE = "/workspace/books/:documentId";
 export const WORKSPACE_CHAPTER_ROUTE_TEMPLATE = "/workspace/books/:documentId/chapters/:chapterId";
-export const ADVANCED_WORKFLOW_ROUTE_TEMPLATE = "/library/books/:documentId";
+export const DOCUMENT_ROUTE_TEMPLATE = "/library/books/:documentId";
 export const READ_SHELF_PATH = "/read-shelf";
 export const LIBRARY_SEARCH_PATH = "/library-search";
 export const LOCAL_RETRIEVAL_PATH = "/retrieval";
@@ -31,17 +31,14 @@ export function buildLegacyPath(view) {
   return LEGACY_HOME_PATH;
 }
 
-export function buildAdvancedWorkflowPath(documentId, chapterId = null) {
+export function buildDocumentPath(documentId) {
   const safeDocumentId = numericId(documentId);
-  const safeChapterId = numericId(chapterId);
-  const query = safeChapterId ? `?chapter=${safeChapterId}&workflow=notes-import` : "?workflow=notes-import";
-  return `/library/books/${safeDocumentId}${query}`;
+  return safeDocumentId ? `/library/books/${safeDocumentId}` : READ_SHELF_PATH;
 }
 
 export function parseAppRouteFromLocation(location = typeof window !== "undefined" ? window.location : null) {
   if (!location) return null;
   const pathname = String(location.pathname || "").replace(/\/+$/, "") || "/";
-  const searchParams = new URLSearchParams(location.search || "");
   if (pathname === DEFAULT_HOME_PATH || pathname === WORKSPACE_BASE_PATH) {
     return { view: "workspace", workspaceRoute: {} };
   }
@@ -83,15 +80,11 @@ export function parseAppRouteFromLocation(location = typeof window !== "undefine
       workspaceRoute: { documentId: Number(workspaceBookMatch[1]), chapterId: null },
     };
   }
-  const advancedWorkflowMatch = pathname.match(/^\/library\/books\/(\d+)$/);
-  if (advancedWorkflowMatch) {
+  const documentMatch = pathname.match(/^\/library\/books\/(\d+)$/);
+  if (documentMatch) {
     return {
       view: "document",
-      advancedWorkflow: {
-        documentId: Number(advancedWorkflowMatch[1]),
-        chapterId: numericId(searchParams.get("chapter")),
-        workflow: searchParams.get("workflow") || "",
-      },
+      documentId: Number(documentMatch[1]),
     };
   }
   return null;

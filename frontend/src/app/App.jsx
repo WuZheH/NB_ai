@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { buildTrace } from "../utils/formatters.js";
 import { useAppNavigation } from "./navigation.js";
 import {
-  buildAdvancedWorkflowPath,
+  buildDocumentPath,
   buildLegacyPath,
   buildWorkspacePath,
   normalizeLegacyView,
@@ -23,8 +23,8 @@ import { NotebookWorkspaceShell, ResearchWorkspacePage } from "../features/works
 import DesktopSettingsPage from "../pages/DesktopSettingsPage.jsx";
 
 export {
-  ADVANCED_WORKFLOW_ROUTE_TEMPLATE,
   DEFAULT_HOME_PATH,
+  DOCUMENT_ROUTE_TEMPLATE,
   IMPORT_PATH,
   LEGACY_HOME_PATH,
   LIBRARY_SEARCH_PATH,
@@ -36,7 +36,7 @@ export {
   WORKSPACE_BASE_PATH,
   WORKSPACE_BOOK_ROUTE_TEMPLATE,
   WORKSPACE_CHAPTER_ROUTE_TEMPLATE,
-  buildAdvancedWorkflowPath,
+  buildDocumentPath,
   buildLegacyPath,
   buildWorkspacePath,
   parseAppRouteFromLocation,
@@ -120,10 +120,6 @@ function App() {
   const [workspaceRoute, setWorkspaceRoute] = useState(
     initialBrowserRoute?.view === "workspace" ? initialBrowserRoute.workspaceRoute : {}
   );
-  const [advancedWorkflowRoute, setAdvancedWorkflowRoute] = useState(
-    initialBrowserRoute?.view === "document" ? initialBrowserRoute.advancedWorkflow : null
-  );
-
   const library = useLibraryData({
     updateSafety,
     clearSelection,
@@ -159,12 +155,8 @@ function App() {
       openWorkspaceRoute(parsed.workspaceRoute, { push });
       return;
     }
-    if (parsed.view === "document" && parsed.advancedWorkflow?.documentId) {
-      openAdvancedWorkflow(
-        parsed.advancedWorkflow.documentId,
-        parsed.advancedWorkflow.chapterId,
-        { push }
-      );
+    if (parsed.view === "document" && parsed.documentId) {
+      openDocumentRoute(parsed.documentId, { push });
       return;
     }
     openLegacyView(parsed.view, { push });
@@ -185,7 +177,6 @@ function App() {
     captureSearchSessionBeforeNavigation();
     clearSelection();
     setWorkspaceRoute(nextRoute);
-    setAdvancedWorkflowRoute(null);
     navigation.setReturnView("workspace");
     navigation.setView("workspace");
     if (push) pushBrowserPath(buildWorkspacePath(nextRoute));
@@ -197,24 +188,18 @@ function App() {
     if (nextView !== "retrieval") captureSearchSessionBeforeNavigation();
     clearSelection();
     setWorkspaceRoute({});
-    setAdvancedWorkflowRoute(null);
     navigation.setReturnView(nextView);
     navigation.selectNav({ id: nextView, status: "active" });
     if (push) pushBrowserPath(buildLegacyPath(nextView));
   }
 
-  function openAdvancedWorkflow(documentId, chapterId = null, { push = true } = {}) {
+  function openDocumentRoute(documentId, { push = true } = {}) {
     const nextDocumentId = numericId(documentId);
-    const nextChapterId = numericId(chapterId);
     if (!nextDocumentId) return;
     captureSearchSessionBeforeNavigation();
     clearSelection();
-    setAdvancedWorkflowRoute({
-      documentId: nextDocumentId,
-      chapterId: nextChapterId,
-      workflow: "notes-import",
-    });
-    if (push) pushBrowserPath(buildAdvancedWorkflowPath(nextDocumentId, nextChapterId));
+    setWorkspaceRoute({});
+    if (push) pushBrowserPath(buildDocumentPath(nextDocumentId));
     void library.openDocument(nextDocumentId);
   }
 
@@ -233,7 +218,6 @@ function App() {
           route={workspaceRoute}
           onOpenWorkspace={(route) => openWorkspaceRoute(route)}
           onOpenImport={() => openLegacyView("importPreview")}
-          onOpenAdvancedWorkflow={openAdvancedWorkflow}
           onBackToSearch={() => openLegacyView("retrieval")}
         />
       </NotebookWorkspaceShell>
@@ -278,7 +262,7 @@ function App() {
           <ReadShelfPage
             state={library.readShelf}
             selectedDocumentId={library.selectedDocumentId}
-            onOpenDocument={library.openDocument}
+            onOpenDocument={openDocumentRoute}
             onOpenWorkspace={(documentId) => openWorkspaceRoute({ documentId })}
             onRefresh={library.loadReadShelf}
           />
@@ -288,10 +272,8 @@ function App() {
             state={library.documentState}
             locatorState={locatorState}
             zoteroCandidateState={library.zoteroCandidateState}
-            advancedWorkflowRoute={advancedWorkflowRoute}
             onBack={() => {
-              clearSelection();
-              navigation.setView("readShelf");
+              openLegacyView("readShelf");
             }}
             onOpenWorkspace={(documentId, chapterId) => openWorkspaceRoute({ documentId, chapterId })}
             onOpenEvidence={(chunkId, trace) => library.openEvidence(chunkId, trace, "document")}
@@ -353,7 +335,7 @@ function App() {
             onAutoFillJobId={(v) => setImportReviewState(s => ({ ...s, jobId: v }))}
             onSelectZoteroSource={selectZoteroSource}
             onPreviewResult={selectImportJob}
-            onOpenDocument={library.openDocument}
+            onOpenDocument={openDocumentRoute}
           />
         )}
         {navigation.view === "importReview" && (

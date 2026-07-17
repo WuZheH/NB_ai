@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = PROJECT_ROOT / "frontend" / "src"
 EXPECTED_FEATURES = {
     "retrieval": ("LocalRetrievalPage",),
-    "library": ("BookDetailPage", "DocumentDetailPage", "EvidenceDetailPage", "ReadShelfPage"),
+    "library": ("DocumentDetailPage", "EvidenceDetailPage", "ReadShelfPage"),
     "importing": ("ImportPreviewPage", "ImportReviewPage"),
     "workspace": ("ResearchWorkspacePage", "NotebookWorkspaceShell", "FiveLayerSearchResults"),
     "objects": ("ObjectDetailPage",),
@@ -115,39 +115,21 @@ def test_five_layer_results_use_retrieval_feature_sections_and_utils() -> None:
     assert "related_keywords: relatedKeywords" in utils_source
 
 
-def test_book_detail_uses_library_feature_content_and_scope_utils() -> None:
+def test_library_entry_uses_read_only_document_and_chapter_details() -> None:
+    entry_path = SOURCE_ROOT / "features" / "library" / "index.js"
+    document_path = SOURCE_ROOT / "pages" / "DocumentDetailPage.jsx"
     legacy_path = SOURCE_ROOT / "pages" / "BookDetailPage.jsx"
     content_path = SOURCE_ROOT / "features" / "library" / "components" / "BookDetailContent.jsx"
-    utils_path = SOURCE_ROOT / "features" / "library" / "utils" / "bookDetail.js"
-    legacy_source = legacy_path.read_text(encoding="utf-8")
-    content_source = content_path.read_text(encoding="utf-8")
-    utils_source = utils_path.read_text(encoding="utf-8")
-    assert len(legacy_source.splitlines()) < 700
-    assert "export default function BookDetailPage" in legacy_source
-    assert "function BookUnitProcessingPanel" not in legacy_source
-    assert "BookDetailContent.jsx" in legacy_source
-    assert "bookDetail.js" in legacy_source
-    for export_name in (
-        "BookUnitProcessingPanel",
-        "BookNoteFirstWorkspace",
-        "ChapterZoteroDryRunCard",
-        "Metric",
-    ):
-        assert f"export function {export_name}" in content_source
-        assert export_name in legacy_source
-    for export_name in (
-        "noteCorrectionScopeKey",
-        "noteCorrectionPackageUrl",
-        "noteCorrectionValidateRoute",
-        "noteCorrectionValidateBody",
-        "chapteredDocumentTypeLabel",
-        "chapterStatusLabel",
-    ):
-        assert f"export function {export_name}" in utils_source
-    assert "/note-correction-package`" in utils_source
-    assert "/note-correction-review/validate-section`" in utils_source
-    assert "/note-correction-review/validate-batch`" in utils_source
-    assert "/note-correction-review/validate`" in utils_source
+    entry_source = entry_path.read_text(encoding="utf-8")
+    document_source = document_path.read_text(encoding="utf-8")
+    assert "BookDetailPage" not in entry_source
+    assert "BookDetailContent" not in entry_source
+    assert "NoteCorrectionReviewWorkbench" not in entry_source
+    assert "ReadOnlyChapterList" in document_source
+    assert "BookDetailPage" not in document_source
+    assert "noteFirstWorkflow" not in document_source
+    assert legacy_path.is_file()
+    assert content_path.is_file()
 
 
 def test_research_workspace_uses_generic_empty_state_and_library_sources() -> None:
@@ -168,15 +150,11 @@ def test_research_workspace_uses_generic_empty_state_and_library_sources() -> No
     for export_name in (
         "buildEmptyWorkspaceState",
         "buildWorkspaceNotebooks",
-        "buildGraphFocusTarget",
         "loadWorkspaceHome",
         "openSourceWorkspace",
-        "loadWorkspaceSourceSamples",
     ):
         assert f"function {export_name}" in utils_source
     assert '"/api/v1/library/read-shelf"' in utils_source
-    assert "/note-correction-review-plan`" in utils_source
-    assert "/note-correction-package?mode=section_scoped" in utils_source
     combined = "\n".join((legacy_source, home_source, utils_source))
     for forbidden in (
         "buildDeterministicWorkspaceFallbackState",
@@ -185,6 +163,9 @@ def test_research_workspace_uses_generic_empty_state_and_library_sources() -> No
         "Probabilistic machine learning",
         "section_8_",
         "PN68",
+        "note-correction",
+        "AdvancedWorkflowDrawer",
+        "MechanismRelationGraphPanel",
     ):
         assert forbidden not in combined
 

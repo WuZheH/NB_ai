@@ -2,19 +2,32 @@ import { useMemo, useState } from "react";
 import { getJson } from "../../api/client.js";
 import FiveLayerSearchResults from "./FiveLayerSearchResults.jsx";
 import WorkspaceStatusPill from "./WorkspaceStatusPill.jsx";
-import { normalizeWorkspaceState } from "../../utils/workspaceStateAdapter.js";
 
-export default function SearchWorkflowPanel({ state, sourceSamples = { status: "idle", targets: [] }, onViewSource, homeMode = false }) {
+export default function SearchWorkflowPanel({ state, onViewSource, homeMode = false }) {
   const [query, setQuery] = useState("");
   const [searchState, setSearchState] = useState({ status: "idle", query: "", data: null, error: "" });
   const documentId = state?.document?.document_id;
   const chapterId = state?.current_chapter?.chapter_id;
   const resilienceFallbackActive = Boolean(state?.workspace_resilience_fallback?.active);
   const showSearchDetails = searchState.status !== "idle";
-  const legacyFix9SearchHint = "输入问题后检索数据库证据";
 
   const layerRows = useMemo(() => {
-    return normalizeWorkspaceState(state || {}).searchLayers;
+    const source = state?.source_ingestion_status || {};
+    const notes = state?.notes_import_status || {};
+    return [
+      {
+        id: "passages",
+        title: "PDF 原文",
+        status: source.chunked ? "available" : "unavailable",
+        reason: source.chunked ? `${Number(source.chunk_count || 0)} 条可检索证据` : "当前资料尚无可检索片段",
+      },
+      {
+        id: "notes",
+        title: "笔记",
+        status: Number(notes.existing || 0) > 0 ? "available" : "unavailable",
+        reason: Number(notes.existing || 0) > 0 ? `${Number(notes.existing || 0)} 条关联笔记` : "当前范围没有关联笔记",
+      },
+    ];
   }, [state]);
 
   async function runDatabaseSearch(cleanQuery) {
@@ -58,11 +71,11 @@ export default function SearchWorkflowPanel({ state, sourceSamples = { status: "
         <div>
           <p className="workspaceKicker">科研检索</p>
           <h3>数据库搜索</h3>
-          <span>ResearchEvidencePacket-A：从原文片段、用户笔记、对象和机制来源中检索；PDF chunks 和用户笔记用于 evidence packet。</span>
+          <span>从当前资料范围检索 PDF 原文与关联笔记。</span>
         </div>
         <div className="workspaceSearchChipRow" aria-label="search safety chips">
           <WorkspaceStatusPill status="read_only">只读</WorkspaceStatusPill>
-          <WorkspaceStatusPill status="reviewed">68 条笔记</WorkspaceStatusPill>
+          <WorkspaceStatusPill status="reviewed">{Number(state?.notes_import_status?.existing || 0)} 条笔记</WorkspaceStatusPill>
           <WorkspaceStatusPill status="planned">不调用 LLM</WorkspaceStatusPill>
         </div>
       </div>
@@ -104,16 +117,6 @@ export default function SearchWorkflowPanel({ state, sourceSamples = { status: "
           </details>
         )}
 
-        {!homeMode && showSearchDetails && (
-          <details className="workspaceDisclosure sourceSampleDisclosure" data-disclosure-layout="in-flow">
-            <summary>来源样本</summary>
-            <SourceSampleResults
-              state={state}
-              sourceSamples={sourceSamples}
-              onViewSource={onViewSource}
-            />
-          </details>
-        )}
       </div>
 
       <form className="workspaceSearchBox workspaceSearchComposer" data-composer-layout="flex-footer-no-overlay" onSubmit={handleSubmit} aria-label="research search box">
@@ -143,82 +146,4 @@ function safePanelErrorMessage(error, fallback) {
     return detail;
   }
   return fallback;
-}
-
-function SourceSampleResults({ state, sourceSamples, onViewSource }) {
-  const display = normalizeWorkspaceState(state);
-  const source = state?.source_ingestion_status || {};
-  const targets = sourceSamples?.targets || [];
-  const noteTargets = targets.filter((target) => target.sourceKind === "note");
-  const passageTargets = targets.filter((target) => target.sourceKind === "passage");
-  const noNotes = display.noNotes;
-  return (
-    <section className="workspaceSourceSamples" aria-label="source sample results">
-      <div className="workspacePanelHeader">
-        <div>
-          <p className="workspaceKicker">来源样本</p>
-          <h3>笔记 / 原文定位预览</h3>
-        </div>
-        <WorkspaceStatusPill status={sourceSamples?.status === "ready" ? "available" : "planned"}>
-          {sourceSampleSourceLabel(sourceSamples?.source)}
-        </WorkspaceStatusPill>
-      </div>
-      {sourceSamples?.status === "loading" && <p className="workspaceSampleNotice">正在读取只读来源样本...</p>}
-      {sourceSamples?.status === "error" && <p className="workspaceSampleNotice warning">{sourceSamples.error}</p>}
-      {noNotes && (
-        <p className="workspaceSampleNotice">NO_NOTES_IN_SCOPE · 本章没有可用笔记来源样本。</p>
-      )}
-      {!noNotes && noteTargets.length === 0 && sourceSamples?.status !== "loading" && (
-        <p className="workspaceSampleNotice">只读 API 暂未返回笔记来源样本。</p>
-      )}
-      {noteTargets.map((target) => (
-        <SourceSampleCard
-          key={`note-${target.serverNoteId || target.clientNoteId || target.zoteroAnnotationKey}`}
-          target={target}
-          label="笔记来源样本"
-          onViewSource={onViewSource}
-        />
-      ))}
-      {passageTargets.length > 0 ? (
-        passageTargets.map((target) => (
-          <SourceSampleCard
-            key={`passage-${target.matchedChunkId || target.zoteroAnnotationKey}`}
-            target={target}
-            label="原文来源样本"
-            onViewSource={onViewSource}
-          />
-        ))
-      ) : (
-        <p className="workspaceSampleNotice">
-          {source.chunked ? "原文来源样本暂不可用；原文证据层仍保持可检索。" : "原文来源受阻：PDF chunks 不可用。"}
-        </p>
-      )}
-    </section>
-  );
-}
-
-function SourceSampleCard({ target, label, onViewSource }) {
-  const text = target.noteText || target.selectedText || target.chunkEvidenceText || "来源文本不可用。";
-  return (
-    <article className={`workspaceSourceSampleCard ${target.sourceKind}`}>
-      <div>
-        <strong>{label}</strong>
-        <span>
-          {target.pageLabel || (target.page ? `p.${target.page}` : "页码不可用")}
-          {target.matchedChunkId ? ` · chunk ${target.matchedChunkId}` : ""}
-        </span>
-      </div>
-      <p>{text}</p>
-      <button type="button" className="workspacePillButton" onClick={() => onViewSource?.(target)}>
-        定位到 PDF
-      </button>
-    </article>
-  );
-}
-
-function sourceSampleSourceLabel(source) {
-  if (!source) return "只读";
-  if (source === "real_api") return "真实只读 API";
-  if (source === "fixture") return "测试 fixture";
-  return source;
 }

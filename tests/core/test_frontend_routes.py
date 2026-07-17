@@ -12,7 +12,7 @@ EXPECTED_PATH_CONSTANTS = {
     "WORKSPACE_BASE_PATH": "/workspace",
     "WORKSPACE_BOOK_ROUTE_TEMPLATE": "/workspace/books/:documentId",
     "WORKSPACE_CHAPTER_ROUTE_TEMPLATE": "/workspace/books/:documentId/chapters/:chapterId",
-    "ADVANCED_WORKFLOW_ROUTE_TEMPLATE": "/library/books/:documentId",
+    "DOCUMENT_ROUTE_TEMPLATE": "/library/books/:documentId",
     "READ_SHELF_PATH": "/read-shelf",
     "LIBRARY_SEARCH_PATH": "/library-search",
     "LOCAL_RETRIEVAL_PATH": "/retrieval",
@@ -33,7 +33,7 @@ def test_route_parser_and_builders_cover_dynamic_and_legacy_routes() -> None:
     for export_name in (
         "buildWorkspacePath",
         "buildLegacyPath",
-        "buildAdvancedWorkflowPath",
+        "buildDocumentPath",
         "parseAppRouteFromLocation",
         "normalizeLegacyView",
         "numericId",
@@ -42,8 +42,8 @@ def test_route_parser_and_builders_cover_dynamic_and_legacy_routes() -> None:
     assert r"/^\/workspace\/books\/(\d+)\/chapters\/(\d+)$/" in source
     assert r"/^\/workspace\/books\/(\d+)$/" in source
     assert r"/^\/library\/books\/(\d+)$/" in source
-    assert "?chapter=${safeChapterId}&workflow=notes-import" in source
-    assert '"?workflow=notes-import"' in source
+    assert "workflow=notes-import" not in source
+    assert "advancedWorkflow" not in source
 
 
 def test_canonical_app_entry_and_legacy_facade_remain_available() -> None:

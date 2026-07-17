@@ -1,12 +1,10 @@
 import WorkspaceStatusPill from "./WorkspaceStatusPill.jsx";
-import WorkspaceWorkflowLink from "./WorkspaceWorkflowLink.jsx";
-import { normalizeWorkspaceState } from "../../utils/workspaceStateAdapter.js";
 
-export default function SourceIngestionStatusCard({ state, onOpenAdvancedWorkflow }) {
+export default function SourceIngestionStatusCard({ state }) {
   const document = state?.document || {};
   const chapter = state?.current_chapter || {};
-  const display = normalizeWorkspaceState(state);
-  const { source, noNotes, saveBlocked, sourceDisplay } = display;
+  const source = state?.source_ingestion_status || {};
+  const notes = state?.notes_import_status || {};
   const chapterPages = chapter.page_start
     ? `p.${chapter.page_start}-${chapter.page_end || chapter.page_start}`
     : "页码范围不可用";
@@ -45,69 +43,14 @@ export default function SourceIngestionStatusCard({ state, onOpenAdvancedWorkflo
       <details className="workspaceDisclosure sourceDetailsDisclosure">
         <summary>来源详情</summary>
         <section className="workspacePipelineFacts" aria-label="source ingestion status">
-          <span>{sourceDisplay.pdfStatusLine}</span>
-          <span>{sourceDisplay.chunksLine}</span>
-          <span>{sourceDisplay.zoteroNotesLine}</span>
-          {!noNotes && <span>{sourceDisplay.userNotesLine}</span>}
-          {!noNotes && <span>{sourceDisplay.evidenceOnlyLine}</span>}
-          <span>{sourceDisplay.importStatusLine}</span>
-          <span>{sourceDisplay.notesLayerLine}</span>
-          <span>{sourceDisplay.correctionLine}</span>
+          <span>PDF 来源：{source.pdf_available ? "可用" : "不可用"}</span>
+          <span>原文片段：{source.chunked ? `${Number(source.chunk_count || 0)} 条` : "尚未切分"}</span>
+          <span>Zotero 来源：{source.zotero_source_available ? "可用" : "未配置"}</span>
+          <span>关联笔记：{Number(notes.existing || 0)} 条</span>
+          <span>用户笔记：{Number(notes.user_notes || 0)} 条</span>
+          <span>仅证据笔记：{Number(notes.evidence_only || 0)} 条</span>
         </section>
-
-        <article className={`workspaceGateCard ${noNotes ? "locked" : ""}`} aria-label="Zotero notes status">
-          <div className="workspaceGateTop">
-            <strong>{sourceDisplay.zoteroNotesLine}</strong>
-            <WorkspaceStatusPill status={saveBlocked ? "blocked" : noNotes ? "locked" : "available"}>
-              {pipelineStatusLabel(display.pipelineStatus)}
-            </WorkspaceStatusPill>
-          </div>
-          {noNotes ? (
-            <p>笔记层不可用 · 纠错审核未启用</p>
-          ) : (
-            <p>
-              {sourceDisplay.userNotesLine} · {sourceDisplay.evidenceOnlyLine} · {sourceDisplay.correctionLine}
-            </p>
-          )}
-        </article>
-
-        {!noNotes && (
-          <article className={`workspaceGateCard ${saveBlocked ? "blocked" : ""}`} aria-label="save gate status">
-            <div className="workspaceGateTop">
-              <strong>{saveBlocked ? "保存未启用" : "保存可用"}</strong>
-              <WorkspaceStatusPill status={saveBlocked ? "blocked" : "available"}>
-                {saveBlocked ? "只读安全模式" : "允许写入"}
-              </WorkspaceStatusPill>
-            </div>
-            <p>{sourceDisplay.correctionLine}</p>
-            {saveBlocked && <code>{sourceDisplay.saveBlockedLine}</code>}
-          </article>
-        )}
-
-        <WorkspaceWorkflowLink
-          documentId={document.document_id}
-          chapterId={chapter.chapter_id}
-          onOpenAdvancedWorkflow={onOpenAdvancedWorkflow}
-        />
       </details>
     </div>
   );
-}
-
-function pipelineStatusLabel(status) {
-  const labels = {
-    no_zotero_notes: "没有 Zotero 笔记",
-    blocked_no_notes_in_scope: "本章无笔记",
-    notes_not_imported: "笔记未导入",
-    dry_run_ready: "dry-run 已就绪",
-    import_required: "需要导入",
-    already_imported: "已导入",
-    correction_review_ready: "纠错审核就绪",
-    correction_review_in_progress: "纠错审核中",
-    correction_review_partially_saved: "纠错部分保存",
-    blocked_save_gate: "保存未启用",
-    correction_review_complete: "纠错审核完成",
-    ready_for_classification: "可进入分类",
-  };
-  return labels[status] || status || "未知状态";
 }

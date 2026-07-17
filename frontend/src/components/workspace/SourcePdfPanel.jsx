@@ -6,7 +6,7 @@ import SourceIngestionStatusCard from "./SourceIngestionStatusCard.jsx";
 import SourceEvidenceCard from "./SourceEvidenceCard.jsx";
 import { buildChapterSourceTarget } from "./sourceTargets.js";
 
-export default function SourcePdfPanel({ workspaceState, sourceTarget, onClearSourceTarget, onOpenAdvancedWorkflow }) {
+export default function SourcePdfPanel({ workspaceState, sourceTarget, onClearSourceTarget }) {
   const [locatorState, setLocatorState] = useState({ status: "idle", payload: null, error: "" });
   const effectiveSourceTarget = sourceTarget || buildChapterSourceTarget(workspaceState || {});
 
@@ -40,7 +40,6 @@ export default function SourcePdfPanel({ workspaceState, sourceTarget, onClearSo
     return (
       <DefaultSourceSummary
         workspaceState={workspaceState}
-        onOpenAdvancedWorkflow={onOpenAdvancedWorkflow}
       />
     );
   }
@@ -50,7 +49,6 @@ export default function SourcePdfPanel({ workspaceState, sourceTarget, onClearSo
       <div className="sourcePdfPanel workspacePanelStack compactSourcePanel" aria-label="来源与 PDF 证据摘要">
         <SourceIngestionStatusCard
           state={workspaceState}
-          onOpenAdvancedWorkflow={onOpenAdvancedWorkflow}
         />
         <details className="workspaceDisclosure sourcePdfPreviewDisclosure">
           <summary>打开 PDF 预览</summary>
@@ -85,11 +83,10 @@ export default function SourcePdfPanel({ workspaceState, sourceTarget, onClearSo
   );
 }
 
-function DefaultSourceSummary({ workspaceState, onOpenAdvancedWorkflow }) {
+function DefaultSourceSummary({ workspaceState }) {
   return (
     <SourceIngestionStatusCard
       state={workspaceState}
-      onOpenAdvancedWorkflow={onOpenAdvancedWorkflow}
     />
   );
 }

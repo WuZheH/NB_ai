@@ -1,5 +1,4 @@
 import { getJson } from "../../../api/client.js";
-import { buildNoteSourceTarget, buildPassageSourceTarget } from "../../../components/workspace/sourceTargets.js";
 
 export const ROUTE_FALLBACK_NOTICE = "Workspace 数据暂不可用。请检查本地后端或返回搜索后重试。";
 
@@ -104,45 +103,6 @@ export function buildWorkspaceNotebook(source = {}, status = "ready") {
   };
 }
 
-export function buildGraphFocusTarget(target = {}) {
-  if (!target) return null;
-  const sourceType = graphSourceType(target);
-  return {
-    ...target,
-    selected_result_id: target.serverNoteId
-      || target.clientNoteId
-      || target.zoteroAnnotationKey
-      || target.matchedChunkId
-      || `${sourceType}-${target.page || "unknown"}`,
-    locator_contract: target.developerMeta?.locator || null,
-    source_type: sourceType,
-    source_server_note_id: target.serverNoteId || "",
-    chunk_id: target.matchedChunkId || null,
-    object_candidate_id: target.objectCandidateId || null,
-    relation_temp_id: target.relationTempId || null,
-    mechanism_id: target.mechanismId || null,
-    graphFocusNodeId: graphFocusNodeId(target, sourceType),
-  };
-}
-
-export function graphSourceType(target = {}) {
-  if (target.objectCandidateId || target.sourceKind === "object_evidence") return "object_candidate";
-  if (target.relationTempId || target.sourceKind === "relation_evidence") return "relation_candidate";
-  if (target.mechanismId) return "mechanism_readiness";
-  if (target.sourceKind === "note" || target.serverNoteId || target.zoteroAnnotationKey) return "note";
-  if (target.sourceKind === "passage" || target.matchedChunkId) return "evidence";
-  return "evidence";
-}
-
-export function graphFocusNodeId(target = {}, sourceType = graphSourceType(target)) {
-  if (target.graphFocusNodeId) return target.graphFocusNodeId;
-  if (sourceType === "object_candidate") return "approved_objects";
-  if (sourceType === "relation_candidate") return "relation_dry_run";
-  if (sourceType === "mechanism_readiness") return "mechanism_readiness";
-  if (sourceType === "note") return "note_overview";
-  return "evidence_overview";
-}
-
 export async function loadWorkspaceHome() {
   const readShelf = await getJson("/api/v1/library/read-shelf");
   const sources = readShelf.items || [];
@@ -169,37 +129,6 @@ export function firstWorkspaceChapter(book = {}) {
   return chapters.find((chapter) => Number(chapter.note_count || chapter.native_note_count || 0) > 0)
     || chapters[0]
     || null;
-}
-
-export async function loadWorkspaceSourceSamples(documentId, chapterId, workspaceState) {
-  const plan = await getJson(`/api/v1/library/books/${documentId}/chapters/${chapterId}/note-correction-review-plan`);
-  const sectionId = selectSampleSectionId(plan);
-  if (!sectionId) return [];
-  const apiRoute = `/api/v1/library/books/${documentId}/chapters/${chapterId}/note-correction-package?mode=section_scoped&section_id=${encodeURIComponent(sectionId)}`;
-  const packagePreview = await getJson(apiRoute);
-  const packageJson = packagePreview.package_json || {};
-  const candidates = (packageJson.correction_candidates || []).filter((candidate) => {
-    return candidate?.selected_text || candidate?.note_text || candidate?.chunk_evidence_text || candidate?.matched_chunk_id;
-  });
-  const noteTargets = candidates.slice(0, 2).map((candidate) => buildNoteSourceTarget(candidate, workspaceState, {
-    source: "real_api",
-    apiRoute,
-    reviewMode: "section_scoped",
-    scopeId: sectionId,
-  }));
-  const passageTargets = candidates.slice(0, 1).map((candidate) => buildPassageSourceTarget(candidate, workspaceState, {
-    source: "real_api",
-    apiRoute,
-    reviewMode: "section_scoped",
-    scopeId: sectionId,
-  }));
-  return [...noteTargets, ...passageTargets];
-}
-
-export function selectSampleSectionId(plan = {}) {
-  const sections = plan.sections || [];
-  const firstWithNotes = sections.find((section) => Number(section.candidate_count || 0) > 0);
-  return firstWithNotes?.section_id || "";
 }
 
 function positiveId(value) {

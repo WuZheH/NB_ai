@@ -1,19 +1,13 @@
 import { useEffect, useState } from "react";
 import { getJson } from "../api/client.js";
-import AdvancedWorkflowDrawer from "../components/workspace/AdvancedWorkflowDrawer.jsx";
-import ChapterWorkflowBanner from "../components/workspace/ChapterWorkflowBanner.jsx";
-import MechanismRelationGraphPanel from "../components/workspace/MechanismRelationGraphPanel.jsx";
 import SearchWorkflowPanel from "../components/workspace/SearchWorkflowPanel.jsx";
 import SourcePdfPanel from "../components/workspace/SourcePdfPanel.jsx";
 import WorkspaceLayout from "../components/workspace/WorkspaceLayout.jsx";
-import { advancedWorkflowHref } from "../components/workspace/WorkspaceWorkflowLink.jsx";
 import { NotebookWorkspaceHome } from "../features/workspace/components/ResearchWorkspaceHome.jsx";
 import {
   ROUTE_FALLBACK_NOTICE,
   buildEmptyWorkspaceState,
-  buildGraphFocusTarget,
   loadWorkspaceHome,
-  loadWorkspaceSourceSamples,
 } from "../features/workspace/utils/researchWorkspace.js";
 
 export { buildEmptyWorkspaceState };
@@ -22,7 +16,6 @@ export default function ResearchWorkspacePage({
   route = {},
   onOpenWorkspace,
   onOpenImport,
-  onOpenAdvancedWorkflow,
   onBackToSearch,
 }) {
   const documentId = route.documentId ? Number(route.documentId) : null;
@@ -34,17 +27,11 @@ export default function ResearchWorkspacePage({
     error: "",
   });
   const [sourceTarget, setSourceTarget] = useState(null);
-  const [graphFocusTarget, setGraphFocusTarget] = useState(null);
-  const [sourceSamples, setSourceSamples] = useState({ status: "idle", targets: [], error: "", source: "" });
-  const [workflowDrawerOpen, setWorkflowDrawerOpen] = useState(false);
 
   useEffect(() => {
     if (!documentId || !chapterId) {
       setWorkspaceState({ status: "idle", data: null, error: "" });
       setSourceTarget(null);
-      setGraphFocusTarget(null);
-      setSourceSamples({ status: "idle", targets: [], error: "", source: "" });
-      setWorkflowDrawerOpen(false);
       return;
     }
     let cancelled = false;
@@ -106,41 +93,6 @@ export default function ResearchWorkspacePage({
     };
   }, [documentId, chapterId]);
 
-  useEffect(() => {
-    const state = workspaceState.data;
-    if (
-      !documentId
-      || !chapterId
-      || workspaceState.status !== "ready"
-      || !state
-      || state.notes_import_status?.status === "blocked_no_notes_in_scope"
-    ) {
-      setSourceSamples({ status: "idle", targets: [], error: "", source: "" });
-      setSourceTarget(null);
-      setGraphFocusTarget(null);
-      return;
-    }
-    let cancelled = false;
-    setSourceSamples({ status: "loading", targets: [], error: "", source: "real_api" });
-    loadWorkspaceSourceSamples(documentId, chapterId, state)
-      .then((targets) => {
-        if (!cancelled) setSourceSamples({ status: "ready", targets, error: "", source: "real_api" });
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setSourceSamples({
-            status: "error",
-            targets: [],
-            error: "部分来源样本暂不可用，本地 API 恢复后自动更新。",
-            source: "real_api",
-          });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [documentId, chapterId, workspaceState.data]);
-
   if (!documentId || !chapterId) {
     return (
       <NotebookWorkspaceHome
@@ -165,11 +117,9 @@ export default function ResearchWorkspacePage({
   const sourceCount = Number(state.source_count || 0);
   const handleViewSource = (target) => {
     setSourceTarget(target);
-    setGraphFocusTarget(buildGraphFocusTarget(target));
   };
   const handleClearSourceTarget = () => {
     setSourceTarget(null);
-    setGraphFocusTarget(null);
   };
   return (
     <div className="researchWorkspacePage notebookLmInspiredWorkspace">
@@ -199,42 +149,50 @@ export default function ResearchWorkspacePage({
             workspaceState={state}
             sourceTarget={sourceTarget}
             onClearSourceTarget={handleClearSourceTarget}
-            onOpenAdvancedWorkflow={onOpenAdvancedWorkflow}
           />
         }
         workbenchPanel={
           <>
-            <ChapterWorkflowBanner
-              state={state}
-              onOpenAdvancedWorkflow={onOpenAdvancedWorkflow}
-              onViewWorkflowStatus={() => setWorkflowDrawerOpen(true)}
-            />
             <SearchWorkflowPanel
               state={state}
-              sourceSamples={sourceSamples}
               onViewSource={handleViewSource}
             />
           </>
         }
         studioPanel={
-          <MechanismRelationGraphPanel
+          <WorkspaceContextSummary
             state={state}
-            focusTarget={graphFocusTarget}
-            selectionTarget={sourceTarget}
-            documentId={documentId}
-            chapterId={chapterId}
+            onBackToSearch={onBackToSearch}
           />
         }
       />
-      <AdvancedWorkflowDrawer
-        isOpen={workflowDrawerOpen}
-        onClose={() => setWorkflowDrawerOpen(false)}
-        workspaceState={state}
-        documentId={documentId}
-        chapterId={chapterId}
-        advancedWorkflowHref={advancedWorkflowHref(documentId, chapterId)}
-        onOpenAdvancedWorkflow={onOpenAdvancedWorkflow}
-      />
     </div>
+  );
+}
+
+function WorkspaceContextSummary({ state, onBackToSearch }) {
+  const document = state?.document || {};
+  const chapter = state?.current_chapter || {};
+  const source = state?.source_ingestion_status || {};
+  const notes = state?.notes_import_status || {};
+  return (
+    <section className="workspacePanelStack" aria-label="Workspace 上下文">
+      <div className="workspacePanelHeader">
+        <div>
+          <p className="workspaceKicker">上下文</p>
+          <h3>当前资料</h3>
+        </div>
+      </div>
+      <dl className="workspacePipelineFacts">
+        <div><dt>文档</dt><dd>{document.title || "未命名文档"}</dd></div>
+        <div><dt>章节</dt><dd>{chapter.title || "未选择章节"}</dd></div>
+        <div><dt>PDF</dt><dd>{source.pdf_available ? "可用" : "不可用"}</dd></div>
+        <div><dt>证据</dt><dd>{Number(source.chunk_count || 0)} 条</dd></div>
+        <div><dt>笔记</dt><dd>{Number(notes.existing || 0)} 条</dd></div>
+      </dl>
+      <button type="button" className="workspacePillButton secondary" onClick={onBackToSearch}>
+        返回搜索
+      </button>
+    </section>
   );
 }
