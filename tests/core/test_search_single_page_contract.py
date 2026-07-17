@@ -34,12 +34,16 @@ def test_canonical_app_has_one_search_page_and_captures_workspace_return_state()
     assert "window.history.replaceState" in app
 
 
-def test_legacy_search_component_is_a_stateless_unified_page_facade() -> None:
-    legacy = _read("frontend/src/pages/SearchPage.jsx")
-    assert 'import LocalRetrievalPage from "./LocalRetrievalPage.jsx";' in legacy
-    assert "return <LocalRetrievalPage />;" in legacy
-    for forbidden in ("useState", "searchForm", "SearchRelatedPapers", "SearchRelatedObjects"):
-        assert forbidden not in legacy
+def test_obsolete_search_facades_are_removed() -> None:
+    obsolete_paths = (
+        "frontend/src/pages/SearchPage.jsx",
+        "frontend/src/features/search/index.js",
+        "frontend/src/components/search/SearchRelatedObjects.jsx",
+        "frontend/src/components/search/SearchRelatedPapers.jsx",
+        "frontend/src/shared/hooks/useAsyncResource.js",
+    )
+    for relative in obsolete_paths:
+        assert not (ROOT / relative).exists()
 
 
 def test_unified_page_uses_mature_preview_and_all_search_controls() -> None:
