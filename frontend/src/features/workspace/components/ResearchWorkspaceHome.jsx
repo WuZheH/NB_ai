@@ -1,14 +1,12 @@
 import WorkspaceStatusPill from "../../../components/workspace/WorkspaceStatusPill.jsx";
 import {
-  DEFAULT_HOME_WORKFLOW_TARGET,
-  buildMachineLearningNotebook,
-  openMachineLearningNotebook,
+  buildWorkspaceNotebooks,
   openSourceWorkspace,
 } from "../utils/researchWorkspace.js";
 
 export function NotebookWorkspaceHome({ documentId, homeState, onOpenWorkspace, onOpenImport, onBackToSearch }) {
   const sources = homeState.sources || [];
-  const machineLearningNotebook = buildMachineLearningNotebook(sources, homeState.status);
+  const notebooks = buildWorkspaceNotebooks(sources, homeState.status);
   return (
     <div className="notebookHomePage fullNotebookHomePage" aria-label="Search 中文笔记本主页">
       <header className="notebookHomeTopbar">
@@ -35,7 +33,6 @@ export function NotebookWorkspaceHome({ documentId, homeState, onOpenWorkspace, 
 
       <nav className="notebookHomeTabs" aria-label="笔记本分类">
         <button type="button" className="selected">全部</button>
-        <button type="button">精选笔记本</button>
       </nav>
 
       {homeState.status === "loading" && <p className="workspaceSampleNotice">来源数量暂不可用，本地 API 可用后自动更新。</p>}
@@ -43,54 +40,46 @@ export function NotebookWorkspaceHome({ documentId, homeState, onOpenWorkspace, 
         <p className="workspaceSampleNotice warning">来源数量暂不可用，本地 API 可用后自动更新。</p>
       )}
 
-      <section className="notebookHomeSection" aria-label="精选笔记本">
+      <section className="notebookHomeSection" aria-label="本地资料">
         <div className="notebookHomeSectionHeader">
           <div>
-            <p className="workspaceKicker">精选笔记本</p>
-            <h3>精选笔记本</h3>
+            <p className="workspaceKicker">资料库</p>
+            <h3>本地资料</h3>
           </div>
           <WorkspaceStatusPill status={homeState.status === "ready" ? "available" : "planned"}>
-            {machineLearningNotebook.sourceCountLabel}
+            {homeState.status === "ready" ? `${notebooks.length} 个资料` : "资料状态暂不可用"}
           </WorkspaceStatusPill>
         </div>
-        <div className="notebookCardGrid featured">
-          <NotebookCard
-            notebook={machineLearningNotebook}
-            featured
-            selected={Number(documentId) === DEFAULT_HOME_WORKFLOW_TARGET.documentId}
-            accentIndex={0}
-            onOpen={() => openMachineLearningNotebook(onOpenWorkspace)}
-          />
-        </div>
-      </section>
-
-      <section className="notebookHomeSection" aria-label="最近打开的笔记本">
-        <div className="notebookHomeSectionHeader">
-          <div>
-            <p className="workspaceKicker">最近打开的笔记本</p>
-            <h3>最近打开的笔记本</h3>
+        {notebooks.length ? (
+          <div className="notebookCardGrid">
+            {notebooks.map((notebook, index) => (
+              <NotebookCard
+                key={notebook.id}
+                notebook={notebook}
+                selected={Number(documentId) === Number(notebook.source.document_id)}
+                accentIndex={index}
+                onOpen={() => openSourceWorkspace(notebook.source, onOpenWorkspace)}
+              />
+            ))}
           </div>
-          <span className="notebookHomeMeta">来源：本地资料库</span>
-        </div>
-        <div className="notebookCardGrid">
-          <NotebookCard
-            notebook={machineLearningNotebook}
-            selected={Number(documentId) === DEFAULT_HOME_WORKFLOW_TARGET.documentId}
-            accentIndex={1}
-            onOpen={() => openMachineLearningNotebook(onOpenWorkspace)}
-          />
-        </div>
+        ) : (
+          <div className="researchWorkspaceEmpty">
+            <strong>资料库为空</strong>
+            <span>请导入 PDF，或在设置中配置数据目录。</span>
+            <button type="button" className="workspacePillButton" onClick={onOpenImport}>导入 PDF</button>
+          </div>
+        )}
       </section>
     </div>
   );
 }
 
-export function NotebookCard({ notebook, featured = false, selected = false, accentIndex = 0, onOpen }) {
+export function NotebookCard({ notebook, selected = false, accentIndex = 0, onOpen }) {
   const title = notebook.title;
   return (
     <button
       type="button"
-      className={`notebookCard ${featured ? "featured" : ""} ${selected ? "selected" : ""}`}
+      className={`notebookCard ${selected ? "selected" : ""}`}
       data-notebook-id={notebook.id}
       onClick={onOpen}
     >
@@ -100,7 +89,7 @@ export function NotebookCard({ notebook, featured = false, selected = false, acc
       <span className="notebookCardBody">
         <strong>{title}</strong>
         <small>{notebook.subtitle}</small>
-        <em>{notebook.sourceCountLabel} · 最近打开</em>
+        <em>{notebook.sourceCountLabel}</em>
         {notebook.warning && <i>{notebook.warning}</i>}
       </span>
       <span className="notebookCardAction">打开</span>

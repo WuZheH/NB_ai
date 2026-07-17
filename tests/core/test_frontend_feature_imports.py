@@ -150,7 +150,7 @@ def test_book_detail_uses_library_feature_content_and_scope_utils() -> None:
     assert "/note-correction-review/validate`" in utils_source
 
 
-def test_research_workspace_preserves_home_fallback_and_legacy_named_export() -> None:
+def test_research_workspace_uses_generic_empty_state_and_library_sources() -> None:
     legacy_path = SOURCE_ROOT / "pages" / "ResearchWorkspacePage.jsx"
     home_path = SOURCE_ROOT / "features" / "workspace" / "components" / "ResearchWorkspaceHome.jsx"
     utils_path = SOURCE_ROOT / "features" / "workspace" / "utils" / "researchWorkspace.js"
@@ -159,26 +159,34 @@ def test_research_workspace_preserves_home_fallback_and_legacy_named_export() ->
     utils_source = utils_path.read_text(encoding="utf-8")
     assert len(legacy_source.splitlines()) < 275
     assert "export default function ResearchWorkspacePage" in legacy_source
-    assert "export { buildDeterministicWorkspaceFallbackState };" in legacy_source
-    assert "function buildDeterministicWorkspaceFallbackState" not in legacy_source
+    assert "export { buildEmptyWorkspaceState };" in legacy_source
+    assert "function buildEmptyWorkspaceState" not in legacy_source
     assert "ResearchWorkspaceHome.jsx" in legacy_source
     assert "researchWorkspace.js" in legacy_source
     assert "export function NotebookWorkspaceHome" in home_source
     assert "export function NotebookCard" in home_source
     for export_name in (
-        "buildDeterministicWorkspaceFallbackState",
+        "buildEmptyWorkspaceState",
+        "buildWorkspaceNotebooks",
         "buildGraphFocusTarget",
-        "loadDefaultWorkspaceHome",
-        "resolveWorkspacePreviewTarget",
+        "loadWorkspaceHome",
         "openSourceWorkspace",
         "loadWorkspaceSourceSamples",
     ):
         assert f"function {export_name}" in utils_source
-    assert 'documentId: 10' in utils_source
-    assert 'chapterId: 69' in utils_source
     assert '"/api/v1/library/read-shelf"' in utils_source
     assert "/note-correction-review-plan`" in utils_source
     assert "/note-correction-package?mode=section_scoped" in utils_source
+    combined = "\n".join((legacy_source, home_source, utils_source))
+    for forbidden in (
+        "buildDeterministicWorkspaceFallbackState",
+        "DEFAULT_HOME_WORKFLOW_TARGET",
+        "MACHINE_LEARNING_NOTEBOOK",
+        "Probabilistic machine learning",
+        "section_8_",
+        "PN68",
+    ):
+        assert forbidden not in combined
 
 
 def test_document_detail_uses_library_feature_note_helpers() -> None:

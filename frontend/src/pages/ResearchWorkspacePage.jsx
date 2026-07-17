@@ -10,13 +10,13 @@ import { advancedWorkflowHref } from "../components/workspace/WorkspaceWorkflowL
 import { NotebookWorkspaceHome } from "../features/workspace/components/ResearchWorkspaceHome.jsx";
 import {
   ROUTE_FALLBACK_NOTICE,
-  buildDeterministicWorkspaceFallbackState,
+  buildEmptyWorkspaceState,
   buildGraphFocusTarget,
-  loadDefaultWorkspaceHome,
+  loadWorkspaceHome,
   loadWorkspaceSourceSamples,
 } from "../features/workspace/utils/researchWorkspace.js";
 
-export { buildDeterministicWorkspaceFallbackState };
+export { buildEmptyWorkspaceState };
 
 export default function ResearchWorkspacePage({
   route = {},
@@ -31,9 +31,6 @@ export default function ResearchWorkspacePage({
   const [homeState, setHomeState] = useState({
     status: "idle",
     sources: [],
-    selectedSource: null,
-    selectedBook: null,
-    workflowState: null,
     error: "",
   });
   const [sourceTarget, setSourceTarget] = useState(null);
@@ -51,7 +48,7 @@ export default function ResearchWorkspacePage({
       return;
     }
     let cancelled = false;
-    const loadingFallback = buildDeterministicWorkspaceFallbackState({
+    const loadingFallback = buildEmptyWorkspaceState({
       documentId,
       chapterId,
       reason: "workspace_state_loading",
@@ -63,7 +60,7 @@ export default function ResearchWorkspacePage({
       })
       .catch((error) => {
         if (!cancelled) {
-          const fallbackState = buildDeterministicWorkspaceFallbackState({
+          const fallbackState = buildEmptyWorkspaceState({
             documentId,
             chapterId,
             reason: "workspace_state_fetch_failed",
@@ -89,12 +86,9 @@ export default function ResearchWorkspacePage({
     setHomeState({
       status: "loading",
       sources: [],
-      selectedSource: null,
-      selectedBook: null,
-      workflowState: null,
       error: "",
     });
-    loadDefaultWorkspaceHome({ documentId })
+    loadWorkspaceHome()
       .then((payload) => {
         if (!cancelled) setHomeState({ status: "ready", ...payload, error: "" });
       })
@@ -103,9 +97,6 @@ export default function ResearchWorkspacePage({
           setHomeState({
             status: "error",
             sources: [],
-            selectedSource: null,
-            selectedBook: null,
-            workflowState: null,
             error: "来源数量暂不可用，本地 API 可用后自动更新。",
           });
         }
@@ -117,7 +108,13 @@ export default function ResearchWorkspacePage({
 
   useEffect(() => {
     const state = workspaceState.data;
-    if (!documentId || !chapterId || !state || state.notes_import_status?.status === "blocked_no_notes_in_scope") {
+    if (
+      !documentId
+      || !chapterId
+      || workspaceState.status !== "ready"
+      || !state
+      || state.notes_import_status?.status === "blocked_no_notes_in_scope"
+    ) {
       setSourceSamples({ status: "idle", targets: [], error: "", source: "" });
       setSourceTarget(null);
       setGraphFocusTarget(null);
@@ -156,12 +153,16 @@ export default function ResearchWorkspacePage({
     );
   }
 
-  const state = workspaceState.data || buildDeterministicWorkspaceFallbackState({
+  const state = workspaceState.data || buildEmptyWorkspaceState({
     documentId,
     chapterId,
     reason: "workspace_state_unavailable",
   });
   const routeFallbackActive = workspaceState.status !== "ready";
+  const workspaceTitle = state.notebook_title || state.document?.title || state.document_title || "Research Workspace";
+  const documentTitle = state.document?.title || state.document_title || "当前资料";
+  const chapterTitle = state.current_chapter?.title || state.chapter_title || `章节 ${chapterId}`;
+  const sourceCount = Number(state.source_count || 0);
   const handleViewSource = (target) => {
     setSourceTarget(target);
     setGraphFocusTarget(buildGraphFocusTarget(target));
@@ -175,9 +176,9 @@ export default function ResearchWorkspacePage({
       <header className="researchWorkspaceTopbar">
         <div>
           <p className="workspaceKicker">Search</p>
-          <h2>机器学习</h2>
+          <h2>{workspaceTitle}</h2>
           <span>
-            概率机器学习与相关资料 · 共 10 个来源 · 当前章节：{state.current_chapter?.title || "8 Optimization"}
+            {documentTitle}{sourceCount > 0 ? ` · 共 ${sourceCount} 个来源` : ""} · 当前章节：{chapterTitle}
           </span>
           {routeFallbackActive && (
             <p className="workspaceSampleNotice warning">{ROUTE_FALLBACK_NOTICE}</p>
