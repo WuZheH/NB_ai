@@ -85,6 +85,7 @@ def test_five_layer_results_use_retrieval_feature_sections_and_utils() -> None:
     utils_source = utils_path.read_text(encoding="utf-8")
     assert len(legacy_source.splitlines()) < 350
     assert "export default function FiveLayerSearchResults" in legacy_source
+    assert 'import WorkspaceStatusPill from "./WorkspaceStatusPill.jsx";' in legacy_source
     assert "function ResearchEvidencePacketPanel" not in legacy_source
     assert "RetrievalResultSections.jsx" in legacy_source
     assert "retrievalResults.js" in legacy_source

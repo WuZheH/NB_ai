@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import WorkspaceStatusPill from "./WorkspaceStatusPill.jsx";
 import {
   ApprovedObjectCandidatesSection,
   ResearchEvidencePacketPanel,
