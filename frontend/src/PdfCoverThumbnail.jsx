@@ -244,8 +244,8 @@ async function loadPdfJsForCover() {
   }
   if (!pdfjsLoadPromise) {
     pdfjsLoadPromise = Promise.all([
-      import("pdfjs-dist"),
-      import("pdfjs-dist/build/pdf.worker.mjs?url")
+      import("pdfjs-dist/legacy/build/pdf.mjs"),
+      import("pdfjs-dist/legacy/build/pdf.worker.mjs?url")
     ]).then(([pdfjsLib, workerModule]) => {
       pdfjsLib.GlobalWorkerOptions.workerSrc = workerModule.default;
       return pdfjsLib;
