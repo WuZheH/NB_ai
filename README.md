@@ -201,6 +201,7 @@ $env:SEARCH_CLOUDFLARED = ""
 $env:SEARCH_TUNNEL_STATE_DIR = ".\.codex_tmp\quick-tunnel"
 $env:SEARCH_BACKEND_PORT = "8000"
 $env:SEARCH_MCP_PORT = "8787"
+$env:SEARCH_RENDERER_PORT = "5173"
 $env:SEARCH_BACKEND_URL = "http://127.0.0.1:8000"
 $env:SEARCH_FRONTEND_URL = "http://127.0.0.1:5173"
 $env:SEARCH_RUNTIME_MODE = "local"
@@ -341,7 +342,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 `
 
 ### 端口被占用
 
-先用系统状态确认占用者是否是 Search 已有实例。Search 使用单实例和外部进程所有权保护；不要结束不属于当前测试/实例的进程。必要时同时修改端口和对应 loopback URL。
+先用系统状态确认占用者是否是 Search 已有实例。Search 使用单实例和外部进程所有权保护；不要结束不属于当前测试/实例的进程。FastAPI/MCP 端口变化时应同时修改端口和对应 loopback URL；Desktop renderer 可通过 `SEARCH_RENDERER_PORT` 选择 1024–65535 范围内的空闲端口，默认仍为 5173。
 
 ### 为什么没有搜索结果
 

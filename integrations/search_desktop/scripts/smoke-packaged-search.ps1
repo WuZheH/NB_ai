@@ -134,13 +134,24 @@ function Get-PortOwners {
     $Owners
 }
 
+function Get-FreeLoopbackPort {
+    $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    try {
+        $Listener.Start()
+        [int]$Listener.LocalEndpoint.Port
+    }
+    finally {
+        $Listener.Stop()
+    }
+}
+
 function Assert-PortOwnershipUnchanged {
     param(
         [hashtable]$Before,
         [hashtable]$After
     )
 
-    foreach ($Port in @("8000", "8787")) {
+    foreach ($Port in @($Before.Keys | Sort-Object)) {
         $BeforeIds = @($Before[$Port] | Sort-Object)
         $AfterIds = @($After[$Port] | Sort-Object)
         if (Compare-Object -ReferenceObject $BeforeIds -DifferenceObject $AfterIds) {
@@ -225,6 +236,7 @@ $OriginalEnvironment = @{
     TMP = $env:TMP
     ELECTRON_DISABLE_CRASH_REPORTING = $env:ELECTRON_DISABLE_CRASH_REPORTING
     SEARCH_ELECTRON_TEST_MODE = $env:SEARCH_ELECTRON_TEST_MODE
+    SEARCH_RENDERER_PORT = $env:SEARCH_RENDERER_PORT
     SEARCH_RUNTIME_ROOT = $env:SEARCH_RUNTIME_ROOT
     SEARCH_DATA_DIR = $env:SEARCH_DATA_DIR
     SEARCH_PYTHON = $env:SEARCH_PYTHON
@@ -235,7 +247,8 @@ $OriginalEnvironment = @{
     PYTHONPATH = $env:PYTHONPATH
     NODE_PATH = $env:NODE_PATH
 }
-$PortOwnersBefore = Get-PortOwners -Ports @(8000, 8787)
+$RendererPort = Get-FreeLoopbackPort
+$PortOwnersBefore = Get-PortOwners -Ports @(8000, 8787, $RendererPort)
 $SearchProcess = $null
 $SecondProcess = $null
 $SmokeProcessIds = @()
@@ -249,6 +262,7 @@ try {
     $env:TMP = $TempDirectory
     $env:ELECTRON_DISABLE_CRASH_REPORTING = "1"
     $env:SEARCH_ELECTRON_TEST_MODE = "1"
+    $env:SEARCH_RENDERER_PORT = [string]$RendererPort
     $env:SEARCH_RUNTIME_ROOT = $RuntimeRoot
     $env:SEARCH_DATA_DIR = $DataDir
     $env:SEARCH_PYTHON = $PythonExe
@@ -371,6 +385,7 @@ try {
         runtime_seconds = $RuntimeSeconds
         visible_window_count = 0
         electron_test_mode = "hidden"
+        renderer_port = $RendererPort
         duplicate_instance_reused = $true
         startup_log = $StartupLog
         last_startup_stage = "ready"
@@ -421,7 +436,7 @@ finally {
     try {
         Assert-PortOwnershipUnchanged `
             -Before $PortOwnersBefore `
-            -After (Get-PortOwners -Ports @(8000, 8787))
+            -After (Get-PortOwners -Ports @(8000, 8787, $RendererPort))
     }
     catch {
         if (-not $PrimaryError) { $PrimaryError = $_ }

@@ -62,6 +62,7 @@ export function resolveDesktopConfig({
     env.SEARCH_BACKEND_URL || env.NOTEBOOK_AI_BACKEND_URL || "http://127.0.0.1:8000",
     "backend URL",
   );
+  const rendererPort = resolveRendererPort(env.SEARCH_RENDERER_PORT);
   const settingsPath = userDataPath ? join(userDataPath, "search-desktop-settings.json") : null;
   const requiredRuntimePaths = [
     ["python", pythonExe],
@@ -95,7 +96,7 @@ export function resolveDesktopConfig({
     rendererAssets: join(DESKTOP_ROOT, "renderer"),
     rendererFallback: join(DESKTOP_ROOT, "renderer", "missing-build.html"),
     backendUrl,
-    rendererPort: 5173,
+    rendererPort,
     defaultRoute: "/retrieval",
     settingsPath,
     dataAvailable: existsSync(dataDir),
@@ -219,4 +220,15 @@ export function validateLoopbackUrl(value, label = "URL") {
     throw new Error(`${label} must be an explicit loopback HTTP URL`);
   }
   return parsed.toString().replace(/\/$/, "");
+}
+
+export function resolveRendererPort(value) {
+  const configured = String(value ?? "").trim();
+  if (!configured) return 5173;
+  if (!/^\d+$/.test(configured)) throw new Error("SEARCH_RENDERER_PORT_invalid");
+  const port = Number(configured);
+  if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) {
+    throw new Error("SEARCH_RENDERER_PORT_invalid");
+  }
+  return port;
 }

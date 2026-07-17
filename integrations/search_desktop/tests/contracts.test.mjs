@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { IPC_CHANNELS } from "../electron/ipc/channels.js";
 import { normalizeSettingsPatch } from "../electron/ipc/settingsStore.js";
-import { validateLoopbackUrl } from "../electron/main/config.js";
+import { resolveRendererPort, validateLoopbackUrl } from "../electron/main/config.js";
 import { resolveWindowMode } from "../electron/main/window.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,7 +30,7 @@ test("product brand is Search while NOTEBOOK_AI runtime compatibility remains", 
   assert.match(config, /NOTEBOOK_AI_PYTHON_EXE/);
   assert.match(config, /NOTEBOOK_AI_NODE_EXE/);
   assert.match(config, /notebook_ai_launcher\.py/);
-  assert.match(config, /rendererPort:\s*5173/);
+  assert.match(config, /SEARCH_RENDERER_PORT/);
 });
 
 test("runtime launcher is a direct hidden child with controlled output pipes", async () => {
@@ -101,6 +101,14 @@ test("renderer and API URLs are loopback-only", () => {
   assert.equal(validateLoopbackUrl("http://127.0.0.1:8000"), "http://127.0.0.1:8000");
   assert.throws(() => validateLoopbackUrl("https://example.com"), /loopback/);
   assert.throws(() => validateLoopbackUrl("http://user:pass@127.0.0.1:8000"), /loopback/);
+});
+
+test("desktop renderer port keeps a stable default and validates explicit overrides", () => {
+  assert.equal(resolveRendererPort(undefined), 5173);
+  assert.equal(resolveRendererPort(" 55173 "), 55173);
+  for (const value of ["0", "1023", "65536", "5173.5", "not-a-port"]) {
+    assert.throws(() => resolveRendererPort(value), /SEARCH_RENDERER_PORT_invalid/);
+  }
 });
 
 test("preload surface is allowlisted and contains no raw process or filesystem bridge", async () => {

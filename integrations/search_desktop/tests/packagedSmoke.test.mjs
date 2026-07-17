@@ -35,6 +35,13 @@ test("packaged smoke keeps all mutable paths inside the task temp root", () => {
   }
 });
 
+test("packaged smoke isolates the renderer without stopping an existing Search", () => {
+  assert.match(smoke, /Get-FreeLoopbackPort/);
+  assert.match(smoke, /SEARCH_RENDERER_PORT = \[string\]\$RendererPort/);
+  assert.match(smoke, /SEARCH_RENDERER_PORT = \$env:SEARCH_RENDERER_PORT/);
+  assert.match(smoke, /Get-PortOwners -Ports @\(8000, 8787, \$RendererPort\)/);
+});
+
 test("packaged smoke cleanup is identity-scoped and uses the isolated launcher", () => {
   assert.match(smoke, /ExpectedExecutable/);
   assert.match(smoke, /StringComparison\]::OrdinalIgnoreCase/);
