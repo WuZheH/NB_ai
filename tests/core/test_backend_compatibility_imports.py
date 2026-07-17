@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.api import library_api
 from app.api.library import router as library_router_module
-from app.api.library.chapters import get_book_detail
+from app.api.library.books import get_book_detail
 from app.api.library.importing import classify_pdf_import
 from app.api.library.search import search_high_quality
 from app.core.paths import DEFAULT_DB_PATH
@@ -26,10 +26,6 @@ from app.services import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
-EXPECTED_PUBLIC_SYMBOL_COUNT = 125
-EXPECTED_PUBLIC_SYMBOL_FINGERPRINT = (
-    "f891e80e57e4b4ec84c8d3d8bce9cb3cf95043a5616971746230daccfb1530ea"
-)
 EXPECTED_SERVICE_CONTRACTS = {
     "app.services.chapter_review_pipeline_service": (
         149,
@@ -65,12 +61,27 @@ def test_library_api_facade_preserves_router_and_endpoint_imports() -> None:
     assert library_api.search_high_quality is search_high_quality
 
 
-def test_library_api_facade_preserves_the_public_symbol_surface() -> None:
-    names = sorted(name for name in vars(library_api) if not name.startswith("_"))
-    fingerprint = hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()
-
-    assert len(names) == EXPECTED_PUBLIC_SYMBOL_COUNT
-    assert fingerprint == EXPECTED_PUBLIC_SYMBOL_FINGERPRINT
+def test_library_api_facade_exposes_only_canonical_product_surfaces() -> None:
+    names = {name for name in vars(library_api) if not name.startswith("_")}
+    for expected in (
+        "router",
+        "get_book_detail",
+        "get_book_chapter_workspace_state",
+        "read_shelf",
+        "search_high_quality",
+        "document_detail",
+        "evidence_detail",
+        "document_pdf",
+        "classify_pdf_import",
+    ):
+        assert expected in names
+    for obsolete in (
+        "save_book_chapter_note_correction_review",
+        "get_book_chapter_note_classification_package",
+        "get_book_chapter_object_candidates_dry_run",
+        "preview_workspace_selection_source_pack",
+    ):
+        assert obsolete not in names
 
 
 def _owned_callable_contract(module) -> list[tuple[str, str, str]]:

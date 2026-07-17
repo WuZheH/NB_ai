@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.api.library.common import *  # noqa: F401,F403
+from app.api.library.read_common import *  # noqa: F401,F403
 
 
 router = APIRouter()

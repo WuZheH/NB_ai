@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.evidence_export_api import router as evidence_export_router
 from app.api.import_api import router as import_router
-from app.api.library_api import router as library_router
+from app.api.library.router import router as library_router
 from app.api.product_api import router as product_router
 from app.api.retrieval_api import router as retrieval_router
 from app.api.search_api import router as search_router
