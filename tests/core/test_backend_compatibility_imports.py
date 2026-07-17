@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+from pathlib import Path
 
 from app.api import library_api
 from app.api.library import router as library_router_module
@@ -20,6 +21,9 @@ from app.services import (
     library_core_service,
     library_service,
 )
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 EXPECTED_PUBLIC_SYMBOL_COUNT = 125
@@ -127,3 +131,15 @@ def test_backend_service_facades_reexport_the_internal_implementations() -> None
     assert database_search_service.build_database_search is database_search_legacy.build_database_search
     assert library_core_service.search_library is library_legacy.search_library
     assert library_service._core is library_core_service
+
+
+def test_obsolete_library_domain_facades_are_removed() -> None:
+    obsolete_paths = (
+        "app/domains/library/evidence.py",
+        "app/domains/library/home.py",
+        "app/domains/library/notes.py",
+        "app/domains/library/search.py",
+        "app/domains/library/service.py",
+    )
+    for relative in obsolete_paths:
+        assert not (ROOT / relative).exists()
