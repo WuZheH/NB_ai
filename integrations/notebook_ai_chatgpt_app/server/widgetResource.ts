@@ -20,14 +20,18 @@ function validatedWidgetDomain(value: string | undefined): string | undefined {
   }
   const url = new URL(value);
   if (url.protocol !== "https:") {
-    throw new Error("NOTEBOOK_AI_WIDGET_DOMAIN must use HTTPS.");
+    throw new Error("SEARCH_WIDGET_DOMAIN must use HTTPS.");
   }
   return url.origin;
 }
 
 export function registerWidgetResource(server: McpServer, options: WidgetResourceOptions = {}): void {
   const htmlPath = options.htmlPath ?? resolve(process.cwd(), "web", "dist", "widget.html");
-  const widgetDomain = validatedWidgetDomain(options.widgetDomain ?? process.env.NOTEBOOK_AI_WIDGET_DOMAIN);
+  const widgetDomain = validatedWidgetDomain(
+    options.widgetDomain
+      ?? process.env.SEARCH_WIDGET_DOMAIN
+      ?? process.env.NOTEBOOK_AI_WIDGET_DOMAIN,
+  );
 
   server.registerResource(
     "notebook-ai-research-search-widget",

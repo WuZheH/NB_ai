@@ -23,7 +23,7 @@ export default function ResearchWorkspacePage({
   onOpenWorkspace,
   onOpenImport,
   onOpenAdvancedWorkflow,
-  onBackToRetrieval,
+  onBackToSearch,
 }) {
   const documentId = route.documentId ? Number(route.documentId) : null;
   const chapterId = route.chapterId ? Number(route.chapterId) : null;
@@ -151,7 +151,7 @@ export default function ResearchWorkspacePage({
         homeState={homeState}
         onOpenWorkspace={onOpenWorkspace}
         onOpenImport={onOpenImport}
-        onBackToRetrieval={onBackToRetrieval}
+        onBackToSearch={onBackToSearch}
       />
     );
   }
@@ -184,8 +184,8 @@ export default function ResearchWorkspacePage({
           )}
         </div>
         <div className="researchWorkspaceTopActions">
-          <button type="button" className="workspacePillButton secondary" onClick={onBackToRetrieval}>
-            返回本地证据检索
+          <button type="button" className="workspacePillButton secondary" onClick={onBackToSearch}>
+            ← 返回搜索
           </button>
           <button type="button" className="workspacePillButton">分享</button>
           <button type="button" className="workspacePillButton">设置</button>

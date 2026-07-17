@@ -9,13 +9,14 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.core.paths import ZOTERO_LIBRARY_DB_PATH, ZOTERO_LIBRARY_DIR
 from app.db.session import SessionLocal
 from app.models import Document
 from app.services.library_service import resolve_safe_pdf_path
 
 
-ZOTERO_DATA_DIR = Path("D:/LEARNING/ZoteroData")
-ZOTERO_SQLITE_PATH = ZOTERO_DATA_DIR / "zotero.sqlite"
+ZOTERO_DATA_DIR = ZOTERO_LIBRARY_DIR
+ZOTERO_SQLITE_PATH = ZOTERO_LIBRARY_DB_PATH
 ZOTERO_OPEN_PDF_TEMPLATE = "zotero://open-pdf/library/items/{attachment_key}?page={page}"
 ZOTERO_SELECT_URI_TEMPLATE = "zotero://select/library/items/{item_key}"
 

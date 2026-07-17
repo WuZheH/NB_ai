@@ -5,12 +5,13 @@ from pathlib import Path
 import time
 from typing import Any
 
+from app.core.paths import MODEL_CACHE_ROOT, RERANKER_MODEL_PATH
 from app.services import local_embedding_service
 
 
 RERANKER_MODEL_NAME = "Qwen3-Reranker-0.6B"
-DEFAULT_RERANKER_MODEL_PATH = Path("D:/LEARNING/Tools/model_cache/Qwen3-Reranker-0.6B")
-DEFAULT_MODEL_CACHE = Path("D:/LEARNING/Tools/model_cache")
+DEFAULT_RERANKER_MODEL_PATH = RERANKER_MODEL_PATH
+DEFAULT_MODEL_CACHE = MODEL_CACHE_ROOT
 DEFAULT_MARKER_CACHE = DEFAULT_MODEL_CACHE
 
 _RERANKER: Any | None = None
@@ -187,7 +188,11 @@ def _set_local_cache_env() -> None:
 
 
 def _model_path() -> Path:
-    return Path(os.environ.get("NOTEBOOK_AI_RERANKER_MODEL_PATH") or DEFAULT_RERANKER_MODEL_PATH)
+    return Path(
+        os.environ.get("SEARCH_RERANKER_MODEL")
+        or os.environ.get("NOTEBOOK_AI_RERANKER_MODEL_PATH")
+        or DEFAULT_RERANKER_MODEL_PATH
+    )
 
 
 def _device_name() -> str | None:

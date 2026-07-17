@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import DATA_PROJECT_ROOT, PROJECT_ROOT
 from app.services.pdf_backend_service import load_fitz_backend
 from app.services.library_core_service import SAFE_PDF_ROOTS
 
@@ -16,7 +16,7 @@ from app.services.library_core_service import SAFE_PDF_ROOTS
 SAMPLE_STRATEGY = "first_chapter_first_section_two_pages"
 SELECTABLE_ROUTES = ["normal_text_layer", "ocr_layout_first_repair", "cancel_or_replace_pdf"]
 PREVIEW_TOKEN_TTL_SECONDS = 15 * 60
-PREVIEW_ALLOWED_PDF_ROOTS = (PROJECT_ROOT, *SAFE_PDF_ROOTS)
+PREVIEW_ALLOWED_PDF_ROOTS = (PROJECT_ROOT, DATA_PROJECT_ROOT, *SAFE_PDF_ROOTS)
 
 HTML_TAG_RE = re.compile(r"<(?!UNK\b)[A-Za-z/][^>]*>", re.IGNORECASE)
 REPEATED_TOKEN_RE = re.compile(r"\b([A-Za-z]{1,20}|\d+(?:\.\d+)?)\b(?:\s+\1\b){2,}", re.IGNORECASE)

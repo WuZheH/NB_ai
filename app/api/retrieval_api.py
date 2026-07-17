@@ -4,10 +4,15 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from app.domains.retrieval.fragment_locator_service import (
+    FragmentLocatorNotFound,
+    get_fragment_locator,
+)
 from app.domains.retrieval.fragment_repository import (
     NotebookFragmentNotFound,
     get_notebook_fragment,
 )
+from app.domains.retrieval.locator_contracts import FragmentLocator
 from app.domains.retrieval.notebook_search_service import (
     NotebookSearchUnavailable,
     search_notebook,
@@ -59,6 +64,21 @@ def fetch_notebook_fragment(fragment_id: str) -> dict[str, Any]:
             status_code=404,
             detail={
                 "error": "notebook_fragment_not_found",
+                "message": str(exc),
+                **_safety_flags(),
+            },
+        ) from exc
+
+
+@router.get("/fragments/{fragment_id}/locator", response_model=FragmentLocator)
+def fetch_fragment_locator(fragment_id: str) -> dict[str, Any]:
+    try:
+        return get_fragment_locator(fragment_id).model_dump(mode="json")
+    except FragmentLocatorNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "fragment_locator_not_found",
                 "message": str(exc),
                 **_safety_flags(),
             },

@@ -127,12 +127,15 @@ function registerSmokeAPI() {
     }
   };
 
+  Zotero.SearchInspirationPlugin = NOTEBOOK_AI_PUBLIC_API;
   Zotero.NotebookAIInspirationPlugin = NOTEBOOK_AI_PUBLIC_API;
   try {
     if (typeof globalThis !== "undefined") {
+      globalThis.SEARCH_INSPIRATION_PLUGIN = NOTEBOOK_AI_PUBLIC_API;
       globalThis.NOTEBOOK_AI_INSPIRATION_PLUGIN = NOTEBOOK_AI_PUBLIC_API;
     }
     if (typeof window !== "undefined") {
+      window.SEARCH_INSPIRATION_PLUGIN = NOTEBOOK_AI_PUBLIC_API;
       window.NOTEBOOK_AI_INSPIRATION_PLUGIN = NOTEBOOK_AI_PUBLIC_API;
     }
   } catch (error) {
@@ -144,12 +147,24 @@ function registerSmokeAPI() {
 function unregisterSmokeAPI() {
   try {
     if (typeof Zotero !== "undefined" &&
+        Zotero.SearchInspirationPlugin === NOTEBOOK_AI_PUBLIC_API) {
+      delete Zotero.SearchInspirationPlugin;
+    }
+    if (typeof Zotero !== "undefined" &&
         Zotero.NotebookAIInspirationPlugin === NOTEBOOK_AI_PUBLIC_API) {
       delete Zotero.NotebookAIInspirationPlugin;
     }
     if (typeof globalThis !== "undefined" &&
+        globalThis.SEARCH_INSPIRATION_PLUGIN === NOTEBOOK_AI_PUBLIC_API) {
+      delete globalThis.SEARCH_INSPIRATION_PLUGIN;
+    }
+    if (typeof globalThis !== "undefined" &&
         globalThis.NOTEBOOK_AI_INSPIRATION_PLUGIN === NOTEBOOK_AI_PUBLIC_API) {
       delete globalThis.NOTEBOOK_AI_INSPIRATION_PLUGIN;
+    }
+    if (typeof window !== "undefined" &&
+        window.SEARCH_INSPIRATION_PLUGIN === NOTEBOOK_AI_PUBLIC_API) {
+      delete window.SEARCH_INSPIRATION_PLUGIN;
     }
     if (typeof window !== "undefined" &&
         window.NOTEBOOK_AI_INSPIRATION_PLUGIN === NOTEBOOK_AI_PUBLIC_API) {

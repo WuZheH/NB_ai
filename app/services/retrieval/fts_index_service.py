@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import DATA_DIR
 from app.schemas.retrieval_fragment import RetrievalFragment
 from app.services.retrieval.fts_schema import (
     INDEX_SCHEMA_VERSION,
@@ -388,5 +388,5 @@ def _json(value: Any) -> str:
 
 def _assert_project_local(path: Path) -> None:
     resolved = path.resolve(strict=False)
-    if not resolved.is_relative_to(PROJECT_ROOT.resolve()):
-        raise ValueError(f"retrieval index path must stay inside project root: {path}")
+    if not resolved.is_relative_to(DATA_DIR.resolve()):
+        raise ValueError(f"retrieval index path must stay inside SEARCH_DATA_DIR: {path}")

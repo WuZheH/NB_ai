@@ -1,15 +1,21 @@
 @echo off
 setlocal
 
-set "ROOT=D:\LEARNING\Tools\notebook_ai"
-set "PYTHON_EXE=D:\LEARNING\Tools\ANACONDA\envs\NOTEBOOK_AI\python.exe"
+for %%I in ("%~dp0..\..") do set "ROOT=%%~fI"
+set "PYTHON_EXE=%SEARCH_PYTHON%"
+if not defined PYTHON_EXE set "PYTHON_EXE=%NOTEBOOK_AI_PYTHON_EXE%"
 
-echo NOTEBOOK_AI dev launcher
+echo Search dev launcher
 echo.
 
 if not exist "%ROOT%\" (
     echo [ERROR] Project directory not found:
     echo   %ROOT%
+    goto :fail
+)
+
+if not defined PYTHON_EXE (
+    echo [ERROR] SEARCH_PYTHON is not configured.
     goto :fail
 )
 
@@ -39,13 +45,13 @@ if errorlevel 1 (
 )
 
 echo Starting backend window...
-start "NOTEBOOK_AI backend" /D "%ROOT%" cmd /k ""%PYTHON_EXE%" -B -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+start "Search backend" /D "%ROOT%" cmd /k ""%PYTHON_EXE%" -B -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
 
 echo Starting frontend window...
-start "NOTEBOOK_AI frontend" /D "%ROOT%" cmd /k "npm.cmd --prefix frontend run dev"
+start "Search frontend" /D "%ROOT%" cmd /k "npm.cmd --prefix frontend run dev"
 
 echo.
-echo NOTEBOOK_AI dev servers are starting.
+echo Search dev servers are starting.
 echo Backend:        http://127.0.0.1:8000
 echo Backend health: http://127.0.0.1:8000/health
 echo Frontend:       http://127.0.0.1:5173

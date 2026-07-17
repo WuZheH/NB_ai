@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import CONVERTED_MD_DIR, DATA_DIR, DATA_PROJECT_ROOT
 from app.services.import_service import ImportResult, import_markdown_file
 
 
@@ -688,7 +688,7 @@ def _converted_md_text_layer_path(
     title: str | None,
     output_root: str | Path | None,
 ) -> Path:
-    target_dir = Path(output_root) if output_root else PROJECT_ROOT / "data" / "converted_md" / _pdf_kind(pdf_path)
+    target_dir = Path(output_root) if output_root else CONVERTED_MD_DIR / _pdf_kind(pdf_path)
     slug = _slug_for_converted_md(title or pdf_path.stem)
     return target_dir / f"{slug}.auto.md"
 
@@ -734,12 +734,12 @@ def _pdf_to_md_blocked(
 
 def _converted_md_path(pdf_path: Path) -> Path:
     kind = _pdf_kind(pdf_path)
-    return PROJECT_ROOT / "data" / "converted_md" / kind / f"{pdf_path.stem}.auto.md"
+    return CONVERTED_MD_DIR / kind / f"{pdf_path.stem}.auto.md"
 
 
 def _layout_json_path(pdf_path: Path) -> Path:
     kind = _pdf_kind(pdf_path)
-    return PROJECT_ROOT / "data" / "layout_json" / kind / f"{pdf_path.stem}.layout.json"
+    return DATA_DIR / "layout_json" / kind / f"{pdf_path.stem}.layout.json"
 
 
 def _pdf_kind(pdf_path: Path) -> str:
@@ -826,6 +826,6 @@ def _write_mock_layout_json(layout_path: Path, pdf_path: Path, backend: str) -> 
 def _display_path(path: Path) -> str:
     resolved = path.resolve()
     try:
-        return str(resolved.relative_to(PROJECT_ROOT)).replace("\\", "/")
+        return str(resolved.relative_to(DATA_PROJECT_ROOT)).replace("\\", "/")
     except ValueError:
         return str(resolved)

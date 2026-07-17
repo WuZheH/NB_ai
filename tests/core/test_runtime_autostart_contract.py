@@ -18,7 +18,7 @@ def _config(tmp_path: Path) -> RuntimeConfig:
         project_root=PROJECT_ROOT,
         env={
             "LOCALAPPDATA": str(tmp_path / "local"),
-            "NOTEBOOK_AI_PYTHON_EXE": r"D:\LEARNING\Tools\ANACONDA\envs\NOTEBOOK_AI\python.exe",
+            "SEARCH_PYTHON": str(tmp_path / "python.exe"),
             "NOTEBOOK_AI_NODE_EXE": "node.exe",
         },
     )

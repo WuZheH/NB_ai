@@ -8,12 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import DATA_PROJECT_ROOT, OUTPUTS_DIR
 from app.services.pdf_backend_service import load_fitz_backend
 from app.services import library_service, zotero_source_cache_service
 
 
-STAGING_ROOT = PROJECT_ROOT / "outputs" / "import_staging"
+STAGING_ROOT = OUTPUTS_DIR / "import_staging"
 PREVIEW_CHARS = 4000
 SECTION_PREVIEW_LIMIT = 10
 JOB_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{7,80}$")
@@ -292,7 +292,7 @@ def _resolve_preview_markdown_path(value: Any) -> Path:
         raise ImportPreviewError("converted_md_path must point to a Markdown file.")
     if not resolved.is_file():
         raise ImportPreviewError("converted Markdown file does not exist.")
-    if not _is_relative_to(resolved, PROJECT_ROOT.resolve(strict=False)):
+    if not _is_relative_to(resolved, DATA_PROJECT_ROOT.resolve(strict=False)):
         raise ImportPreviewError("converted_md_path is outside the project root.")
     return resolved
 
@@ -887,7 +887,7 @@ def _title(title_hint: Any, pdf_path: Path) -> str:
 
 
 def _relative(path: Path) -> str:
-    return str(path.resolve(strict=False).relative_to(PROJECT_ROOT)).replace("\\", "/")
+    return str(path.resolve(strict=False).relative_to(DATA_PROJECT_ROOT)).replace("\\", "/")
 
 
 def _display_path(path: Path) -> str:

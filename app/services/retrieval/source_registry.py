@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from app.core.database import connect_immutable_readonly_sqlite
-from app.core.paths import DEFAULT_DB_PATH, NOTES_DIR, PROJECT_ROOT, ZOTERO_SNAPSHOT_PATH
+from app.core.paths import DATA_PROJECT_ROOT, DEFAULT_DB_PATH, NOTES_DIR, ZOTERO_SNAPSHOT_PATH
 from app.schemas.retrieval_fragment import RetrievalFragment, RetrievalSourceType
 from app.services.retrieval.context_builder import build_fragment_contexts
 from app.services.retrieval.metadata_resolver import RetrievalMetadataResolver
@@ -69,7 +69,7 @@ class RetrievalSourceRegistry:
         research_db_path: str | Path = DEFAULT_DB_PATH,
         zotero_snapshot_path: str | Path = DEFAULT_ZOTERO_SNAPSHOT_PATH,
         notes_root: str | Path = DEFAULT_NOTES_ROOT,
-        project_root: str | Path = PROJECT_ROOT,
+        project_root: str | Path = DATA_PROJECT_ROOT,
     ) -> None:
         self.research_db_path = Path(research_db_path)
         self.zotero_snapshot_path = Path(zotero_snapshot_path)

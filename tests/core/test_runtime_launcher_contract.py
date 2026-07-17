@@ -139,6 +139,40 @@ def test_runtime_paths_are_scoped_to_current_user_local_app_data(tmp_path: Path)
     assert config.paths.mcp_server_entry.as_posix().endswith("dist/server/index.js")
 
 
+def test_search_environment_names_take_priority_and_roaming_config_is_separate(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    data_dir = tmp_path / "portable-data"
+    config = RuntimeConfig.load(
+        project_root=project,
+        env={
+            "LOCALAPPDATA": str(tmp_path / "local"),
+            "APPDATA": str(tmp_path / "roaming"),
+            "SEARCH_DATA_DIR": str(data_dir),
+            "SEARCH_PYTHON": str(tmp_path / "search-python.exe"),
+            "SEARCH_NODE": str(tmp_path / "search-node.exe"),
+            "SEARCH_BACKEND_PORT": "18001",
+            "SEARCH_MCP_PORT": "18788",
+            "SEARCH_RUNTIME_DIR": str(tmp_path / "custom-runtime"),
+            "SEARCH_LOG_DIR": str(tmp_path / "custom-logs"),
+            "SEARCH_CONFIG_DIR": str(tmp_path / "custom-config"),
+            "NOTEBOOK_AI_PYTHON_EXE": str(tmp_path / "legacy-python.exe"),
+            "NOTEBOOK_AI_NODE_EXE": str(tmp_path / "legacy-node.exe"),
+        },
+    )
+    assert config.paths.data_dir == data_dir.resolve()
+    assert config.paths.data_project_root == data_dir.parent.resolve()
+    assert config.paths.config_dir == (tmp_path / "custom-config").resolve()
+    assert config.paths.logs_dir == (tmp_path / "custom-logs").resolve()
+    assert config.paths.runtime_dir == (tmp_path / "custom-runtime").resolve()
+    assert config.python_exe.name == "search-python.exe"
+    assert config.node_exe.name == "search-node.exe"
+    assert config.backend_port == 18001
+    assert config.mcp_port == 18788
+
+
 def test_runtime_config_reads_legacy_config_without_copying_it(tmp_path: Path) -> None:
     local_root = tmp_path / "local"
     legacy_config = local_root / "NOTEBOOK_AI" / "config" / "runtime.json"
@@ -663,7 +697,7 @@ def test_startup_detects_quick_tunnel_without_starting_or_stopping_it(
         lambda: ChatGptTunnelStatus(
             "quick",
             TunnelState.QUICK_ONLINE,
-            pid=40036,
+            pid=43120,
             public_url="https://temporary.trycloudflare.com",
         ),
     )
@@ -686,7 +720,7 @@ def test_startup_detects_quick_tunnel_without_starting_or_stopping_it(
     assert status.components["fastapi"].state is ComponentState.EXTERNAL
     assert status.components["mcp"].state is ComponentState.EXTERNAL
     assert status.components["tunnel"].state is ComponentState.EXTERNAL
-    assert status.components["tunnel"].pid == 40036
+    assert status.components["tunnel"].pid == 43120
     assert status.tunnel_state is TunnelState.QUICK_ONLINE
     assert status.state is RuntimeState.LOCAL_READY_TUNNEL_MISSING
 

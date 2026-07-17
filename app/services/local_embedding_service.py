@@ -9,14 +9,15 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.core.paths import EMBEDDING_MODEL_PATH, MODEL_CACHE_ROOT
 from app.db.session import SessionLocal
 from app.models import Document, KnowledgeChunk
 from app.services.library_service import READ_LIBRARY_STATUSES, is_metadata_chunk_text
 
 
 MODEL_NAME = "Qwen3-Embedding-0.6B"
-DEFAULT_MODEL_PATH = Path("D:/LEARNING/Tools/model_cache/Qwen3-Embedding-0.6B")
-DEFAULT_MODEL_CACHE = Path("D:/LEARNING/Tools/model_cache")
+DEFAULT_MODEL_PATH = EMBEDDING_MODEL_PATH
+DEFAULT_MODEL_CACHE = MODEL_CACHE_ROOT
 DEFAULT_MARKER_CACHE = DEFAULT_MODEL_CACHE
 MAX_CANDIDATE_TEXT_CHARS = 1200
 PASSAGE_SNIPPET_CHARS = 320
@@ -404,7 +405,11 @@ def _set_local_cache_env() -> None:
 
 
 def _model_path() -> Path:
-    return Path(os.environ.get("NOTEBOOK_AI_EMBEDDING_MODEL_PATH") or DEFAULT_MODEL_PATH)
+    return Path(
+        os.environ.get("SEARCH_EMBEDDING_MODEL")
+        or os.environ.get("NOTEBOOK_AI_EMBEDDING_MODEL_PATH")
+        or DEFAULT_MODEL_PATH
+    )
 
 
 def _device_name() -> str | None:

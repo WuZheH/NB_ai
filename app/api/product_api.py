@@ -27,7 +27,7 @@ router = APIRouter()
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "app": "NOTEBOOK_AI",
+        "app": "Search",
         "mode": "local_first",
         **vector_store_worker.vector_auto_sync_boundary(),
         **safety_fields(),

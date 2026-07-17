@@ -650,7 +650,6 @@ export default function ImportPreviewPage({ state, setState, updateSafety, onNav
         sample_pages: previewGate.sample_pages || [],
         max_pages: 2,
         device: "auto",
-        model_cache_root: "D:\\LEARNING\\Tools\\model_cache",
       });
       setState(s => ({ ...s, repairPreviewLoading: false, repairPreview: result }));
       updateSafety(result);

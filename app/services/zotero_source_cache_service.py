@@ -10,13 +10,13 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import DATA_PROJECT_ROOT, ZOTERO_DIR
 from app.db.session import Base, SessionLocal, engine
 from app.models import Document, DocumentSource, ZoteroPdfSource
 from app.services import import_duplicate_check_service
 
 
-CONFIG_PATH = PROJECT_ROOT / "data" / "zotero" / "zotero_source_config.json"
+CONFIG_PATH = ZOTERO_DIR / "zotero_source_config.json"
 ZOTERO_SELECT_URI = "zotero://select/library/items/{item_key}"
 ZOTERO_OPEN_PDF_URI = "zotero://open-pdf/library/items/{attachment_key}"
 
@@ -513,7 +513,7 @@ def _load_config() -> dict[str, Any]:
 
 def _project_path(value: str) -> Path:
     path = Path(value)
-    return path if path.is_absolute() else PROJECT_ROOT / path
+    return path if path.is_absolute() else DATA_PROJECT_ROOT / path
 
 
 def _ensure_tables() -> None:
@@ -539,7 +539,7 @@ def _rel(path: Path | None) -> str | None:
     if path is None:
         return None
     try:
-        return str(path.resolve(strict=False).relative_to(PROJECT_ROOT)).replace("\\", "/")
+        return str(path.resolve(strict=False).relative_to(DATA_PROJECT_ROOT)).replace("\\", "/")
     except ValueError:
         return str(path)
 

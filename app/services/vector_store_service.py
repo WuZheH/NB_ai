@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import undefer
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import LANCEDB_DIR, VECTOR_STORE_DIR
 from app.db.session import SessionLocal
 from app.models import BookChapter, Document, KnowledgeChunk
 from app.services import local_embedding_service, object_semantic_search_service
@@ -23,8 +23,7 @@ EMBEDDING_MODEL = local_embedding_service.MODEL_NAME
 EMBEDDING_MODEL_PATH = str(local_embedding_service.DEFAULT_MODEL_PATH)
 PASSAGE_PROFILE_VERSION = "passage_profile_v1"
 OBJECT_PROFILE_VERSION = "object_profile_v1"
-VECTOR_STORE_ROOT = PROJECT_ROOT / "data" / "vector_store"
-LANCEDB_DIR = VECTOR_STORE_ROOT / "lancedb"
+VECTOR_STORE_ROOT = VECTOR_STORE_DIR
 MANIFEST_PATH = VECTOR_STORE_ROOT / "vector_manifest.json"
 PASSAGE_TABLE = "passage_embeddings"
 OBJECT_TABLE = "object_embeddings"

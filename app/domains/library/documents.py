@@ -5,13 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.core.paths import DATA_DIR, PROJECT_ROOT
+from app.core.paths import DATA_DIR, DATA_PROJECT_ROOT, ZOTERO_LIBRARY_DIR
 
 
 SAFE_PDF_ROOTS = (
     DATA_DIR / "pdfs",
     DATA_DIR / "pdfs" / "papers",
-    Path("D:/LEARNING/ZoteroData"),
+    ZOTERO_LIBRARY_DIR,
 )
 TEST_DATA_TITLE_MARKERS = ("mock", "test minimal")
 TEST_DATA_PREFIXES = ("test ",)
@@ -24,14 +24,14 @@ def resolve_safe_pdf_path(pdf_path: str | None) -> Path | None:
         return None
     candidate = Path(pdf_path)
     if not candidate.is_absolute():
-        candidate = PROJECT_ROOT / candidate
+        candidate = DATA_PROJECT_ROOT / candidate
     try:
         resolved = candidate.resolve(strict=False)
     except (OSError, RuntimeError):
         return None
     if resolved.suffix.lower() != ".pdf":
         return None
-    within_project = _is_relative_to(resolved, PROJECT_ROOT)
+    within_project = _is_relative_to(resolved, DATA_PROJECT_ROOT)
     within_safe_roots = any(
         _is_relative_to(resolved, root.resolve(strict=False)) for root in SAFE_PDF_ROOTS
     )

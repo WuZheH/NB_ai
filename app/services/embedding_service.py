@@ -7,11 +7,12 @@ import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from app.core.paths import MODEL_CACHE_ROOT
 
 DEFAULT_EMBEDDING_DIM = 256
 DEFAULT_REAL_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 DEFAULT_REAL_EMBEDDER_NAME = "bge-small-zh-v1.5"
-DEFAULT_MODEL_CACHE_DIR = Path(r"D:\LEARNING\Tools\model_cache\huggingface")
+DEFAULT_MODEL_CACHE_DIR = MODEL_CACHE_ROOT / "huggingface"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]")
 
 

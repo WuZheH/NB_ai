@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = resolve(SCRIPT_DIR, "..");
 const PROJECT_ROOT = resolve(DESKTOP_ROOT, "../..");
-const PYTHON_EXE = "D:\\LEARNING\\Tools\\ANACONDA\\envs\\NOTEBOOK_AI\\python.exe";
 
 const packageJson = JSON.parse(await readFile(join(DESKTOP_ROOT, "package.json"), "utf8"));
 const metadata = JSON.parse(await readFile(join(DESKTOP_ROOT, "electron", "product-metadata.json"), "utf8"));
@@ -26,6 +25,9 @@ const allowedRoot = resolve(DESKTOP_ROOT, "dist-candidates");
 if (!output.startsWith(`${allowedRoot}\\`)) throw new Error("search_candidate_output_outside_scope");
 if (baseRoot === output) throw new Error("search_candidate_base_equals_output");
 await requireFile(join(baseRoot, "Search.exe"), "search_candidate_base_executable_missing");
+if (await exists(join(baseRoot, "search-desktop.local.json"))) {
+  throw new Error("search_candidate_base_contains_machine_local_config");
+}
 if (await exists(output)) throw new Error(`search_candidate_output_already_exists:${output}`);
 
 await mkdir(dirname(output), { recursive: true });
@@ -51,16 +53,6 @@ await writeFile(
   }, null, 2)}\n`,
   "utf8",
 );
-await writeFile(
-  join(output, "search-desktop.local.json"),
-  `${JSON.stringify({
-    schemaVersion: 1,
-    projectRoot: PROJECT_ROOT,
-    pythonExe: PYTHON_EXE,
-  }, null, 2)}\n`,
-  "utf8",
-);
-
 for (const required of [
   "Search.exe",
   "resources/app/electron/main/index.js",
@@ -69,7 +61,6 @@ for (const required of [
   "resources/app/renderer/desktop-shell.js",
   "resources/app/renderer/desktop-route-bridge.js",
   "resources/search-assets/frontend/index.html",
-  "search-desktop.local.json",
 ]) {
   await requireFile(join(output, ...required.split("/")), `search_candidate_resource_missing:${required}`);
 }
@@ -81,7 +72,7 @@ process.stdout.write(`${JSON.stringify({
   productName: metadata.productName,
   version: packageJson.version,
   buildId: metadata.buildId,
-  projectRoot: PROJECT_ROOT,
+  sourceRuntime: "existing-runtime-dev-only",
   reusedRuntime: baseRoot,
 })}\n`);
 

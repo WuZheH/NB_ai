@@ -14,15 +14,19 @@ const productMetadata = JSON.parse(await readFile(join(ROOT, "electron", "produc
 test("product brand is Search while NOTEBOOK_AI runtime compatibility remains", async () => {
   const packageJson = JSON.parse(await readFile(join(ROOT, "package.json"), "utf8"));
   assert.equal(packageJson.productName, "Search");
-  assert.equal(packageJson.version, "0.1.3");
+  assert.equal(packageJson.version, "0.1.4");
   assert.deepEqual(productMetadata, {
     productName: "Search",
-    version: "0.1.3",
-    buildId: "20260717-search-runtime-self-contained-r6-final",
-    rendererAssetVersion: "0.1.3-search-runtime-self-contained-r6-final",
+    version: "0.1.4",
+    buildId: "20260717-search-0.1.4-github-release-convergence",
+    rendererAssetVersion: "0.1.4-github-release-convergence",
   });
   assert.equal(packageJson.devDependencies.electron, "37.2.6");
   const config = await readFile(join(ROOT, "electron", "main", "config.js"), "utf8");
+  assert.match(config, /SEARCH_PYTHON/);
+  assert.match(config, /SEARCH_NODE/);
+  assert.match(config, /SEARCH_DATA_DIR/);
+  assert.match(config, /SEARCH_CLOUDFLARED/);
   assert.match(config, /NOTEBOOK_AI_PYTHON_EXE/);
   assert.match(config, /NOTEBOOK_AI_NODE_EXE/);
   assert.match(config, /notebook_ai_launcher\.py/);
@@ -38,6 +42,9 @@ test("runtime launcher is a direct hidden child with controlled output pipes", a
   assert.match(launcher, /NOTEBOOK_AI_NODE_EXE:\s*this\.config\.nodeExe/);
   assert.match(launcher, /NOTEBOOK_AI_RUNTIME_ROOT:\s*this\.config\.runtimeRoot/);
   assert.match(launcher, /NOTEBOOK_AI_DATA_PROJECT_ROOT:\s*this\.config\.dataProjectRoot/);
+  assert.match(launcher, /SEARCH_DATA_DIR:\s*this\.config\.dataDir/);
+  assert.match(launcher, /SEARCH_PYTHON:\s*this\.config\.pythonExe/);
+  assert.match(launcher, /runtime_prerequisites_missing/);
   assert.match(launcher, /cwd:\s*this\.config\.runtimeRoot/);
   assert.match(launcher, /delete environment\.PYTHONPATH/);
   assert.match(launcher, /delete environment\.NODE_PATH/);

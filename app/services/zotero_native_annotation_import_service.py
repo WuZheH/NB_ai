@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from app.core.paths import DEFAULT_DB_PATH, PROJECT_ROOT
+from app.core.paths import DEFAULT_DB_PATH, ZOTERO_SNAPSHOT_PATH
 from app.services import inspiration_note_matching_service
 from app.services.unit_note_object_processing_service import (
     apply_note_processing_fields,
@@ -21,7 +21,7 @@ from app.services.zotero_inspiration_note_service import normalized_selected_tex
 
 SOURCE = "zotero_native_annotation"
 MODE = "zotero_native_annotation_import"
-DEFAULT_ZOTERO_SNAPSHOT_PATH = PROJECT_ROOT / "data" / "zotero" / "snapshot" / "zotero.sqlite"
+DEFAULT_ZOTERO_SNAPSHOT_PATH = ZOTERO_SNAPSHOT_PATH
 
 NO_WRITE_FLAGS = {
     "zotero_db_write_performed": False,

@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from app.core.paths import DEFAULT_DB_PATH, ZOTERO_SNAPSHOT_PATH
 from app.domains.retrieval.fragment_repository import list_notebook_fragments
 from app.services.retrieval.evidence_export_service import export_evidence
 
 
+def _require_live_repository() -> None:
+    if not DEFAULT_DB_PATH.is_file() or not ZOTERO_SNAPSHOT_PATH.is_file():
+        pytest.skip("production database and Zotero snapshot are intentionally absent")
+
+
 def test_live_repository_keeps_note_and_selected_text_separate() -> None:
+    _require_live_repository()
     comments = list_notebook_fragments(source_types=["zotero_annotation_comment"])
     inspirations = list_notebook_fragments(source_types=["zotero_inspiration_note"])
 
@@ -20,6 +29,7 @@ def test_live_repository_keeps_note_and_selected_text_separate() -> None:
 
 
 def test_notebook_markdown_jsonl_and_json_export_are_read_only_and_ordered() -> None:
+    _require_live_repository()
     note = list_notebook_fragments(source_types=["zotero_annotation_comment"])[0]
     assert note.document_id is not None
     pdf = list_notebook_fragments(

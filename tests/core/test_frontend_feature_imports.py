@@ -7,7 +7,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = PROJECT_ROOT / "frontend" / "src"
 EXPECTED_FEATURES = {
     "retrieval": ("LocalRetrievalPage",),
-    "search": ("SearchPage",),
     "library": ("BookDetailPage", "DocumentDetailPage", "EvidenceDetailPage", "ReadShelfPage"),
     "importing": ("ImportPreviewPage", "ImportReviewPage"),
     "workspace": ("ResearchWorkspacePage", "NotebookWorkspaceShell", "FiveLayerSearchResults"),
@@ -27,8 +26,9 @@ def test_feature_public_entries_exist_and_export_primary_surfaces() -> None:
 
 def test_canonical_app_composes_feature_entries() -> None:
     source = (SOURCE_ROOT / "app" / "App.jsx").read_text(encoding="utf-8")
-    for feature in ("retrieval", "search", "library", "importing", "workspace", "objects"):
+    for feature in ("retrieval", "library", "importing", "workspace", "objects"):
         assert f'../features/{feature}/index.js"' in source
+    assert '../features/search/index.js"' not in source
 
 
 def test_import_preview_uses_feature_formatter_module() -> None:

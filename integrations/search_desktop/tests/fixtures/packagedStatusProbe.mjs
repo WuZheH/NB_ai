@@ -152,7 +152,7 @@ function runtimeFixture(sequence) {
     components: {
       fastapi: { state: "external", port: 8000, pid: 29148, owner: "external" },
       mcp: { state: "external", port: 8787, pid: 18396, owner: "external" },
-      tunnel: { state: "ready", pid: 40036, owner: "external" },
+      tunnel: { state: "ready", pid: 43120, owner: "external" },
     },
   };
 }

@@ -25,9 +25,9 @@ def test_retrieval_api_preserves_fts_and_adds_notebook_read_endpoints() -> None:
 def test_notebook_search_defaults_and_source_boundary_are_explicit() -> None:
     page = _source("pages/LocalRetrievalPage.jsx")
     helpers = _source("features/retrieval/utils/notebookSearch.js")
-    assert "useState(HIGH_QUALITY_SEARCH_KIND)" in page
-    assert "useState(\"precision\")" in page
-    assert "useState(12)" in page
+    assert "useState(initialSession.searchKind || HIGH_QUALITY_SEARCH_KIND)" in page
+    assert 'useState(initialSession.ftsMode || "precision")' in page
+    assert "useState(initialSession.limit || 12)" in page
     for source_type in (
         "pdf_chunk",
         "zotero_annotation_comment",

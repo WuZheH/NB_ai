@@ -1,4 +1,4 @@
-# NOTEBOOK_AI Zotero Inspiration Capture MVP
+# Search Zotero Inspiration Capture MVP
 
 ## Objective
 
@@ -21,7 +21,7 @@ This MVP plugin:
 
 - does not generate mechanisms;
 - does not call an LLM, OpenAI, ChatGPT, or any external AI service;
-- does not write the NOTEBOOK_AI DB or any SQLite database;
+- does not write the Search DB or any SQLite database;
 - does not write `knowledge_chunks`, LanceDB, or a vector store;
 - does not modify a PDF;
 - does not overwrite or rewrite native Zotero annotation content;
@@ -57,7 +57,7 @@ Preferred entry: the Reader text-selection popup or annotation context action
 named `记下灵感`, registered using Zotero's documented Reader event-listener
 API.
 
-Fallback entry: `Tools` > `Notebook AI Inspiration: Capture Selection with Prompt`
+Fallback entry: `Tools` > `Search Inspiration: Capture Selection with Prompt`
 or the public `captureSelectionWithPromptFallback()` method. In Zotero 9.0.4,
 selection capture has been manually observed while the DOM popup host was not
 available from `Run JavaScript`; the prompt route keeps capture and save
@@ -188,10 +188,10 @@ that cannot be opened does it try the main-window root as
 `sidebar_host_unavailable` while the remote listing API remains usable.
 
 K-N presents the dialog fallback as a scrollable dark panel titled
-`Notebook AI Inspirations`, with loading, empty, and request-error states.
+`Search Inspirations`, with loading, empty, and request-error states.
 It groups notes by physical PDF page, displaying a group label such as
 `Page 213 / PDF 243`, and sorts by `pdf_page` followed by capture timestamp.
-Chapter grouping is deliberately deferred until NOTEBOOK_AI supplies an
+Chapter grouping is deliberately deferred until Search supplies an
 approved chapter mapping.
 
 Cards display `note_text`, selected-text snippet, tags, page information,
@@ -252,40 +252,40 @@ expects:
 When the backend is unavailable, the local note is not discarded: it remains
 `local_pending` before an attempt or becomes `sync_failed` after a failed
 attempt and is eligible for `retryPending()`. The plugin never opens a
-NOTEBOOK_AI database directly.
+Search database directly.
 
 ## Zotero 9 Manual Smoke Entry
 
 At startup the plugin records:
 
 ```text
-[NOTEBOOK_AI Inspiration] startup
-[NOTEBOOK_AI Inspiration] smoke API registered
+[Search Inspiration] startup
+[Search Inspiration] smoke API registered
 ```
 
 The stable manual smoke API is registered at
-`Zotero.NotebookAIInspirationPlugin`. In Zotero's `Run JavaScript` window,
+`Zotero.SearchInspirationPlugin`. In Zotero's `Run JavaScript` window,
 diagnose the registration, verify the loopback backend, and then submit only
 the fixed smoke payload with:
 
 ```javascript
-return Zotero.NotebookAIInspirationPlugin.getStatus();
-return await Zotero.NotebookAIInspirationPlugin.checkBackendStatus();
-return await Zotero.NotebookAIInspirationPlugin.runManualSmokeSync();
+return Zotero.SearchInspirationPlugin.getStatus();
+return await Zotero.SearchInspirationPlugin.checkBackendStatus();
+return await Zotero.SearchInspirationPlugin.runManualSmokeSync();
 ```
 
 `getStatus()` returns `plugin_loaded`, `smoke_api_registered`,
 `sync_endpoint`, and plugin `version`. The plugin also attempts a compatibility
-exposure at `globalThis.NOTEBOOK_AI_INSPIRATION_PLUGIN`, permitting:
+exposure at `globalThis.SEARCH_INSPIRATION_PLUGIN`, permitting:
 
 ```javascript
-return await NOTEBOOK_AI_INSPIRATION_PLUGIN.runManualSmokeSync();
+return await SEARCH_INSPIRATION_PLUGIN.runManualSmokeSync();
 ```
 
 If the compatibility name is not defined while the Zotero namespace exists,
 the difference is Zotero `Run JavaScript` global scoping, not a plugin
 failure. The equivalent menu action is available under `Tools` as
-`Notebook AI Inspiration: Run Smoke Sync`; it invokes the same
+`Search Inspiration: Run Smoke Sync`; it invokes the same
 `runManualSmokeSync()` method and records the outcome in Zotero debug output.
 
 For localhost troubleshooting, check the backend outside Zotero first:
@@ -326,12 +326,12 @@ a false precise anchor.
 
 Tools menu entries:
 
-- `Notebook AI Inspiration: Capture Current Selection`
-- `Notebook AI Inspiration: Capture Selection with Prompt`
-- `Notebook AI Inspiration: List Current Attachment Notes`
-- `Notebook AI Inspiration: Open Notes Sidebar`
-- `Notebook AI Inspiration: Refresh Notes`
-- `Notebook AI Inspiration: Run Smoke Sync`
+- `Search Inspiration: Capture Current Selection`
+- `Search Inspiration: Capture Selection with Prompt`
+- `Search Inspiration: List Current Attachment Notes`
+- `Search Inspiration: Open Notes Sidebar`
+- `Search Inspiration: Refresh Notes`
+- `Search Inspiration: Run Smoke Sync`
 
 ## Reader API Status And Fallbacks
 
@@ -361,7 +361,7 @@ has verified selection capture and identified the popup-host fallback need:
 2. In Zotero 9.0.4, open `Tools` > `Plugins`, select the gear menu, and choose
    `Install Plugin From File...` for that `.xpi`.
 3. Restart Zotero if requested and inspect the debug log for
-   `[NOTEBOOK_AI Inspiration] startup`.
+   `[Search Inspiration] startup`.
 4. With a disposable test selection in a PDF open, run
    `captureSelectionWithPromptFallback()`, enter test note text/tags, and
    validate loopback receipt and local list output.

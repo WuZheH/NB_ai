@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from app.core.paths import DEFAULT_DB_PATH, PROJECT_ROOT
+from app.core.paths import DATA_PROJECT_ROOT, DEFAULT_DB_PATH, RUNTIME_STATE_DIR
 from app.services.book_import_contract import OBJECT_IMPORT_MODE_CHAPTERED, PdfLayoutBlock, PdfLayoutLine, PdfLayoutSpan
 from app.services.chunk_splitter import TextChunk, split_nodes
 from app.services.markdown_parser import PDF_PAGE_RE, parse_markdown
@@ -299,7 +299,7 @@ def prepare_book_import_by_outline_ranges(
         if chapter.pdf_page_start is not None
     )
     detection_method = f"pdf_outline_{granularity}_range"
-    slice_dir = PROJECT_ROOT / ".codex_tmp" / "marker_range_slices" / (job_id or "manual")
+    slice_dir = RUNTIME_STATE_DIR / "marker_range_slices" / (job_id or "manual")
 
     for zero_index, chapter in enumerate(chapters):
         unit_index = zero_index + 1
@@ -1785,7 +1785,7 @@ def _ensure_pdf_path_marker(markdown_text: str, pdf_path: Path) -> str:
     if "<!-- PDF_PATH:" in markdown_text:
         return markdown_text
     try:
-        display_path = str(pdf_path.resolve().relative_to(PROJECT_ROOT))
+        display_path = str(pdf_path.resolve().relative_to(DATA_PROJECT_ROOT))
     except ValueError:
         display_path = str(pdf_path.resolve())
     return f"<!-- PDF_PATH: {display_path} -->\n\n{markdown_text}"

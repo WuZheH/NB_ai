@@ -74,11 +74,14 @@ def get_index_status(
     manifest_file = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
     index_exists = index.is_file()
     manifest_exists = manifest_file.is_file()
+    library_database_exists = Path(production_db_path).is_file()
     base = {
         "index_path": str(index),
         "manifest_path": str(manifest_file),
         "index_exists": index_exists,
         "manifest_exists": manifest_exists,
+        "library_database_exists": library_database_exists,
+        "data_state": "configured" if library_database_exists else "empty_library",
         "db_write_performed": False,
         "production_db_write_performed": False,
         "zotero_db_write_performed": False,

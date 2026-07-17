@@ -12,6 +12,7 @@ from typing import Any
 from app.services.book_import_contract import PdfLayoutBlock, PdfLayoutLine, PdfLayoutSpan
 from bs4 import BeautifulSoup
 
+from app.core.paths import MODEL_CACHE_ROOT
 from app.services.pdf_backend_service import load_fitz_backend
 from app.services.pdf_conversion_service import postprocess_marker_markdown
 
@@ -23,9 +24,11 @@ MARKER_SURYA_PAGE_BLOCKS_BACKEND = "marker_surya_page_blocks"
 SUPPORTED_BACKENDS = frozenset(
     {PYMUPDF_BACKEND, MARKER_SURYA_BACKEND, MARKER_SURYA_PAGE_BLOCKS_BACKEND}
 )
-DEFAULT_MODEL_CACHE_ROOT = Path(r"D:\LEARNING\Tools\model_cache")
+DEFAULT_MODEL_CACHE_ROOT = MODEL_CACHE_ROOT
 DEFAULT_MARKER_MODEL_CACHE = DEFAULT_MODEL_CACHE_ROOT / "datalab" / "models"
-LEGACY_MARKER_MODEL_CACHE = Path(r"D:\LEARNING\Tools\marker_cache\datalab\models")
+LEGACY_MARKER_MODEL_CACHE = Path(
+    os.environ.get("SEARCH_MARKER_MODEL_CACHE") or DEFAULT_MARKER_MODEL_CACHE
+)
 
 
 class PdfParserBackendUnavailable(RuntimeError):

@@ -3,7 +3,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 const endpoint = new URL(process.argv[2] ?? "http://127.0.0.1:8787/mcp");
 const query = process.argv[3] ?? "避免脚步滑动";
-const sourceTypes = (process.env.NOTEBOOK_AI_SMOKE_SOURCE_TYPES ?? "zotero_inspiration_note")
+const sourceTypes = (
+  process.env.SEARCH_SMOKE_SOURCE_TYPES
+  ?? process.env.NOTEBOOK_AI_SMOKE_SOURCE_TYPES
+  ?? "zotero_inspiration_note"
+)
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);

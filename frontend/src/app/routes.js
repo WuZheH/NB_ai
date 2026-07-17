@@ -22,7 +22,7 @@ export function buildWorkspacePath(route = {}) {
 
 export function buildLegacyPath(view) {
   if (view === "readShelf") return READ_SHELF_PATH;
-  if (view === "search") return LIBRARY_SEARCH_PATH;
+  if (view === "search") return LOCAL_RETRIEVAL_PATH;
   if (view === "retrieval") return LOCAL_RETRIEVAL_PATH;
   if (view === "importPreview") return IMPORT_PATH;
   if (view === "importReview") return OBJECT_REVIEW_PATH;
@@ -49,7 +49,7 @@ export function parseAppRouteFromLocation(location = typeof window !== "undefine
     return { view: "readShelf" };
   }
   if (pathname === LIBRARY_SEARCH_PATH) {
-    return { view: "search" };
+    return { view: "retrieval", redirectPath: LOCAL_RETRIEVAL_PATH };
   }
   if (pathname === LOCAL_RETRIEVAL_PATH) {
     return { view: "retrieval" };
@@ -98,7 +98,8 @@ export function parseAppRouteFromLocation(location = typeof window !== "undefine
 }
 
 export function normalizeLegacyView(view) {
-  if (view === "readShelf" || view === "search" || view === "retrieval" || view === "importPreview" || view === "importReview" || view === "systemStatus" || view === "settings") {
+  if (view === "search") return "retrieval";
+  if (view === "readShelf" || view === "retrieval" || view === "importPreview" || view === "importReview" || view === "systemStatus" || view === "settings") {
     return view;
   }
   return null;

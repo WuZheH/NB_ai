@@ -1,13 +1,13 @@
 # Search Desktop
 
-Search Desktop is the Windows shell for the existing Search React application. It does not contain a second search implementation: it starts the established NOTEBOOK_AI Runtime Supervisor, waits for FastAPI and MCP, and then serves the existing `frontend/dist` bundle on `http://127.0.0.1:5173`, the established allowlisted frontend origin.
+Search Desktop is the Windows shell for the Search React application. It does not contain a second search implementation: it starts the local Runtime Supervisor, waits for FastAPI and MCP, and then serves the existing `frontend/dist` bundle on `http://127.0.0.1:5173`, the established allowlisted frontend origin.
 
 ## Product boundaries
 
 - Search owns importing, indexing, search, preview, and stable fragment IDs.
 - ChatGPT uses the existing MCP server.
 - Zotero Locator accepts a fragment ID and performs location inside Zotero.
-- Internal `NOTEBOOK_AI_*` environment variables, Python packages, API paths, and runtime files remain compatible. The legacy runtime-only Task Scheduler entry is left untouched.
+- `SEARCH_*` is the public configuration surface. Historical internal aliases remain compatibility-only and are not product branding.
 
 The desktop process never runs `npm install`, `npm ci`, or a full index build at startup. The renderer build and Electron dependency are development or packaging prerequisites, not runtime work.
 
@@ -16,15 +16,15 @@ The private unpacked Windows build is produced with `npm run build` under
 signing helper (which can require symbolic-link privileges on Windows), then
 applies the Search icon and version metadata with the fixed project-local
 `rcedit` dependency. No administrator rights, global install, or signing key
-is required. The adjacent `search-desktop.local.json` contains only the local
-project root and fixed Python executable path; it contains no secret.
+is required. Portable release archives do not include
+`search-desktop.local.json`; optional machine-local configuration is created
+explicitly by the user and must never be committed.
 
 ## One-time development preparation
 
 Only run dependency installation after it has been explicitly authorized for this project. Electron is pinned exactly in `package.json`; it is not installed globally.
 
 ```powershell
-Set-Location "D:\LEARNING\Tools\notebook_ai"
 npm --prefix frontend run build
 npm --prefix integrations/search_desktop start
 ```
@@ -36,7 +36,7 @@ If `frontend/dist/index.html` is absent, Search opens a local diagnostic screen 
 Search invokes:
 
 ```text
-D:\LEARNING\Tools\ANACONDA\envs\NOTEBOOK_AI\python.exe
+$env:SEARCH_PYTHON
   -B scripts/runtime/notebook_ai_launcher.py <command>
 ```
 

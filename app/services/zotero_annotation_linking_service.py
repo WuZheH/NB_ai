@@ -9,11 +9,12 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.core.paths import ZOTERO_LIBRARY_DB_PATH
 from app.db.session import SessionLocal
 from app.models import Document, KnowledgeChunk
 
 
-ZOTERO_SQLITE_PATH = Path("D:/LEARNING/ZoteroData/zotero.sqlite")
+ZOTERO_SQLITE_PATH = ZOTERO_LIBRARY_DB_PATH
 ZOTERO_OPEN_PDF_PREFIX = "zotero://open-pdf/library/items/"
 
 

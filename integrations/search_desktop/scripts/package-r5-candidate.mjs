@@ -13,8 +13,11 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = resolve(SCRIPT_DIR, "..");
 const PROJECT_ROOT = resolve(DESKTOP_ROOT, "../..");
 const MCP_ROOT = resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app");
-const DATA_PROJECT_ROOT = resolve(
-  process.env.NOTEBOOK_AI_DATA_PROJECT_ROOT || "D:\\LEARNING\\Tools\\notebook_ai",
+const DATA_DIR = resolve(
+  process.env.SEARCH_DATA_DIR
+    || (process.env.NOTEBOOK_AI_DATA_PROJECT_ROOT
+      ? join(process.env.NOTEBOOK_AI_DATA_PROJECT_ROOT, "data")
+      : join(PROJECT_ROOT, ".codex_tmp", "package-verification-data")),
 );
 const FRONTEND_DIST = join(PROJECT_ROOT, "frontend", "dist");
 const packageJson = JSON.parse(await readFile(join(DESKTOP_ROOT, "package.json"), "utf8"));
@@ -35,10 +38,6 @@ const packagedRuntime = join(packagedRoot, "resources", "app", "runtime-project"
 if (await exists(candidateBase)) {
   throw new Error(`search_r5_candidate_already_exists:${candidateBase}`);
 }
-if (isWorktreePath(DATA_PROJECT_ROOT)) {
-  throw new Error("search_r5_data_project_root_must_be_stable");
-}
-
 await runNode(join(MCP_ROOT, "scripts", "build-widget.mjs"));
 await runNode(join(MCP_ROOT, "scripts", "build-server.mjs"));
 await runNode(
@@ -55,12 +54,6 @@ await runNode(join(DESKTOP_ROOT, "node_modules", "electron-builder", "cli.js"), 
 ]);
 await verifyPackagedResources(packagedRoot);
 await runNode(join(SCRIPT_DIR, "finalize-windows-exe.mjs"), ["--packaged-root", packagedRoot]);
-await runNode(join(SCRIPT_DIR, "write-local-config.mjs"), [
-  "--packaged-root",
-  packagedRoot,
-  "--data-project-root",
-  DATA_PROJECT_ROOT,
-]);
 await verifyPackagedResources(packagedRoot);
 await verifyPackagedPythonImport(packagedRuntime);
 
@@ -87,8 +80,8 @@ const manifest = {
   runtimeFileCount: runtimeAggregate.fileCount,
   runtimeAggregateSha256: runtimeAggregate.sha256,
   maxRuntimePathLength,
-  dataProjectRoot: DATA_PROJECT_ROOT,
-  worktreeReferences: 0,
+  dataDirectory: "external_or_user_configured",
+  sourcePathReferences: 0,
   productionDataBundled: false,
   mcpDependenciesBundled: true,
   headlessBackendBootstrap: true,
@@ -98,20 +91,23 @@ await writeFile(
   `${JSON.stringify(manifest, null, 2)}\n`,
   "utf8",
 );
-await verifyNoWorktreeReferences(packagedRoot);
+await verifyNoSourceRootReferences(packagedRoot);
 process.stdout.write(`${JSON.stringify(manifest)}\n`);
 
-async function verifyNoWorktreeReferences(root) {
+async function verifyNoSourceRootReferences(root) {
   const extensions = new Set([".json", ".js", ".cjs", ".mjs", ".py", ".txt", ".html", ".css"]);
   const files = await listFiles(root);
+  const forbiddenRoots = [PROJECT_ROOT, process.env.NOTEBOOK_AI_PROJECT_ROOT]
+    .filter(Boolean)
+    .map((value) => resolve(value).replaceAll("\\", "/").toLowerCase());
   for (const path of files) {
     if (!extensions.has(extname(path).toLowerCase())) continue;
-    const source = (await readFile(join(root, path), "utf8")).toLowerCase();
-    if (
-      source.includes("d:\\learning\\tools\\notebook_ai_worktrees")
-      || source.includes("d:\\\\learning\\\\tools\\\\notebook_ai_worktrees")
-    ) {
-      throw new Error(`search_r5_worktree_reference_detected:${path}`);
+    const source = (await readFile(join(root, path), "utf8"))
+      .replaceAll("\\\\", "\\")
+      .replaceAll("\\", "/")
+      .toLowerCase();
+    if (forbiddenRoots.some((value) => source.includes(value))) {
+      throw new Error(`search_r5_source_root_reference_detected:${path}`);
     }
   }
 }
@@ -202,10 +198,6 @@ async function exists(path) {
   }
 }
 
-function isWorktreePath(path) {
-  return resolve(path).toLowerCase().split(/[\\/]+/).includes("notebook_ai_worktrees");
-}
-
 function runNode(script, args = [], cwd = DESKTOP_ROOT) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, [script, ...args], {
@@ -224,13 +216,16 @@ function runNode(script, args = [], cwd = DESKTOP_ROOT) {
 }
 
 function verifyPackagedPythonImport(runtimeRoot) {
-  const pythonExe = process.env.NOTEBOOK_AI_PYTHON_EXE
-    || "D:\\LEARNING\\Tools\\ANACONDA\\envs\\NOTEBOOK_AI\\python.exe";
+  const pythonExe = process.env.SEARCH_PYTHON || process.env.NOTEBOOK_AI_PYTHON_EXE;
+  if (!pythonExe) throw new Error("search_r5_python_not_configured");
   const environment = {
     ...process.env,
     PYTHONDONTWRITEBYTECODE: "1",
+    SEARCH_RUNTIME_ROOT: runtimeRoot,
+    SEARCH_DATA_DIR: DATA_DIR,
+    SEARCH_PYTHON: pythonExe,
     NOTEBOOK_AI_RUNTIME_ROOT: runtimeRoot,
-    NOTEBOOK_AI_DATA_PROJECT_ROOT: DATA_PROJECT_ROOT,
+    NOTEBOOK_AI_DATA_PROJECT_ROOT: dirname(DATA_DIR),
   };
   delete environment.NOTEBOOK_AI_PROJECT_ROOT;
   delete environment.PYTHONPATH;

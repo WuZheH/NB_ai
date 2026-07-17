@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 from app.api.library.common import *  # noqa: F401,F403
+from app.core.paths import DEFAULT_DB_PATH
 
 
 router = APIRouter()
+
+
+def _empty_library_response() -> dict[str, Any]:
+    return {
+        "status": "empty_library",
+        "implementation_status": "ready_without_data",
+        "items": [],
+        "message": (
+            "资料库为空。请导入 PDF，或通过 SEARCH_DATA_DIR 配置已有数据目录。"
+        ),
+        **safety_fields(),
+    }
 
 
 @router.get("/read-shelf")
@@ -11,6 +24,8 @@ def read_shelf(
     include_test_data: bool = False,
     limit: int = Query(default=100, ge=20, le=500),
 ) -> dict[str, Any]:
+    if not DEFAULT_DB_PATH.is_file():
+        return _empty_library_response()
     try:
         documents = library_service.get_library_home(item_type="document", limit=limit)
     except Exception as exc:
@@ -49,6 +64,14 @@ def search_library(
     tag: str | None = None,
     include_test_data: bool = False,
 ) -> dict[str, Any]:
+    if not DEFAULT_DB_PATH.is_file():
+        return {
+            **_empty_library_response(),
+            "query": q,
+            "object_first": True,
+            "objects": [],
+            "results": [],
+        }
     object_results = _object_search_results(q, limit=limit_documents if group_by == "document" else min(limit, 10))
     if group_by == "document" or mode in {"hybrid", "hybrid_lexical_v1"}:
         try:

@@ -7,19 +7,29 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = resolve(SCRIPT_DIR, "..");
 const PACKAGED_ROOT = resolve(commandArgument("--packaged-root") || join(DESKTOP_ROOT, "dist", "win-unpacked"));
 const OUTPUT = join(PACKAGED_ROOT, "search-desktop.local.json");
-const DEFAULT_DATA_PROJECT_ROOT = "D:\\LEARNING\\Tools\\notebook_ai";
-const DEFAULT_PYTHON_EXE = "D:\\LEARNING\\Tools\\ANACONDA\\envs\\NOTEBOOK_AI\\python.exe";
-const DEFAULT_NODE_EXE = "D:\\LEARNING\\Tools\\node.js\\node.exe";
-const dataProjectRoot = resolve(
-  commandArgument("--data-project-root")
-    || process.env.NOTEBOOK_AI_DATA_PROJECT_ROOT
-    || DEFAULT_DATA_PROJECT_ROOT,
-);
-const pythonExe = resolve(process.env.NOTEBOOK_AI_PYTHON_EXE || DEFAULT_PYTHON_EXE);
-const nodeExe = resolve(process.env.NOTEBOOK_AI_NODE_EXE || DEFAULT_NODE_EXE);
+const legacyDataRoot = commandArgument("--data-project-root")
+  || process.env.NOTEBOOK_AI_DATA_PROJECT_ROOT;
+const dataValue = commandArgument("--data-dir")
+  || process.env.SEARCH_DATA_DIR
+  || (legacyDataRoot ? join(legacyDataRoot, "data") : "");
+const pythonValue = commandArgument("--python")
+  || process.env.SEARCH_PYTHON
+  || process.env.NOTEBOOK_AI_PYTHON_EXE;
+const nodeValue = commandArgument("--node")
+  || process.env.SEARCH_NODE
+  || process.env.NOTEBOOK_AI_NODE_EXE;
+const cloudflaredValue = commandArgument("--cloudflared")
+  || process.env.SEARCH_CLOUDFLARED
+  || "";
+if (!dataValue || !pythonValue || !nodeValue) {
+  throw new Error("search_desktop_local_config_requires_data_python_and_node");
+}
+const dataDir = resolve(dataValue);
+const pythonExe = resolve(pythonValue);
+const nodeExe = resolve(nodeValue);
+const cloudflaredExe = cloudflaredValue ? resolve(cloudflaredValue) : "";
 
 for (const required of [
-  resolve(dataProjectRoot, "data"),
   resolve(PACKAGED_ROOT, "resources", "app", "runtime-project", "app", "main.py"),
   resolve(
     PACKAGED_ROOT,
@@ -32,17 +42,21 @@ for (const required of [
   ),
   pythonExe,
   nodeExe,
+  ...(cloudflaredExe ? [cloudflaredExe] : []),
 ]) {
   if (!existsSync(required)) throw new Error("search_desktop_local_config_target_unavailable");
-}
-if (dataProjectRoot.toLowerCase().split(/[\\/]+/).includes("notebook_ai_worktrees")) {
-  throw new Error("search_desktop_data_project_root_must_be_stable");
 }
 
 await writeFile(
   OUTPUT,
-  `${JSON.stringify({ schemaVersion: 2, dataProjectRoot, pythonExe, nodeExe }, null, 2)}\n`,
-  { encoding: "utf8", flag: "w" },
+  `${JSON.stringify({
+    schemaVersion: 3,
+    dataDir,
+    pythonExe,
+    nodeExe,
+    cloudflaredExe,
+  }, null, 2)}\n`,
+  { encoding: "utf8", flag: process.argv.includes("--replace") ? "w" : "wx" },
 );
 console.log("Wrote Search Desktop local runtime configuration.");
 

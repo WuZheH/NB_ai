@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import EvidenceBasketPanel from "../components/retrieval/EvidenceBasketPanel.jsx";
 import RetrievalFilters from "../components/retrieval/RetrievalFilters.jsx";
 import RetrievalResultList from "../components/retrieval/RetrievalResultList.jsx";
@@ -6,7 +6,10 @@ import RetrievalSearchForm from "../components/retrieval/RetrievalSearchForm.jsx
 import SearchPreviewPanel from "../features/retrieval/components/SearchPreviewPanel.jsx";
 import {
   exportRetrievalEvidence,
+  fetchEvidencePdfLocation,
+  fetchRetrievalIndexStatus,
   fetchRetrievalFragment,
+  fetchRetrievalFragmentLocator,
   resolveRetrievalSelection,
   searchLocalRetrieval,
   searchNotebookRetrieval,
@@ -23,6 +26,11 @@ import {
   copyTextToClipboard,
   downloadTextFile,
 } from "../features/retrieval/utils/retrievalResults.js";
+import {
+  readSearchSession,
+  registerSearchSessionCapture,
+  writeSearchSession,
+} from "../features/retrieval/state/searchSession.js";
 
 const DEFAULT_FILTERS = {
   sourceType: "",
@@ -42,20 +50,93 @@ const DEFAULT_EXPORT_OPTIONS = {
 };
 
 export default function LocalRetrievalPage() {
-  const [query, setQuery] = useState("");
-  const [searchKind, setSearchKind] = useState(HIGH_QUALITY_SEARCH_KIND);
-  const [ftsMode, setFtsMode] = useState("precision");
-  const [limit, setLimit] = useState(12);
-  const [filters, setFilters] = useState(DEFAULT_FILTERS);
-  const [searchState, setSearchState] = useState({ status: "idle", data: null, error: "" });
-  const [previewState, setPreviewState] = useState({ status: "idle", data: null, error: "" });
-  const [lastSearchRequest, setLastSearchRequest] = useState(null);
-  const [basket, setBasket] = useState([]);
+  const initialSessionRef = useRef(readSearchSession() || {});
+  const initialSession = initialSessionRef.current;
+  const pageRef = useRef(null);
+  const latestSessionRef = useRef(initialSession);
+  const pendingScrollRestoreRef = useRef(initialSession.scroll || null);
+  const [query, setQuery] = useState(initialSession.query || "");
+  const [searchKind, setSearchKind] = useState(initialSession.searchKind || HIGH_QUALITY_SEARCH_KIND);
+  const [ftsMode, setFtsMode] = useState(initialSession.ftsMode || "precision");
+  const [limit, setLimit] = useState(initialSession.limit || 12);
+  const [filters, setFilters] = useState({ ...DEFAULT_FILTERS, ...(initialSession.filters || {}) });
+  const [searchState, setSearchState] = useState(initialSession.searchState || { status: "idle", data: null, error: "" });
+  const [previewState, setPreviewState] = useState(initialSession.previewState || { status: "idle", data: null, error: "" });
+  const [lastSearchRequest, setLastSearchRequest] = useState(initialSession.lastSearchRequest || null);
+  const [basket, setBasket] = useState(initialSession.basket || []);
   const [selectionBusy, setSelectionBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
-  const [exportOptions, setExportOptions] = useState(DEFAULT_EXPORT_OPTIONS);
-  const [notice, setNotice] = useState("");
-  const [error, setError] = useState("");
+  const [exportOptions, setExportOptions] = useState({ ...DEFAULT_EXPORT_OPTIONS, ...(initialSession.exportOptions || {}) });
+  const [notice, setNotice] = useState(initialSession.notice || "");
+  const [error, setError] = useState(initialSession.error || "");
+  const [indexState, setIndexState] = useState({ status: "loading", data: null });
+  const previewRequestRef = useRef(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchRetrievalIndexStatus({ signal: controller.signal })
+      .then((data) => setIndexState({ status: "ready", data }))
+      .catch(() => {
+        if (!controller.signal.aborted) setIndexState({ status: "unavailable", data: null });
+      });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const root = pageRef.current;
+    const rememberScroll = () => {
+      const scroll = captureSearchScroll(root);
+      if (!scroll) return;
+      const session = { ...latestSessionRef.current, scroll };
+      latestSessionRef.current = session;
+      writeSearchSession(session);
+    };
+    const unregisterCapture = registerSearchSessionCapture(rememberScroll);
+    root?.addEventListener("scroll", rememberScroll, true);
+    return () => {
+      unregisterCapture();
+      root?.removeEventListener("scroll", rememberScroll, true);
+      previewRequestRef.current?.abort();
+      writeSearchSession(latestSessionRef.current);
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!pendingScrollRestoreRef.current) return undefined;
+    let frame = 0;
+    let attempts = 0;
+    const restoreWhenScrollable = () => {
+      const restored = restoreSearchScroll(pageRef.current, pendingScrollRestoreRef.current);
+      attempts += 1;
+      if (restored || attempts >= 60) {
+        pendingScrollRestoreRef.current = null;
+        return;
+      }
+      frame = requestAnimationFrame(restoreWhenScrollable);
+    };
+    frame = requestAnimationFrame(restoreWhenScrollable);
+    return () => cancelAnimationFrame(frame);
+  }, [searchState.data, previewState.data, basket.length]);
+
+  useEffect(() => {
+    const session = {
+      query,
+      searchKind,
+      ftsMode,
+      limit,
+      filters,
+      searchState,
+      previewState,
+      lastSearchRequest,
+      basket,
+      exportOptions,
+      notice,
+      error,
+      scroll: latestSessionRef.current?.scroll || initialSession.scroll || null,
+    };
+    latestSessionRef.current = session;
+    writeSearchSession(session);
+  }, [query, searchKind, ftsMode, limit, filters, searchState, previewState, lastSearchRequest, basket, exportOptions, notice, error]);
 
   const selectedIds = useMemo(
     () => new Set(basket.map((item) => item.fragment_id)),
@@ -123,10 +204,32 @@ export default function LocalRetrievalPage() {
   }
 
   async function previewFragment(item) {
-    setPreviewState({ status: "loading", data: item, error: "" });
+    previewRequestRef.current?.abort();
+    const controller = new AbortController();
+    previewRequestRef.current = controller;
+    setPreviewState({ status: "loading_fragment", data: item, error: "" });
     try {
-      const response = await fetchRetrievalFragment(item.fragment_id);
+      const response = await fetchRetrievalFragment(item.fragment_id, { signal: controller.signal });
       const detail = fragmentFromResponse(response);
+      let locator = null;
+      let locatorError = "";
+      let pdfLocation = null;
+      try {
+        locator = await fetchRetrievalFragmentLocator(item.fragment_id, { signal: controller.signal });
+      } catch (locatorRequestError) {
+        if (controller.signal.aborted) return;
+        locatorError = apiErrorMessage(locatorRequestError);
+      }
+      const chunkId = detail?.chunk_id ?? item?.chunk_id;
+      if (chunkId) {
+        try {
+          pdfLocation = await fetchEvidencePdfLocation(chunkId, { signal: controller.signal });
+        } catch (pdfLocationError) {
+          if (controller.signal.aborted) return;
+          locatorError = locatorError || apiErrorMessage(pdfLocationError);
+        }
+      }
+      if (controller.signal.aborted || previewRequestRef.current !== controller) return;
       setPreviewState({
         status: "ready",
         data: {
@@ -136,11 +239,16 @@ export default function LocalRetrievalPage() {
           final_score: item.final_score,
           reranker_score: item.reranker_score,
           semantic_score: item.semantic_score,
+          locator,
+          pdf_location: pdfLocation,
+          locator_error: locatorError,
         },
         error: "",
       });
     } catch (requestError) {
-      setPreviewState({ status: "error", data: item, error: apiErrorMessage(requestError) });
+      if (!controller.signal.aborted && previewRequestRef.current === controller) {
+        setPreviewState({ status: "error", data: item, error: apiErrorMessage(requestError) });
+      }
     }
   }
 
@@ -228,11 +336,11 @@ export default function LocalRetrievalPage() {
   }
 
   return (
-    <main className="localRetrievalPage">
+    <main className="localRetrievalPage" ref={pageRef}>
       <header className="localRetrievalHeader">
         <div>
           <span>SEARCH</span>
-          <h1>搜索资料与阅读笔记</h1>
+          <h1>搜索</h1>
         </div>
         <div className="localRetrievalIndexState">
           <span className={
@@ -284,6 +392,22 @@ export default function LocalRetrievalPage() {
         </div>
       )}
 
+      {indexState.status === "ready" && indexState.data?.data_state === "empty_library" && (
+        <section className="localRetrievalEmptyLibrary" role="status" data-testid="empty-library-state">
+          <strong>资料库为空</strong>
+          <span>请导入 PDF，或通过 SEARCH_DATA_DIR 配置已有数据目录。Search 不会自动创建生产索引。</span>
+        </section>
+      )}
+
+      {indexState.status === "ready"
+        && indexState.data?.data_state !== "empty_library"
+        && !indexState.data?.ready && (
+          <section className="localRetrievalEmptyLibrary" role="status">
+            <strong>搜索索引尚未准备</strong>
+            <span>资料库已配置，但关键词索引不可用。请按 README 检查索引状态。</span>
+          </section>
+      )}
+
       <div className="localRetrievalBody searchResultWorkspace" data-testid="retrieval-workspace">
         <RetrievalResultList
           state={searchState}
@@ -305,9 +429,15 @@ export default function LocalRetrievalPage() {
         ].filter(Boolean).join(" ")}>
           <SearchPreviewPanel
             state={previewState}
-            onClose={() => setPreviewState({ status: "idle", data: null, error: "" })}
+              onClose={() => {
+                previewRequestRef.current?.abort();
+                setPreviewState({ status: "idle", data: null, error: "" });
+              }}
             onCopyFragment={copyResult}
             onCopiedId={() => setNotice("已复制完整 fragment ID。")}
+            onViewChange={(view) => setPreviewState((current) => current.status === "ready"
+              ? { ...current, data: { ...current.data, preview_view: view } }
+              : current)}
           />
           <EvidenceBasketPanel
             items={basket}
@@ -325,6 +455,31 @@ export default function LocalRetrievalPage() {
       </div>
     </main>
   );
+}
+
+function captureSearchScroll(root) {
+  if (!root) return null;
+  return {
+    results: root.querySelector('[data-testid="retrieval-results-scroll"]')?.scrollTop || 0,
+    preview: root.querySelector('[data-testid="search-preview-scroll"]')?.scrollTop || 0,
+    basket: root.querySelector('[data-testid="evidence-basket-scroll"]')?.scrollTop || 0,
+  };
+}
+
+function restoreSearchScroll(root, scroll) {
+  if (!root || !scroll) return false;
+  const pairs = [
+    ['[data-testid="retrieval-results-scroll"]', scroll.results],
+    ['[data-testid="search-preview-scroll"]', scroll.preview],
+    ['[data-testid="evidence-basket-scroll"]', scroll.basket],
+  ];
+  return pairs.every(([selector, value]) => {
+    const element = root.querySelector(selector);
+    const target = Number(value);
+    if (!element || !Number.isFinite(target)) return false;
+    element.scrollTop = target;
+    return Math.abs(element.scrollTop - target) <= 1;
+  });
 }
 
 export function buildSearchRequest({ query, mode, limit, filters }) {

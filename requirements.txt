@@ -1,8 +1,1 @@
-sqlalchemy
-typer
-marker-pdf
-sentence-transformers
-fastapi
-uvicorn
-httpx
-lancedb
+-r requirements.lock.txt

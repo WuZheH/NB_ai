@@ -45,6 +45,28 @@ test("NotebookClient rejects insecure non-loopback HTTP and exports over 50", as
   );
 });
 
+test("NotebookClient prefers the public Search backend URL", async () => {
+  let requestedUrl = "";
+  const client = new NotebookClient({
+    env: {
+      SEARCH_BACKEND_URL: "http://127.0.0.1:8124",
+      NOTEBOOK_AI_BACKEND_URL: "http://127.0.0.1:8125",
+    },
+    fetchImpl: async (input) => {
+      requestedUrl = String(input);
+      return Response.json({ status: "ok", results: [] });
+    },
+  });
+  await client.search({
+    query: "portable",
+    limit: 1,
+    source_types: ["pdf_chunk"],
+    document_ids: [],
+    include_context: false,
+  });
+  assert.match(requestedUrl, /^http:\/\/127\.0\.0\.1:8124\//);
+});
+
 test("NotebookClient makes backend-relative open targets absolute without rewriting Zotero URIs", async () => {
   const fragment = {
     fragment_id: "fragment-1",

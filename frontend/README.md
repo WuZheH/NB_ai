@@ -1,6 +1,6 @@
-# NOTEBOOK_AI Frontend
+# Search Frontend
 
-Phase 17A introduces a minimal React + Vite workspace shell for the local-first NOTEBOOK_AI product.
+This directory contains the React + Vite workspace shell for the local-first Search product.
 
 ## Commands
 

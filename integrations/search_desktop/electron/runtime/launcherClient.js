@@ -23,9 +23,16 @@ export class LauncherClient {
   run(command, extraArguments = []) {
     if (!ALLOWED_COMMANDS.has(command)) throw new Error("runtime_command_not_allowed");
     if (!extraArguments.every(isSafeArgument)) throw new Error("runtime_argument_not_allowed");
+    if (!this.config.runtimeAvailable) {
+      return Promise.reject(new Error("runtime_prerequisites_missing"));
+    }
     const args = ["-B", this.config.runtimeScript, command, ...extraArguments];
     const environment = {
       ...process.env,
+      SEARCH_RUNTIME_ROOT: this.config.runtimeRoot,
+      SEARCH_DATA_DIR: this.config.dataDir,
+      SEARCH_PYTHON: this.config.pythonExe,
+      SEARCH_NODE: this.config.nodeExe,
       NOTEBOOK_AI_RUNTIME_ROOT: this.config.runtimeRoot,
       NOTEBOOK_AI_DATA_PROJECT_ROOT: this.config.dataProjectRoot,
       NOTEBOOK_AI_PYTHON_EXE: this.config.pythonExe,

@@ -13,6 +13,7 @@ export interface NotebookClientOptions {
   bearerToken?: string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
 }
 
 export class NotebookBackendError extends Error {
@@ -31,7 +32,7 @@ function validateBaseUrl(value: string): URL {
   const url = new URL(value);
   const isLoopback = ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
   if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopback)) {
-    throw new Error("NOTEBOOK_AI_BACKEND_URL must use HTTPS or loopback HTTP.");
+    throw new Error("SEARCH_BACKEND_URL must use HTTPS or loopback HTTP.");
   }
   return url;
 }
@@ -45,8 +46,16 @@ export class NotebookClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: NotebookClientOptions = {}) {
-    this.baseUrl = validateBaseUrl(options.baseUrl ?? process.env.NOTEBOOK_AI_BACKEND_URL ?? "http://127.0.0.1:8000");
-    this.bearerToken = options.bearerToken ?? process.env.NOTEBOOK_AI_BACKEND_BEARER_TOKEN;
+    const environment = options.env ?? process.env;
+    this.baseUrl = validateBaseUrl(
+      options.baseUrl
+        ?? environment.SEARCH_BACKEND_URL
+        ?? environment.NOTEBOOK_AI_BACKEND_URL
+        ?? "http://127.0.0.1:8000",
+    );
+    this.bearerToken = options.bearerToken
+      ?? environment.SEARCH_BACKEND_BEARER_TOKEN
+      ?? environment.NOTEBOOK_AI_BACKEND_BEARER_TOKEN;
     this.timeoutMs = options.timeoutMs ?? 120_000;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
   }

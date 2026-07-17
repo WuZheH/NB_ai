@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.paths import MODEL_CACHE_ROOT
+
 
 class ResearchSessionDryRunRequest(BaseModel):
     research_goal: str = Field(..., min_length=1)
@@ -223,7 +225,7 @@ class PdfRepairPreviewRequest(BaseModel):
     sample_pages: list[int] = Field(..., min_length=1, max_length=2)
     max_pages: int = Field(default=2, ge=1, le=2)
     device: str = Field(default="auto", min_length=1)
-    model_cache_root: str = Field(default=r"D:\LEARNING\Tools\model_cache", min_length=1)
+    model_cache_root: str = Field(default=str(MODEL_CACHE_ROOT), min_length=1)
 
 
 class PdfRepairPlanRequest(BaseModel):

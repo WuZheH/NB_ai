@@ -6,9 +6,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.core.paths import RUNTIME_PROJECT_ROOT, RUNTIME_STATE_DIR
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MARKER_ARTIFACT_ROOT = PROJECT_ROOT / ".codex_tmp" / "ocr_backend_benchmark"
+
+PROJECT_ROOT = RUNTIME_PROJECT_ROOT
+DEFAULT_MARKER_ARTIFACT_ROOT = RUNTIME_STATE_DIR / "ocr_backend_benchmark"
 
 
 def load_marker_structure_hints(

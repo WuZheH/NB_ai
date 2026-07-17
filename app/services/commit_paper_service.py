@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import DATA_PROJECT_ROOT, DEFAULT_DB_PATH, OUTPUTS_DIR
 from app.db.session import SessionLocal
 from app.models import Document
 from app.services import import_service
@@ -21,8 +21,8 @@ from app.services.import_preview_service import (
 from app.services.markdown_parser import parse_markdown
 from app.services.vector_index_service import VECTOR_INDEX_DIR, rebuild_vector_index
 
-COMMIT_BACKUP_ROOT = PROJECT_ROOT / "outputs" / "phase18e_commitpaper_backup"
-DB_PATH = PROJECT_ROOT / "data" / "db" / "research_memory.db"
+COMMIT_BACKUP_ROOT = OUTPUTS_DIR / "phase18e_commitpaper_backup"
+DB_PATH = DEFAULT_DB_PATH
 COMMIT_MANIFEST_FILE = "commit_result.json"
 
 
@@ -86,7 +86,7 @@ def commit_paper_from_staging(import_job_id: str) -> dict[str, Any]:
             title=title,
             document_type="paper",
             content_layer="evidence",
-            source_path=str(paper_md_path.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+            source_path=str(paper_md_path.relative_to(DATA_PROJECT_ROOT)).replace("\\", "/"),
             pdf_path=pdf_path,
             zotero_key=zotero_key,
             read_status="read",
@@ -106,7 +106,7 @@ def commit_paper_from_staging(import_job_id: str) -> dict[str, Any]:
     zotero_note_alignment_hook = _run_zotero_note_alignment_hook(
         document_id=document_id,
         source_trace=source_trace,
-        source_path=str(paper_md_path.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+        source_path=str(paper_md_path.relative_to(DATA_PROJECT_ROOT)).replace("\\", "/"),
     )
 
     # Rebuild vector index
@@ -132,7 +132,7 @@ def commit_paper_from_staging(import_job_id: str) -> dict[str, Any]:
         "chunk_count": result.chunks_created,
         "vector_index_chunk_count": chunk_count_index,
         "committed_at": committed_at,
-        "backup_dir": str(backup_dir.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+        "backup_dir": str(backup_dir.relative_to(DATA_PROJECT_ROOT)).replace("\\", "/"),
         "zotero_native_notes_import": zotero_native_notes_import,
         "zotero_note_alignment_hook": zotero_note_alignment_hook,
         **_safety_fields(),
@@ -154,7 +154,7 @@ def commit_paper_from_staging(import_job_id: str) -> dict[str, Any]:
         "markdown_node_count": result.nodes_created,
         "chunk_count": result.chunks_created,
         "vector_index_chunk_count": chunk_count_index,
-        "backup_dir": str(backup_dir.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+        "backup_dir": str(backup_dir.relative_to(DATA_PROJECT_ROOT)).replace("\\", "/"),
         "zotero_native_notes_import": zotero_native_notes_import,
         "zotero_note_alignment_hook": zotero_note_alignment_hook,
         "core_db_write_performed": True,

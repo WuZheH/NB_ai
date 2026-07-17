@@ -18,6 +18,7 @@ test("production renderer keeps window fixed while results, preview, and evidenc
   assert.equal(code, 0, `production DOM probe failed\n${stdout}\n${stderr}`);
   assert.equal(payload.status, "ok", `${payload.error || "production DOM metrics missing"}\n${stdout}\n${stderr}`);
   const { metrics } = payload;
+  console.log(`production DOM scroll metrics: ${JSON.stringify(metrics)}`);
 
   assert.deepEqual(metrics.viewport, { width: 1024, height: 768 });
   assert.ok(metrics.root.scrollHeight <= metrics.root.clientHeight + 1, JSON.stringify(metrics.root));
@@ -30,9 +31,21 @@ test("production renderer keeps window fixed while results, preview, and evidenc
   assert.equal(metrics.results.lastVisible, true);
   assert.equal(metrics.preview.lastVisible, true);
   assert.equal(metrics.basket.lastVisible, true);
-  assert.equal(metrics.railPosition, "static");
+  assert.equal(metrics.railPosition, "fixed");
   assert.equal(metrics.navigationOutlined, false);
   assert.equal(metrics.evidenceBasketEnglishVisible, false);
+  assert.deepEqual(metrics.unifiedSearch, {
+    searchEntryCount: 1,
+    forbiddenEntryVisible: false,
+    unifiedPagePresent: true,
+    heading: "搜索",
+  });
+  assert.deepEqual(metrics.legacyRoute, {
+    path: "/retrieval",
+    unifiedPagePresent: true,
+    query: "滚动测试",
+    searchEntryCount: 1,
+  });
   assert.ok(metrics.interactions.wheelTop > 0, JSON.stringify(metrics.interactions));
   assert.ok(metrics.interactions.pageDownTop > 0, JSON.stringify(metrics.interactions));
   assert.ok(metrics.interactions.endTop > 0, JSON.stringify(metrics.interactions));
@@ -44,13 +57,18 @@ test("production renderer keeps window fixed while results, preview, and evidenc
   assert.equal(metrics.resultState.previewSameNode, true, JSON.stringify(metrics.resultState));
   assert.ok(metrics.resultState.previewScrollBefore > 0, JSON.stringify(metrics.resultState));
   assert.ok(Math.abs(metrics.resultState.previewScrollAfter - metrics.resultState.previewScrollBefore) <= 1, JSON.stringify(metrics.resultState));
-  assert.deepEqual(metrics.workspaceReturn, {
-    fromPath: "/retrieval",
-    workspacePath: "/workspace",
-    returnedPath: "/retrieval",
-    retrievalRestored: true,
-  });
-  console.log(`production DOM scroll metrics: ${JSON.stringify(metrics)}`);
+  assert.equal(metrics.navigationRestore.query, "滚动测试", JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.resultCount, 12, JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.basketCount, 12, JSON.stringify(metrics.navigationRestore));
+  assert.match(metrics.navigationRestore.previewTitle, /生产构建滚动测试文档/, JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.searchMode, "高质量搜索", JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.sourceFilter, "pdf_chunk", JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.documentFilter, "1", JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.includeContext, true, JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.previewView, "文本", JSON.stringify(metrics.navigationRestore));
+  assert.ok(Math.abs(metrics.navigationRestore.resultsScroll - metrics.navigationRestore.expectedScroll.results) <= 1, JSON.stringify(metrics.navigationRestore));
+  assert.ok(Math.abs(metrics.navigationRestore.previewScroll - metrics.navigationRestore.expectedScroll.preview) <= 1, JSON.stringify(metrics.navigationRestore));
+  assert.ok(Math.abs(metrics.navigationRestore.basketScroll - metrics.navigationRestore.expectedScroll.basket) <= 1, JSON.stringify(metrics.navigationRestore));
 });
 
 async function runProbe() {

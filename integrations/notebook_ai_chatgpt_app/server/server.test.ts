@@ -196,11 +196,23 @@ test("search, fetch, and export_evidence call only the backend adapter", async (
 
 test("anonymous startup is refused without the explicit development switch", () => {
   assert.throws(() => requireUnauthenticatedDevelopment({}), /Refusing to start an unauthenticated MCP server/);
-  assert.deepEqual(requireUnauthenticatedDevelopment({ NOTEBOOK_AI_ALLOW_UNAUTHENTICATED_MCP_DEV: "1" }), {
+  assert.deepEqual(requireUnauthenticatedDevelopment({ SEARCH_ALLOW_UNAUTHENTICATED_MCP_DEV: "1" }), {
     host: "127.0.0.1",
     port: 8787,
     unauthenticatedDevelopment: true,
   });
+  assert.equal(requireUnauthenticatedDevelopment({
+    NOTEBOOK_AI_ALLOW_UNAUTHENTICATED_MCP_DEV: "1",
+  }).unauthenticatedDevelopment, true);
+  assert.throws(() => requireUnauthenticatedDevelopment({
+    SEARCH_ALLOW_UNAUTHENTICATED_MCP_DEV: "0",
+    NOTEBOOK_AI_ALLOW_UNAUTHENTICATED_MCP_DEV: "1",
+  }), /Refusing to start an unauthenticated MCP server/);
+  assert.equal(requireUnauthenticatedDevelopment({
+    SEARCH_ALLOW_UNAUTHENTICATED_MCP_DEV: "1",
+    SEARCH_MCP_PORT: "9876",
+    NOTEBOOK_AI_MCP_PORT: "9875",
+  }).port, 9876);
 });
 
 test("backend error codes are metadata-safe before logging", () => {

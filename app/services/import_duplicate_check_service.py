@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from app.core.paths import DEFAULT_DB_PATH, PROJECT_ROOT
+from app.core.paths import DATA_PROJECT_ROOT, DEFAULT_DB_PATH
 from app.services import pdf_conversion_service
 
 
@@ -382,7 +382,7 @@ def _path_keys(value: Any) -> set[str]:
     candidates = {text}
     path = Path(text)
     if not path.is_absolute():
-        candidates.add(str((PROJECT_ROOT / path).resolve(strict=False)))
+        candidates.add(str((DATA_PROJECT_ROOT / path).resolve(strict=False)))
     candidates.add(str(path.expanduser().resolve(strict=False)))
     return {_normalize_path(candidate) for candidate in candidates if candidate}
 

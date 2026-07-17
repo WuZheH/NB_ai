@@ -7,8 +7,7 @@
     "zotero": {
       "id": "notebook-ai-inspiration@notebook-ai.local",
       "strict_min_version": "9.0",
-      "strict_max_version": "9.9.9",
-      "update_url": "https://example.com/notebook-ai-inspiration/updates.json"
+      "strict_max_version": "9.9.9"
     }
   }
 }

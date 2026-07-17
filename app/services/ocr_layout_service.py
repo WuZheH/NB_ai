@@ -8,11 +8,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.core.paths import MODEL_CACHE_ROOT
 from app.services.book_import_contract import PdfLayoutLine, PdfLayoutSpan
 from app.services.pdf_layout_service import layout_text_hash, normalize_layout_text
 
 
-DEFAULT_MODEL_CACHE_ROOT = Path(r"D:\LEARNING\Tools\model_cache")
+DEFAULT_MODEL_CACHE_ROOT = MODEL_CACHE_ROOT
 
 
 @dataclass(frozen=True)

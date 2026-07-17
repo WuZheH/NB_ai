@@ -46,11 +46,6 @@ export default function RetrievalResultCard({
 
       <div className="localRetrievalResultHeading">
         <h3>{displayResult.document_title || "未命名来源"}</h3>
-        <div className="localRetrievalResultMeta">
-          {displayResult.final_rank && <span>最终排名 #{displayResult.final_rank}</span>}
-          {displayResult.final_score !== null && <span className="search-mono">相关分数 {formatScore(displayResult.final_score)}</span>}
-          {displayResult.reranker_score !== null && <span className="search-mono">reranker {formatScore(displayResult.reranker_score)}</span>}
-        </div>
       </div>
 
       <section className={`localRetrievalEvidenceBlock ${isPdf ? "pdfText" : "userNote"}`}>
@@ -58,12 +53,20 @@ export default function RetrievalResultCard({
         <p>{excerpt || "该结果没有可显示的正文摘要。"}</p>
       </section>
 
-      <FragmentIdBlock fragmentId={displayResult.fragment_id} onCopied={onCopiedId} />
-
       <div className="localRetrievalResultActions">
         <button type="button" className="search-button search-button-subtle search-button-compact" onClick={() => onPreview(displayResult)}>预览</button>
         <button type="button" className="search-button search-button-transparent search-button-compact" onClick={() => onCopy(displayResult)}>复制片段</button>
       </div>
+
+      <details className="searchTechnicalDetails localRetrievalTechnicalDetails">
+        <summary>技术详情</summary>
+        <div className="localRetrievalResultMeta">
+          {displayResult.final_rank && <span>最终排名 #{displayResult.final_rank}</span>}
+          {displayResult.final_score !== null && <span className="search-mono">相关分数 {formatScore(displayResult.final_score)}</span>}
+          {displayResult.reranker_score !== null && <span className="search-mono">reranker {formatScore(displayResult.reranker_score)}</span>}
+        </div>
+        <FragmentIdBlock fragmentId={displayResult.fragment_id} onCopied={onCopiedId} />
+      </details>
     </article>
   );
 }

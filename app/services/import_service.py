@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import DATA_PROJECT_ROOT
 from app.db.init_db import init_db
 from app.db.session import SessionLocal
 from app.models import Document, KnowledgeChunk, MarkdownNode
@@ -240,6 +240,6 @@ def _guess_document_type(source_path: str) -> str:
 def _normalize_source_path(path: Path) -> str:
     resolved = path.resolve()
     try:
-        return str(resolved.relative_to(PROJECT_ROOT))
+        return str(resolved.relative_to(DATA_PROJECT_ROOT))
     except ValueError:
         return str(resolved)

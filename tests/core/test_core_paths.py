@@ -11,7 +11,9 @@ from app.services import local_embedding_service, local_reranker_service
 
 
 def test_product_paths_are_derived_from_the_project_root() -> None:
-    assert paths.DATA_DIR == paths.PROJECT_ROOT / "data"
+    assert paths.PROJECT_ROOT == paths.RUNTIME_PROJECT_ROOT
+    assert paths.DATA_PROJECT_ROOT == paths.DATA_DIR.parent
+    assert paths.OUTPUTS_DIR == paths.DATA_PROJECT_ROOT / "outputs"
     assert paths.PRODUCTION_DB_PATH == paths.DATA_DIR / "db" / "research_memory.db"
     assert paths.DEFAULT_DB_PATH == paths.PRODUCTION_DB_PATH
     assert paths.ZOTERO_SNAPSHOT_PATH == paths.DATA_DIR / "zotero" / "snapshot" / "zotero.sqlite"
@@ -38,6 +40,7 @@ def test_packaged_code_root_and_stable_data_root_are_independent(tmp_path: Path)
     data_project_root = tmp_path / "stable-data-project"
     data_project_root.mkdir()
     environment = os.environ.copy()
+    environment.pop("SEARCH_DATA_DIR", None)
     environment.update(
         {
             "NOTEBOOK_AI_DATA_PROJECT_ROOT": str(data_project_root),
@@ -50,8 +53,8 @@ def test_packaged_code_root_and_stable_data_root_are_independent(tmp_path: Path)
             "-B",
             "-c",
             (
-                "import json; from app.core.paths import PROJECT_ROOT, RUNTIME_PROJECT_ROOT; "
-                "print(json.dumps({'data': str(PROJECT_ROOT), 'runtime': str(RUNTIME_PROJECT_ROOT)}))"
+                "import json; from app.core.paths import DATA_PROJECT_ROOT, PROJECT_ROOT; "
+                "print(json.dumps({'data': str(DATA_PROJECT_ROOT), 'runtime': str(PROJECT_ROOT)}))"
             ),
         ],
         cwd=str(paths.RUNTIME_PROJECT_ROOT),
@@ -64,3 +67,60 @@ def test_packaged_code_root_and_stable_data_root_are_independent(tmp_path: Path)
     assert Path(value["data"]) == data_project_root.resolve()
     assert Path(value["runtime"]) == paths.RUNTIME_PROJECT_ROOT
     assert value["data"] != value["runtime"]
+
+
+def test_search_data_dir_names_the_data_directory_directly(tmp_path: Path) -> None:
+    data_dir = tmp_path / "search-data"
+    environment = os.environ.copy()
+    environment.update({"SEARCH_DATA_DIR": str(data_dir), "PYTHONDONTWRITEBYTECODE": "1"})
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            (
+                "import json; from app.core.paths import DATA_DIR, DATA_PROJECT_ROOT, PROJECT_ROOT; "
+                "print(json.dumps({'data': str(DATA_DIR), 'data_project': str(DATA_PROJECT_ROOT), 'project': str(PROJECT_ROOT)}))"
+            ),
+        ],
+        cwd=str(paths.RUNTIME_PROJECT_ROOT),
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    value = json.loads(completed.stdout)
+    assert Path(value["data"]) == data_dir.resolve()
+    assert Path(value["data_project"]) == data_dir.parent.resolve()
+    assert Path(value["project"]) == paths.RUNTIME_PROJECT_ROOT
+
+
+def test_search_runtime_dir_is_independent_and_does_not_create_it(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime-state"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SEARCH_RUNTIME_DIR": str(runtime_dir),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            (
+                "import json; from app.core.paths import PROJECT_ROOT, RUNTIME_STATE_DIR; "
+                "print(json.dumps({'project': str(PROJECT_ROOT), 'runtime': str(RUNTIME_STATE_DIR)}))"
+            ),
+        ],
+        cwd=str(paths.RUNTIME_PROJECT_ROOT),
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    value = json.loads(completed.stdout)
+    assert Path(value["project"]) == paths.RUNTIME_PROJECT_ROOT
+    assert Path(value["runtime"]) == runtime_dir.resolve()
+    assert not runtime_dir.exists()

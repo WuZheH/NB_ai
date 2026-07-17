@@ -3,7 +3,6 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
-  DEFAULT_DATA_PROJECT_ROOT,
   resolveDesktopConfig,
 } from "../electron/main/config.js";
 
@@ -14,6 +13,7 @@ test("packaged Search resolves code from resources/app and data from the stable 
   const executablePath = join(FIXTURE, "Search.exe");
   const resourcesPath = join(FIXTURE, "resources");
   const runtimeRoot = join(resourcesPath, "app", "runtime-project");
+  const dataDir = join(FIXTURE, "portable-user-data", "data");
   const pythonExe = join(FIXTURE, "python.exe");
   const nodeExe = join(FIXTURE, "node.exe");
   try {
@@ -26,8 +26,8 @@ test("packaged Search resolves code from resources/app and data from the stable 
     await writeFile(
       join(FIXTURE, "search-desktop.local.json"),
       JSON.stringify({
-        schemaVersion: 2,
-        dataProjectRoot: DEFAULT_DATA_PROJECT_ROOT,
+        schemaVersion: 3,
+        dataDir,
         pythonExe,
         nodeExe,
       }),
@@ -35,39 +35,43 @@ test("packaged Search resolves code from resources/app and data from the stable 
     );
 
     const config = resolveDesktopConfig({
-      env: { NOTEBOOK_AI_PROJECT_ROOT: join(FIXTURE, "ignored-development-root") },
+      env: { PATH: "", NOTEBOOK_AI_PROJECT_ROOT: join(FIXTURE, "ignored-development-root") },
       executablePath,
       resourcesPath,
       isPackaged: true,
     });
     assert.equal(config.runtimeRoot, runtimeRoot);
-    assert.equal(config.dataProjectRoot, resolve(DEFAULT_DATA_PROJECT_ROOT));
+    assert.equal(config.dataDir, resolve(dataDir));
+    assert.equal(config.dataProjectRoot, resolve(dataDir, ".."));
     assert.equal(config.projectRoot, config.dataProjectRoot);
     assert.equal(config.pythonExe, pythonExe);
     assert.equal(config.nodeExe, nodeExe);
     assert.equal(config.frontendDist, join(resourcesPath, "search-assets", "frontend"));
     assert.equal(config.designSystemRoot, join(resourcesPath, "search-assets", "design-system"));
     assert.equal(config.runtimeAvailable, true);
+    assert.equal(config.dataAvailable, false);
+    assert.deepEqual(config.runtimeMissing, []);
   } finally {
     await rm(FIXTURE, { recursive: true, force: true });
   }
 });
 
-test("packaged Search rejects a data root under notebook_ai_worktrees", async () => {
+test("packaged Search starts with an empty LOCALAPPDATA data directory", async () => {
   const executablePath = join(FIXTURE, "Search.exe");
   const resourcesPath = join(FIXTURE, "resources");
   try {
     await writeRuntimeFixture(join(resourcesPath, "app", "runtime-project"));
     await writeFile(executablePath, "", "utf8");
-    assert.throws(
-      () => resolveDesktopConfig({
-        env: { NOTEBOOK_AI_DATA_PROJECT_ROOT: FIXTURE },
-        executablePath,
-        resourcesPath,
-        isPackaged: true,
-      }),
-      /search_data_project_root_must_be_stable/,
-    );
+    const localAppData = join(FIXTURE, "local-app-data");
+    const config = resolveDesktopConfig({
+      env: { LOCALAPPDATA: localAppData, PATH: "" },
+      executablePath,
+      resourcesPath,
+      isPackaged: true,
+    });
+    assert.equal(config.dataDir, join(localAppData, "Search", "data"));
+    assert.equal(config.dataAvailable, false);
+    assert.deepEqual(config.runtimeMissing, ["python", "node"]);
   } finally {
     await rm(FIXTURE, { recursive: true, force: true });
   }

@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import RUNTIME_PROJECT_ROOT, RUNTIME_STATE_DIR
 from app.services.pdf_parser_backends import MARKER_SURYA_PAGE_BLOCKS_BACKEND, probe_runtime
 
 
@@ -41,9 +41,9 @@ NON_CANCELABLE_STAGES = frozenset({"writing_db", "verifying"})
 HEARTBEAT_STALE_SECONDS = 120
 WORKER_LOG_TAIL_LINES = 50
 
-DEFAULT_IMPORT_JOBS_ROOT = PROJECT_ROOT / ".codex_tmp" / "import_jobs"
+DEFAULT_IMPORT_JOBS_ROOT = RUNTIME_STATE_DIR / "import_jobs"
 IMPORT_JOBS_ROOT = DEFAULT_IMPORT_JOBS_ROOT
-WORKER_SCRIPT = PROJECT_ROOT / "scripts" / "run_chaptered_import_job_worker.py"
+WORKER_SCRIPT = RUNTIME_PROJECT_ROOT / "scripts" / "run_chaptered_import_job_worker.py"
 STATUS_REPLACE_MAX_ATTEMPTS = 10
 
 _lock = threading.Lock()
@@ -147,7 +147,7 @@ def create_chaptered_import_job_process(payload: dict[str, Any]) -> dict[str, An
     try:
         process = subprocess.Popen(
             cmd,
-            cwd=str(PROJECT_ROOT),
+            cwd=str(RUNTIME_PROJECT_ROOT),
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             text=True,

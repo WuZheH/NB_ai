@@ -3,9 +3,9 @@ const { contextBridge, ipcRenderer } = require("electron");
 // These public build identifiers are verified against product-metadata.json
 // by the Desktop contract suite before packaging.
 const productMetadata = Object.freeze({
-  version: "0.1.3",
-  buildId: "20260717-search-runtime-self-contained-r6-final",
-  rendererAssetVersion: "0.1.3-search-runtime-self-contained-r6-final",
+  version: "0.1.4",
+  buildId: "20260717-search-0.1.4-github-release-convergence",
+  rendererAssetVersion: "0.1.4-github-release-convergence",
 });
 
 const channels = Object.freeze({

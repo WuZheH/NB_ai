@@ -495,9 +495,8 @@ def _render_markdown(bundle: Mapping[str, Any]) -> str:
 
 
 def _review_command(draft_id: str, action: str, note: str) -> str:
-    python_path = r"D:\LEARNING\Tools\ANACONDA\envs\NOTEBOOK_AI\python.exe"
     return (
-        f'{python_path} scripts\\phase110k_q4_mechanism_draft_review_cli.py '
+        f'& $env:SEARCH_PYTHON scripts\\phase110k_q4_mechanism_draft_review_cli.py '
         f"--db-path data/db/research_memory.db --draft-id {draft_id} "
         f'--action {action} --review-notes "{note}" --dry-run --json'
     )

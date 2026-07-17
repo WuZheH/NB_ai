@@ -4,7 +4,7 @@ import importlib
 from pathlib import Path
 from typing import Any
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import CONVERTED_MD_DIR, DATA_PROJECT_ROOT, OUTPUTS_DIR, PROJECT_ROOT
 
 
 PYMUPDF_BACKEND_NAME = "pymupdf"
@@ -99,7 +99,7 @@ def _converted_md_candidates(source_path: str | Path | None) -> list[Path]:
                 source.with_name(f"{stem}_cleaned.md").resolve(strict=False),
             ]
         )
-    converted_root = PROJECT_ROOT / "data" / "converted_md"
+    converted_root = CONVERTED_MD_DIR
     if converted_root.is_dir() and stem:
         for pattern in (f"{stem}.md", f"{stem}*.md", f"*{stem}*.md"):
             candidates.extend(path.resolve(strict=False) for path in converted_root.rglob(pattern))
@@ -107,7 +107,7 @@ def _converted_md_candidates(source_path: str | Path | None) -> list[Path]:
 
 
 def _staging_markdown_for_source(source_path: str | Path | None) -> Path | None:
-    staging_root = PROJECT_ROOT / "outputs" / "import_staging"
+    staging_root = OUTPUTS_DIR / "import_staging"
     if not staging_root.is_dir():
         return None
     source_stem = Path(source_path).stem if source_path else ""
@@ -134,8 +134,11 @@ def _is_project_file(path: Path) -> bool:
     if not path.is_file() or path.suffix.lower() != ".md":
         return False
     try:
-        path.resolve(strict=False).relative_to(PROJECT_ROOT.resolve(strict=False))
-        return True
+        resolved = path.resolve(strict=False)
+        return any(
+            resolved.is_relative_to(root.resolve(strict=False))
+            for root in (PROJECT_ROOT, DATA_PROJECT_ROOT)
+        )
     except ValueError:
         return False
 
@@ -145,9 +148,12 @@ def _relative_or_none(path: Path | None) -> str | None:
         return None
     resolved = path.resolve(strict=False)
     try:
-        return str(resolved.relative_to(PROJECT_ROOT.resolve(strict=False))).replace("\\", "/")
+        return str(resolved.relative_to(DATA_PROJECT_ROOT.resolve(strict=False))).replace("\\", "/")
     except ValueError:
-        return str(resolved)
+        try:
+            return str(resolved.relative_to(PROJECT_ROOT.resolve(strict=False))).replace("\\", "/")
+        except ValueError:
+            return str(resolved)
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:

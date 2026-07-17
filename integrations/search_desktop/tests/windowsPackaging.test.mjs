@@ -20,12 +20,12 @@ const FIXTURE_ROOT = resolve(ROOT, "../..", ".codex_tmp", "search-desktop-packag
 
 test("Windows packaging avoids privileged symlink extraction and applies Search resources", () => {
   assert.equal(packageJson.build.win.signAndEditExecutable, false);
-  assert.equal(packageJson.version, "0.1.3");
+  assert.equal(packageJson.version, "0.1.4");
   assert.deepEqual(productMetadata, {
     productName: "Search",
-    version: "0.1.3",
-    buildId: "20260717-search-runtime-self-contained-r6-final",
-    rendererAssetVersion: "0.1.3-search-runtime-self-contained-r6-final",
+    version: "0.1.4",
+    buildId: "20260717-search-0.1.4-github-release-convergence",
+    rendererAssetVersion: "0.1.4-github-release-convergence",
   });
   assert.equal(packageJson.build.electronDist, "node_modules/electron/dist");
   assert.match(packageJson.scripts["package:win:unpacked"], /package-windows-unpacked\.mjs/);
@@ -44,7 +44,7 @@ test("Windows packaging avoids privileged symlink extraction and applies Search 
   assert.match(r5Packager, /packagedRoot:\s*["']\.["']/);
   assert.match(r5Packager, /verifyWindowsRuntimePathLengths/);
   assert.match(r5Packager, /maximum\s*>=\s*240/);
-  assert.ok(r5Packager.indexOf("await verifyNoWorktreeReferences") > r5Packager.indexOf("r5-build-manifest.json"));
+  assert.ok(r5Packager.indexOf("await verifyNoSourceRootReferences") > r5Packager.indexOf("r5-build-manifest.json"));
 });
 
 test("packaging source preflight accepts the complete self-contained runtime contract", async () => {

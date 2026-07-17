@@ -10,17 +10,17 @@ SCRIPTS_ROOT = PROJECT_ROOT / "scripts"
 SCRIPT_IMPLEMENTATION_HASHES = {
     ("runtime", "check_notebook_ai_dev_status.py"): "d8a7545bf1c91204df5a8ac276adaa3bb6aa7c038ffd1ead6615edf3a7da3b9b",
     ("runtime", "run_chaptered_import_job_worker.py"): "3a888e205bdf53ea431ae8ee52b3bd740f47a737064445fce444b5eb9df12264",
-    ("runtime", "start_notebook_ai_dev.bat"): "2a07907bcd2fe857f107045ebef68b1a16f2cbcb8a971b1068d47615758cae64",
+    ("runtime", "start_notebook_ai_dev.bat"): "fce859b7b36031f3fd776e78ee3b5113f7af066d941ce7f4fb9554675ac96474",
     ("importing", "import_book_ocr_layout_first.py"): "91d1e02d51c00bab33f211b39ab550a7f6d754bd8b14811413db25eca0fa6117",
     ("importing", "plan_chapter_ocr_first_promote.py"): "71549adcc39cce306dd7246787d854087907cda9c3daa9c2d68d1ff7d255067a",
     ("importing", "plan_ocr_layout_batch.py"): "dbc82931769c74592bc41f9b89a3029a7f5a33a6b2ea2527bffb28674863ab68",
     ("importing", "promote_ocr_first_candidates.py"): "89437e14c8a39f8f8dbe73369d3072c21ed300c0de80213aed9410e00f480d13",
     ("importing", "repair_book_layout_bboxes.py"): "4f48b3e031cff550aac188aaa6b2fce8730c28d0b92159ea381a92366ddfd7f8",
-    ("index", "build_retrieval_fts.py"): "3dc2c3f5e3356678a49090952a3434e07ac45e07ac028019258494c66b9596db",
+    ("index", "build_retrieval_fts.py"): "5b2e2e550087b6a2c926116212b36b0d796dbc1699607d2a29d85ef6832c3ed0",
     ("index", "build_vector_store.py"): "7904025a9410440145a6e0c6f3215e054b49d5e1d800ccfebcd6739ded3a76be",
-    ("index", "inspect_retrieval_fragments.py"): "0d3788843aceb4269817bce631df7c83b6e5b1bb0a756766e1e22241461495e0",
-    ("index", "search_retrieval_fts.py"): "89223ae20d834902396cc2ee123af277e6716ca4a15ec9fe2456aaf0316f1d43",
-    ("index", "status_retrieval_fts.py"): "908c2c277d1148c1f7fa93f3c33274c7ef0f3608c8717677068cefdd1b78f381",
+    ("index", "inspect_retrieval_fragments.py"): "d7374c47444466e8d87bac4b2a62fbc21d3a02786a047a456ee0107b4f097ae7",
+    ("index", "search_retrieval_fts.py"): "b1ce991edf141e23823ad87a70209929b391336d7ada91b542be3dd1b10b54ac",
+    ("index", "status_retrieval_fts.py"): "f92b32646e433bd28de34e33d7ca98606f654a656307c4461df5477ada4d01bd",
     ("index", "sync_vector_store.py"): "b3e2974037c921784d9e4a8c5e2f1163ea4ce2218e08fbba5d9050724163ac15",
     ("maintenance", "audit_chunk_page_metadata.py"): "7ec35c0662534c8402ab9bca2e1a817375c22ad6ab30f80ddc0493a7a89882fb",
     ("maintenance", "diagnose_chapter_pdf_quality.py"): "cf9c7e9157d5e43439c750ee09405e100562a7228f0b16c5f038f042fb20b827",
@@ -29,7 +29,7 @@ SCRIPT_IMPLEMENTATION_HASHES = {
     ("maintenance", "phase110k_q0_validate_mechanism_draft_json.py"): "9c299e6871d9b71fbaa2c2f6826bff0e1496e8caf278651dd4704e3bacdeb9d0",
     ("maintenance", "phase110k_q2_export_chatgpt_prompt_from_package.py"): "38938959a42bddaf1e34bb22e94a36f79c5fb5f3bc4615adbd6f4ba5c2001718",
     ("maintenance", "phase110k_q4_mechanism_draft_review_cli.py"): "431f56b3e387184d2853eb570e5ddea4aa498b6d6605bc5cde36ae50d03eac04",
-    ("maintenance", "phase110k_q5_mechanism_draft_review_bundle_export.py"): "eff3c690763046c7cdd155e84c71703dceda727b4668b7fa47d6df0f27e5a49b",
+    ("maintenance", "phase110k_q5_mechanism_draft_review_bundle_export.py"): "92a991a56f418b5c438259e77d6f3cd34e901be99cdbfb9e5784d33ad2187558",
     ("maintenance", "phase110k_r2_seed_espcn_frontend_acceptance_notes.py"): "ec23d8209133cb4162d12b45e1b0e0984002800cf24d12a45045a7728f3e7b14",
     ("maintenance", "r3_phase6d_backup_research_memory_db.py"): "b7a520037c68ad0786560a56b692ce5d19909ec56171dffaa24056f64a1c206b",
     ("migrations", "migrate_book_chapter_schema.py"): "fd1827456ba7b2d4d71ccc6c177a8714a693aae073ec3df116850e70152793d6",
@@ -58,7 +58,7 @@ def test_all_legacy_entries_and_classified_implementations_exist() -> None:
 
 def test_classified_implementation_hashes_are_stable() -> None:
     for (category, filename), expected_hash in SCRIPT_IMPLEMENTATION_HASHES.items():
-        payload = (SCRIPTS_ROOT / category / filename).read_bytes()
+        payload = (SCRIPTS_ROOT / category / filename).read_bytes().replace(b"\r\n", b"\n")
         assert hashlib.sha256(payload).hexdigest() == expected_hash
 
 

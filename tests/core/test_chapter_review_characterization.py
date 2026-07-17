@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+from app.core.paths import DEFAULT_DB_PATH
+
 from app.domains.chapter_review import _pipeline_legacy
 from app.services import chapter_review_pipeline_service as review_service
 
@@ -483,7 +485,11 @@ def test_legacy_facade_public_surface_and_signatures_are_stable() -> None:
             or not callable(value)
         ):
             continue
-        owned_contract.append((name, str(inspect.signature(value)), type(value).__name__))
+        signature = str(inspect.signature(value)).replace(
+            repr(DEFAULT_DB_PATH),
+            "Path('<SEARCH_DATA_DIR>/db/research_memory.db')",
+        )
+        owned_contract.append((name, signature, type(value).__name__))
     encoded = json.dumps(
         sorted(owned_contract),
         ensure_ascii=False,
@@ -491,5 +497,5 @@ def test_legacy_facade_public_surface_and_signatures_are_stable() -> None:
     ).encode("utf-8")
     assert len(owned_contract) == 68
     assert hashlib.sha256(encoded).hexdigest() == (
-        "6a915360606f122ded0b4434131a58df84f855f15296ca95bb16b14612d6e1fe"
+        "624f70aa8029610e5bc3d27dbfff903427eb33063d77e2f3216e78e1316e9def"
     )

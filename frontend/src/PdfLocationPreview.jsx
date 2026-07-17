@@ -39,13 +39,15 @@ function PdfLocationPreview({
   pdf_page_end,
   chunkId,
   quote,
-  highlightText
+  highlightText,
+  fitWidthOnLoad = false
 }) {
   const canvasRef = useRef(null);
   const scrollerRef = useRef(null);
   const autoFocusKeyRef = useRef("");
   const manualZoomKeyRef = useRef("");
   const pendingFocusRef = useRef(null);
+  const autoFitKeyRef = useRef("");
   const [scale, setScale] = useState(DEFAULT_SCALE);
   const [renderState, setRenderState] = useState({
     status: "idle",
@@ -235,6 +237,17 @@ function PdfLocationPreview({
   }, [resolvedPdfUrl, pdfPage, scale]);
 
   useEffect(() => {
+    if (!fitWidthOnLoad || renderState.status !== "ready" || !scrollerRef.current) return;
+    const baseWidth = pageWidth || renderState.baseWidth;
+    if (!baseWidth) return;
+    const fitKey = `${resolvedPdfUrl}:${pdfPage}:${Math.round(scrollerRef.current.clientWidth)}`;
+    if (autoFitKeyRef.current === fitKey) return;
+    autoFitKeyRef.current = fitKey;
+    const fitScale = clampScale(Math.max(120, scrollerRef.current.clientWidth - 24) / baseWidth);
+    if (Math.abs(fitScale - scale) > 0.05) setZoom(fitScale, { manual: false });
+  }, [fitWidthOnLoad, renderState.status, renderState.baseWidth, pageWidth, resolvedPdfUrl, pdfPage, scale]);
+
+  useEffect(() => {
     if (renderState.status !== "ready" || !canFocusHighlight || !focusKey || !scrollerRef.current || !pageWidth || !pageHeight) return;
     if (!shouldApplyAutoFocus({
       focusKey,
@@ -255,11 +268,15 @@ function PdfLocationPreview({
     });
     if (!focus) return;
 
-    pendingFocusRef.current = { key: focusKey, focus, desiredScale: focus.desiredScale };
-    if (Math.abs(focus.desiredScale - scale) > 0.05) {
-      setScale(clampScale(focus.desiredScale));
+    const fitScale = fitWidthOnLoad && scroller.clientWidth && pageWidth
+      ? clampScale(Math.max(120, scroller.clientWidth - 24) / pageWidth)
+      : focus.desiredScale;
+    const desiredScale = fitWidthOnLoad ? Math.min(focus.desiredScale, fitScale) : focus.desiredScale;
+    pendingFocusRef.current = { key: focusKey, focus, desiredScale };
+    if (Math.abs(desiredScale - scale) > 0.05) {
+      setScale(clampScale(desiredScale));
     }
-  }, [renderState.status, canFocusHighlight, focusKey, rects, pageWidth, pageHeight, focusMode, scale]);
+  }, [renderState.status, canFocusHighlight, focusKey, rects, pageWidth, pageHeight, focusMode, scale, fitWidthOnLoad]);
 
   useEffect(() => {
     const pending = pendingFocusRef.current;
@@ -317,16 +334,19 @@ function PdfLocationPreview({
   function rectStyle(rect) {
     const safeWidth = pageWidth || 1;
     const safeHeight = pageHeight || 1;
+    const top = location?.coordinate_origin === "pdf_bottom_left"
+      ? safeHeight - rect.y1
+      : rect.y0;
     return {
       left: `${(rect.x0 / safeWidth) * 100}%`,
-      top: `${(rect.y0 / safeHeight) * 100}%`,
+      top: `${(top / safeHeight) * 100}%`,
       width: `${((rect.x1 - rect.x0) / safeWidth) * 100}%`,
       height: `${((rect.y1 - rect.y0) / safeHeight) * 100}%`
     };
   }
 
   return (
-    <section className="pdfPreviewPanel" aria-label="PDF 定位预览">
+    <section className="pdfPreviewPanel" aria-label="PDF 定位预览" data-testid="pdf-location-preview">
       <div className="pdfPreviewHeader">
         <div>
           <h3>PDF 定位预览</h3>
@@ -365,13 +385,14 @@ function PdfLocationPreview({
         </div>
       )}
       <div className="pdfPreviewScroller" ref={scrollerRef}>
-        <div className="pdfPageCanvasWrap" style={canvasSizeStyle}>
-          <canvas ref={canvasRef} />
+        <div className="pdfPageCanvasWrap" style={canvasSizeStyle} data-testid="pdf-page-wrap">
+          <canvas ref={canvasRef} data-testid="pdf-page-canvas" />
           {renderState.status === "ready" && shouldShowHighlights && (
-            <div className="pdfHighlightLayer" aria-hidden="true">
+            <div className="pdfHighlightLayer" aria-hidden="true" data-testid="pdf-highlight-layer" data-strategy={pdfHighlightMode(location)}>
               {rects.map((rect, index) => (
                 <span
                   className="pdfHighlight"
+                  data-testid="pdf-highlight-rect"
                   data-mode={pdfHighlightMode(location)}
                   key={`${rect.x0}-${rect.y0}-${rect.x1}-${rect.y1}-${index}`}
                   style={rectStyle(rect)}

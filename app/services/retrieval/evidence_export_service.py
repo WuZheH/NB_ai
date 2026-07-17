@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import DATA_PROJECT_ROOT, OUTPUTS_DIR
 from app.domains.retrieval.evidence_export_adapter import render_notebook_evidence
 from app.domains.retrieval.fragment_repository import NotebookFragmentNotFound
 from app.schemas.evidence_export import (
@@ -25,7 +25,7 @@ from app.services.retrieval.ranking import score_candidate
 
 
 MAX_EXPORT_ITEMS = 1000
-DEFAULT_EXPORT_DIR = PROJECT_ROOT / "outputs" / "retrieval_evidence_exports"
+DEFAULT_EXPORT_DIR = OUTPUTS_DIR / "retrieval_evidence_exports"
 
 
 def export_evidence(
@@ -209,7 +209,7 @@ def _base_filename(query: str | None, fingerprint: str, extension: str) -> str:
 
 
 def _save_unique(content: str, *, base_filename: str, output_dir: Path) -> Path:
-    resolved_root = PROJECT_ROOT.resolve(strict=True)
+    resolved_root = DATA_PROJECT_ROOT.resolve(strict=True)
     resolved_dir = output_dir.resolve(strict=False)
     try:
         resolved_dir.relative_to(resolved_root)

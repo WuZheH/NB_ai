@@ -73,6 +73,7 @@ export default function DesktopSettingsPage({ section = "status" }) {
         <span>SEARCH DESKTOP</span>
         <h1>{section === "settings" ? "设置" : "系统状态"}</h1>
         <p>{presentation.summary}</p>
+        <p className="desktopHealthCheckTime">健康检查时间：{presentation.checkedAt}</p>
       </header>
 
       <section className="search-card desktopServiceList" aria-label="统一后端状态">
@@ -144,18 +145,28 @@ export function presentRuntime(runtime) {
   const fastapi = serviceState(runtime?.components?.fastapi);
   const mcp = serviceState(runtime?.components?.mcp);
   const tunnel = tunnelState(runtime);
+  const checkedAt = healthCheckTime(runtime?.updated_at);
+  const localReady = fastapi.tone === "ready" && mcp.tone === "ready";
+  const summary = localReady
+    ? tunnel.tone === "ready"
+      ? "本地后端正常，外部 Tunnel 在线。"
+      : tunnel.tone === "error"
+        ? "本地后端正常，外部 Tunnel 不可达。"
+        : "本地后端正常，外部 Tunnel 未配置。"
+    : "Search 可继续显示，但部分本地后端当前不可用。";
   return {
-    summary: fastapi.tone === "ready" && mcp.tone === "ready"
-      ? tunnel.tone === "ready"
-        ? "本地后端已就绪；ChatGPT Tunnel 当前在线。"
-        : "本地后端已就绪；ChatGPT 仍需要持久 Tunnel。"
-      : "Search 可继续显示，但部分后端当前不可用。",
+    summary,
+    checkedAt,
     rows: [
       { name: "检索后端", ...fastapi, note: "127.0.0.1:8000" },
       { name: "MCP 后端", ...mcp, note: "127.0.0.1:8787/mcp" },
       { name: "Codex MCP", ...clientBackendState(mcp), note: "仅表示本地后端，不代表 Codex 已调用" },
       { name: "Zotero 后端", ...clientBackendState(fastapi), note: "仅表示本地后端，不代表 Zotero 已打开" },
-      { name: "ChatGPT Tunnel", ...tunnel, note: tunnel.note },
+      {
+        name: "ChatGPT Tunnel",
+        ...tunnel,
+        note: `${tunnel.note} · 类型：${tunnel.typeLabel} · 检查：${checkedAt}`,
+      },
     ],
   };
 }
@@ -175,19 +186,65 @@ function clientBackendState(service) {
 
 function tunnelState(runtime = {}) {
   const state = String(runtime?.tunnel_state || runtime?.components?.tunnel?.state || "");
+  const type = String(runtime?.tunnel_type || runtime?.components?.tunnel?.tunnel_type || "none");
+  const error = String(
+    runtime?.tunnel_error_code
+      || runtime?.components?.tunnel?.error_code
+      || ""
+  );
   if (state === "quick_tunnel_online") {
-    return { label: "临时在线", tone: "ready", note: "Quick Tunnel 地址会变化，不能视为永久连接" };
+    return {
+      label: "临时在线",
+      tone: "ready",
+      typeLabel: "Quick Tunnel",
+      note: "临时地址会变化，不能视为永久连接",
+    };
   }
   if (state === "persistent_tunnel_online") {
-    return { label: "持久在线", tone: "ready", note: "已只读验证 named tunnel 在线" };
+    return {
+      label: "持久在线",
+      tone: "ready",
+      typeLabel: "Named Tunnel",
+      note: "已只读验证 named tunnel 在线",
+    };
   }
-  if (state === "persistent_tunnel_configured" || runtime?.tunnel_type === "named") {
-    return { label: "不可用", tone: "error", note: "已发现持久配置，但公网健康检查未通过" };
+  if (type === "quick" || /quick_tunnel|quick_tunnel_unreachable/.test(`${state}:${error}`)) {
+    return {
+      label: "不可达",
+      tone: "error",
+      typeLabel: "Quick Tunnel",
+      note: "本地 MCP 正常不代表该临时公网地址仍可访问",
+    };
+  }
+  if (state === "persistent_tunnel_configured" || type === "named") {
+    return {
+      label: "不可达",
+      tone: "error",
+      typeLabel: "Named Tunnel",
+      note: "已发现持久配置，但公网健康检查未通过",
+    };
   }
   if (state === "tunnel_not_configured" || !state) {
-    return { label: "需要持久配置", tone: "warning", note: "Phase B 配置 named tunnel 后可获得固定地址" };
+    return {
+      label: "未配置",
+      tone: "warning",
+      typeLabel: "未配置",
+      note: "本地 Search 不需要 Tunnel；ChatGPT App 才需要 HTTPS",
+    };
   }
-  return { label: "不可用", tone: "error", note: "Tunnel 当前未通过健康检查" };
+  return {
+    label: "不可达",
+    tone: "error",
+    typeLabel: type === "named" ? "Named Tunnel" : type === "quick" ? "Quick Tunnel" : "未知",
+    note: "Tunnel 当前未通过公网健康检查",
+  };
+}
+
+function healthCheckTime(value) {
+  if (!value) return "尚未检查";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString("zh-CN", { hour12: false });
 }
 
 function componentDetail(component = {}) {
@@ -205,6 +262,7 @@ function tunnelDetail(runtime = {}) {
     runtime?.tunnel_type ? `类型 ${runtime.tunnel_type}` : null,
     runtime?.components?.tunnel?.pid ? `PID ${runtime.components.tunnel.pid}` : null,
     runtime?.tunnel_url || null,
+    runtime?.updated_at ? `检查 ${healthCheckTime(runtime.updated_at)}` : null,
   ];
   return parts.filter(Boolean).join(" · ") || "未配置";
 }

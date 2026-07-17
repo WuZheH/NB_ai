@@ -32,6 +32,8 @@ def test_zotero_public_entry_and_packaging_script_remain_available() -> None:
     bootstrap_source = (PLUGIN_ROOT / "bootstrap.js").read_text(encoding="utf-8")
     for lifecycle_entry in ("startup", "shutdown", "install", "uninstall"):
         assert f"function {lifecycle_entry}(" in bootstrap_source
+    assert "Zotero.SearchInspirationPlugin" in bootstrap_source
+    assert "SEARCH_INSPIRATION_PLUGIN" in bootstrap_source
     assert "Zotero.NotebookAIInspirationPlugin" in bootstrap_source
     assert "NOTEBOOK_AI_INSPIRATION_PLUGIN" in bootstrap_source
 

@@ -27,7 +27,7 @@ test("packaged smoke keeps the real window hidden and validates final ready star
 });
 
 test("packaged smoke keeps all mutable paths inside the task temp root", () => {
-  assert.match(smoke, /\.codex_tmp\\search-desktop-startup-0\.1\.3\\packaged-smoke/);
+  assert.match(smoke, /\.codex_tmp\\search-desktop-startup-0\.1\.4\\packaged-smoke/);
   assert.match(smoke, /--user-data-dir=\$UserData/);
   assert.match(smoke, /SEARCH_ELECTRON_TEST_MODE/);
   for (const name of ["LOCALAPPDATA", "APPDATA", "TEMP", "TMP"]) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from app.core.database import connect_immutable_readonly_sqlite
@@ -27,6 +28,12 @@ EXCLUDED_NOTE_ORIGIN_KINDS: tuple[str, ...] = ("synthetic_seed",)
 
 class NotebookFragmentNotFound(LookupError):
     pass
+
+
+@dataclass(frozen=True)
+class NotebookFragmentRecord:
+    fragment: NotebookFragment
+    source: RetrievalFragment
 
 
 def list_notebook_fragments(
@@ -67,6 +74,14 @@ def get_notebook_fragment(
     *,
     registry: RetrievalSourceRegistry | None = None,
 ) -> NotebookFragment:
+    return get_notebook_fragment_record(fragment_id, registry=registry).fragment
+
+
+def get_notebook_fragment_record(
+    fragment_id: str,
+    *,
+    registry: RetrievalSourceRegistry | None = None,
+) -> NotebookFragmentRecord:
     cleaned = str(fragment_id or "").strip()
     if not cleaned:
         raise NotebookFragmentNotFound("fragment_id must not be empty")
@@ -84,7 +99,10 @@ def get_notebook_fragment(
     document_types = _document_types(
         {value.document_id for value in catalog.fragments if value.document_id is not None}
     )
-    return _to_notebook_fragment(item, by_id=by_id, document_types=document_types)
+    return NotebookFragmentRecord(
+        fragment=_to_notebook_fragment(item, by_id=by_id, document_types=document_types),
+        source=item,
+    )
 
 
 def get_notebook_fragments(

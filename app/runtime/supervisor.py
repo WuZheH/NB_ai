@@ -494,6 +494,9 @@ class RuntimeSupervisor:
             arguments=(str(self.config.paths.mcp_server_entry),),
             cwd=self.config.paths.mcp_app_dir,
             environment={
+                "SEARCH_BACKEND_URL": self.config.backend_url,
+                "SEARCH_ALLOW_UNAUTHENTICATED_MCP_DEV": "1",
+                "SEARCH_MCP_PORT": str(self.config.mcp_port),
                 "NOTEBOOK_AI_BACKEND_URL": self.config.backend_url,
                 "NOTEBOOK_AI_ALLOW_UNAUTHENTICATED_MCP_DEV": "1",
                 "NOTEBOOK_AI_MCP_PORT": str(self.config.mcp_port),

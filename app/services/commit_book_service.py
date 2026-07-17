@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import DEFAULT_DB_PATH
 from app.services import library_service
 from app.services.book_import_contract import OBJECT_IMPORT_MODE_CHAPTERED
 from app.services.book_import_service import (
@@ -23,7 +23,7 @@ from app.services.markdown_parser import PDF_PAGE_RE, parse_markdown
 from app.services.pdf_parser_backends import PdfParseResult
 
 
-DB_PATH = PROJECT_ROOT / "data" / "db" / "research_memory.db"
+DB_PATH = DEFAULT_DB_PATH
 COMMIT_MANIFEST_FILE = "commit_book_result.json"
 PAPER_COMMIT_MANIFEST_FILE = "commit_result.json"
 STAGING_PREVIEW_BACKEND = "staging_preview_text"

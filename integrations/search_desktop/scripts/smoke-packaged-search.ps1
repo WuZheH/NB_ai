@@ -2,7 +2,9 @@
 param(
     [string]$ExecutablePath,
     [string]$ProjectRoot,
-    [string]$PythonExe = "D:\LEARNING\Tools\ANACONDA\envs\NOTEBOOK_AI\python.exe",
+    [string]$DataDir,
+    [string]$PythonExe,
+    [string]$NodeExe,
     [string]$TestRoot,
     [ValidateRange(10, 120)]
     [int]$HoldSeconds = 10,
@@ -20,27 +22,33 @@ if (-not $ExecutablePath) {
     $ExecutablePath = Join-Path $DesktopRoot "dist\win-unpacked\Search.exe"
 }
 if (-not $ProjectRoot) {
-    $ProjectRoot = "D:\LEARNING\Tools\notebook_ai"
+    $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $DesktopRoot "..\.."))
 }
 if (-not $TestRoot) {
-    $TestRoot = Join-Path $ProjectRoot ".codex_tmp\search-desktop-startup-0.1.3\packaged-smoke"
+    $TestRoot = Join-Path $ProjectRoot ".codex_tmp\search-desktop-startup-0.1.4\packaged-smoke"
 }
+if (-not $DataDir) { $DataDir = Join-Path $TestRoot "empty-data" }
+if (-not $PythonExe) { $PythonExe = $env:SEARCH_PYTHON }
+if (-not $PythonExe) { $PythonExe = $env:NOTEBOOK_AI_PYTHON_EXE }
+if (-not $NodeExe) { $NodeExe = $env:SEARCH_NODE }
+if (-not $NodeExe) { $NodeExe = $env:NOTEBOOK_AI_NODE_EXE }
+if (-not $PythonExe) { throw "search_packaged_smoke_python_not_configured" }
+if (-not $NodeExe) { throw "search_packaged_smoke_node_not_configured" }
 
 $ExecutablePath = [System.IO.Path]::GetFullPath($ExecutablePath)
 $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
+$DataDir = [System.IO.Path]::GetFullPath($DataDir)
 $PythonExe = [System.IO.Path]::GetFullPath($PythonExe)
+$NodeExe = [System.IO.Path]::GetFullPath($NodeExe)
 $TestRoot = [System.IO.Path]::GetFullPath($TestRoot)
 $RuntimeRoot = Join-Path (Split-Path -Parent $ExecutablePath) "resources\app\runtime-project"
 $RuntimeRoot = [System.IO.Path]::GetFullPath($RuntimeRoot)
 $LauncherScript = Join-Path $RuntimeRoot "scripts\runtime\notebook_ai_launcher.py"
 
-foreach ($RequiredPath in @($ExecutablePath, $PythonExe, $LauncherScript)) {
+foreach ($RequiredPath in @($ExecutablePath, $PythonExe, $NodeExe, $LauncherScript)) {
     if (-not (Test-Path -LiteralPath $RequiredPath -PathType Leaf)) {
         throw "search_packaged_smoke_required_file_missing:$RequiredPath"
     }
-}
-if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot "data") -PathType Container)) {
-    throw "search_packaged_smoke_data_project_root_missing:$ProjectRoot"
 }
 
 function Get-ExactSearchProcesses {
@@ -217,6 +225,10 @@ $OriginalEnvironment = @{
     TMP = $env:TMP
     ELECTRON_DISABLE_CRASH_REPORTING = $env:ELECTRON_DISABLE_CRASH_REPORTING
     SEARCH_ELECTRON_TEST_MODE = $env:SEARCH_ELECTRON_TEST_MODE
+    SEARCH_RUNTIME_ROOT = $env:SEARCH_RUNTIME_ROOT
+    SEARCH_DATA_DIR = $env:SEARCH_DATA_DIR
+    SEARCH_PYTHON = $env:SEARCH_PYTHON
+    SEARCH_NODE = $env:SEARCH_NODE
     NOTEBOOK_AI_RUNTIME_ROOT = $env:NOTEBOOK_AI_RUNTIME_ROOT
     NOTEBOOK_AI_DATA_PROJECT_ROOT = $env:NOTEBOOK_AI_DATA_PROJECT_ROOT
     NOTEBOOK_AI_PROJECT_ROOT = $env:NOTEBOOK_AI_PROJECT_ROOT
@@ -237,11 +249,15 @@ try {
     $env:TMP = $TempDirectory
     $env:ELECTRON_DISABLE_CRASH_REPORTING = "1"
     $env:SEARCH_ELECTRON_TEST_MODE = "1"
+    $env:SEARCH_RUNTIME_ROOT = $RuntimeRoot
+    $env:SEARCH_DATA_DIR = $DataDir
+    $env:SEARCH_PYTHON = $PythonExe
+    $env:SEARCH_NODE = $NodeExe
     $env:NOTEBOOK_AI_RUNTIME_ROOT = $RuntimeRoot
-    $env:NOTEBOOK_AI_DATA_PROJECT_ROOT = $ProjectRoot
-    Remove-Item "Env:NOTEBOOK_AI_PROJECT_ROOT" -ErrorAction SilentlyContinue
-    Remove-Item "Env:PYTHONPATH" -ErrorAction SilentlyContinue
-    Remove-Item "Env:NODE_PATH" -ErrorAction SilentlyContinue
+    $env:NOTEBOOK_AI_DATA_PROJECT_ROOT = Split-Path -Parent $DataDir
+    $env:NOTEBOOK_AI_PROJECT_ROOT = $null
+    $env:PYTHONPATH = $null
+    $env:NODE_PATH = $null
 
     # The packaged-executable assertion is timed against an already healthy
     # local runtime, matching the normal persistent Desktop runtime.  This
@@ -262,6 +278,7 @@ try {
         -WorkingDirectory (Split-Path -Parent $ExecutablePath) `
         -RedirectStandardOutput $StdoutPath `
         -RedirectStandardError $StderrPath `
+        -WindowStyle Hidden `
         -PassThru
 
     Start-Sleep -Seconds $HoldSeconds
@@ -332,6 +349,7 @@ try {
         -WorkingDirectory (Split-Path -Parent $ExecutablePath) `
         -RedirectStandardOutput (Join-Path $RunRoot "second.stdout.log") `
         -RedirectStandardError (Join-Path $RunRoot "second.stderr.log") `
+        -WindowStyle Hidden `
         -PassThru
     if (-not $SecondProcess.WaitForExit(10000)) {
         throw "search_packaged_smoke_second_instance_did_not_exit"
@@ -412,7 +430,7 @@ finally {
     foreach ($Name in $OriginalEnvironment.Keys) {
         $Value = $OriginalEnvironment[$Name]
         if ($null -eq $Value) {
-            Remove-Item "Env:$Name" -ErrorAction SilentlyContinue
+            Set-Item "Env:$Name" $null
         }
         else {
             Set-Item "Env:$Name" $Value

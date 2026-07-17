@@ -44,7 +44,9 @@ def test_sqlite_file_uri_distinguishes_modes_and_immutable() -> None:
         sqlite_file_uri(path, mode="rw", immutable=True)
 
 
-def test_readonly_and_readwrite_wrappers_preserve_connection_options(monkeypatch) -> None:
+def test_readonly_and_readwrite_wrappers_preserve_connection_options(
+    monkeypatch, tmp_path: Path
+) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
 
     class FakeConnection:
@@ -63,7 +65,9 @@ def test_readonly_and_readwrite_wrappers_preserve_connection_options(monkeypatch
 
     monkeypatch.setattr(sqlite3, "connect", fake_connect)
 
-    readonly = connect_immutable_readonly_sqlite("data/search_index/retrieval_fts_v1.db")
+    readonly_path = tmp_path / "retrieval_fts_v1.db"
+    readonly_path.touch()
+    readonly = connect_immutable_readonly_sqlite(readonly_path)
     assert readonly.row_factory is sqlite3.Row
     assert calls[0][0].endswith("?mode=ro&immutable=1")
     assert calls[0][1] == {"uri": True}
@@ -71,8 +75,10 @@ def test_readonly_and_readwrite_wrappers_preserve_connection_options(monkeypatch
     assert ("PRAGMA temp_store = MEMORY", {}) in calls
 
     calls.clear()
+    readwrite_path = tmp_path / "research_memory.db"
+    readwrite_path.touch()
     connect_existing_readwrite_sqlite(
-        "data/db/research_memory.db",
+        readwrite_path,
         timeout=2.0,
         foreign_keys=True,
         isolation_level="IMMEDIATE",

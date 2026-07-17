@@ -7,13 +7,13 @@ from pathlib import Path
 
 from sqlalchemy import inspect, text
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import DATA_PROJECT_ROOT, DEFAULT_DB_PATH, OUTPUTS_DIR
 from app.db.init_db import init_db
 from app.db.session import engine
 from app.models.object_candidate import ObjectCandidate
 
-MIGRATION_BACKUP_ROOT = PROJECT_ROOT / "outputs" / "phase18e_object_migration_backup"
-DB_PATH = PROJECT_ROOT / "data" / "db" / "research_memory.db"
+MIGRATION_BACKUP_ROOT = OUTPUTS_DIR / "phase18e_object_migration_backup"
+DB_PATH = DEFAULT_DB_PATH
 
 
 def run_object_candidate_migration() -> dict:
@@ -90,7 +90,7 @@ def run_object_candidate_migration() -> dict:
             "status": "error",
             "already_exists": False,
             "table": "object_candidates",
-            "backup_path": str(backup_dir.relative_to(PROJECT_ROOT)) if backup_dir else None,
+            "backup_path": str(backup_dir.relative_to(DATA_PROJECT_ROOT)) if backup_dir else None,
             "db_write_performed": False,
             "message": f"Migration failed: {exc}",
         }
@@ -103,7 +103,7 @@ def run_object_candidate_migration() -> dict:
         "status": "ok" if created else "error",
         "already_exists": False,
         "table": "object_candidates",
-        "backup_path": str(backup_dir.relative_to(PROJECT_ROOT)) if backup_dir else None,
+        "backup_path": str(backup_dir.relative_to(DATA_PROJECT_ROOT)) if backup_dir else None,
         "db_write_performed": created,
         "message": "Table object_candidates created." if created else "Failed to create object_candidates.",
     }

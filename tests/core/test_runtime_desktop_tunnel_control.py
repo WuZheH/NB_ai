@@ -59,7 +59,7 @@ def test_legacy_tunnel_signal_is_detection_only(
         lambda: ChatGptTunnelStatus(
             "quick",
             TunnelState.QUICK_ONLINE,
-            pid=40036,
+            pid=43120,
             public_url="https://temporary.trycloudflare.com",
         ),
     )
@@ -84,6 +84,6 @@ def test_legacy_tunnel_signal_is_detection_only(
     assert supervisor.status.components[ComponentName.FASTAPI.value] is fastapi
     assert supervisor.status.components[ComponentName.MCP.value] is mcp
     assert supervisor.status.components[ComponentName.TUNNEL.value].owned is False
-    assert supervisor.status.components[ComponentName.TUNNEL.value].pid == 40036
+    assert supervisor.status.components[ComponentName.TUNNEL.value].pid == 43120
     assert supervisor.status.tunnel_state is TunnelState.QUICK_ONLINE
     assert supervisor.status.state is RuntimeState.LOCAL_READY_TUNNEL_MISSING

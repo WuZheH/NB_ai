@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import DATA_PROJECT_ROOT, DEFAULT_DB_PATH, OUTPUTS_DIR
 from app.db.session import SessionLocal
 from app.models import KnowledgeChunk
 from app.models.object_candidate import (
@@ -21,8 +21,8 @@ from app.services.import_preview_service import (
     ImportPreviewError, _existing_job_dir, _read_json, _write_json, _relative,
 )
 
-COMMIT_OBJECTS_BACKUP_ROOT = PROJECT_ROOT / "outputs" / "phase18e_commitobjects_backup"
-DB_PATH = PROJECT_ROOT / "data" / "db" / "research_memory.db"
+COMMIT_OBJECTS_BACKUP_ROOT = OUTPUTS_DIR / "phase18e_commitobjects_backup"
+DB_PATH = DEFAULT_DB_PATH
 COMMIT_OBJECTS_FILE = "commit_objects_result.json"
 
 
@@ -156,7 +156,7 @@ def commit_objects_from_staging(import_job_id: str) -> dict[str, Any]:
         "skipped_rejected": skipped_rejected,
         "skipped_suggested": skipped_suggested,
         "mapping_status_counts": mapping_stats,
-        "backup_dir": str(backup_dir.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+        "backup_dir": str(backup_dir.relative_to(DATA_PROJECT_ROOT)).replace("\\", "/"),
         "committed_at": committed_at,
         "core_db_write_performed": True,
         "external_llm_called": False,
@@ -401,7 +401,7 @@ def _extract_tag_names(tags: Any) -> list[str]:
 
 
 COMMIT_REVIEWED_FILE = "commit_reviewed_objects_result.json"
-COMMIT_REVIEWED_BACKUP_ROOT = PROJECT_ROOT / "outputs" / "phase18e_commitreviewedobjects_backup"
+COMMIT_REVIEWED_BACKUP_ROOT = OUTPUTS_DIR / "phase18e_commitreviewedobjects_backup"
 
 
 def commit_reviewed_objects_from_remap(import_job_id: str) -> dict[str, Any]:
@@ -591,7 +591,7 @@ def commit_reviewed_objects_from_remap(import_job_id: str) -> dict[str, Any]:
         "deprecated_count": deprecated,
         "total_active": inserted + updated,
         "mapping_status_counts": mapping_stats,
-        "backup_dir": str(backup_dir.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+        "backup_dir": str(backup_dir.relative_to(DATA_PROJECT_ROOT)).replace("\\", "/"),
         "committed_at": committed_at,
         "core_db_write_performed": True,
         "external_llm_called": False,

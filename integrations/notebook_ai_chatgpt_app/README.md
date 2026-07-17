@@ -55,7 +55,8 @@ From the repository root, use the project conda interpreter (do not use an unver
 First validate the separate derived Zotero user-note index. This is read-only:
 
 ```powershell
-$PythonExe = "D:\LEARNING\Tools\ANACONDA\envs\NOTEBOOK_AI\python.exe"
+$PythonExe = $env:SEARCH_PYTHON
+if (-not $PythonExe) { throw "Set SEARCH_PYTHON to the active Python 3.11 interpreter." }
 & $PythonExe -B scripts/index/status_zotero_note_vectors.py
 ```
 
@@ -87,9 +88,9 @@ This status call is read-only and does not rebuild the FTS index. Do not bind th
 Copy `.env.example` to an untracked `.env` only if your process runner loads it. The server itself reads process environment variables and will refuse to start without the explicit development switch:
 
 ```powershell
-$env:NOTEBOOK_AI_BACKEND_URL = "http://127.0.0.1:8000"
-$env:NOTEBOOK_AI_ALLOW_UNAUTHENTICATED_MCP_DEV = "1"
-$env:NOTEBOOK_AI_MCP_PORT = "8787"
+$env:SEARCH_BACKEND_URL = "http://127.0.0.1:8000"
+$env:SEARCH_ALLOW_UNAUTHENTICATED_MCP_DEV = "1"
+$env:SEARCH_MCP_PORT = "8787"
 npm start
 ```
 
@@ -112,7 +113,7 @@ npm run smoke -- http://127.0.0.1:8787/mcp "避免脚步滑动"
 The official testing workflow uses MCP Inspector. If MCP Inspector 0.22.0 is already available locally, point the product script to it:
 
 ```powershell
-$env:NOTEBOOK_AI_MCP_INSPECTOR = "D:\path\to\mcp-inspector.cmd"
+$env:SEARCH_MCP_INSPECTOR = "X:\Tools\mcp-inspector.cmd"
 .\scripts\inspect-mcp.ps1
 ```
 
@@ -129,21 +130,18 @@ The repository tests use the official MCP SDK in-memory transport and a real Str
 
 ## Manual development fallback: short-lived HTTPS tunnel
 
-Normal daily use goes through the OpenAI Secure MCP Tunnel managed by the local Launcher; see [Local runtime and Secure MCP Tunnel](../../docs/LOCAL_RUNTIME.md). The commands below are only a temporary, unauthenticated development fallback. They are never started by the Launcher or Zotero and must not be configured for login autostart.
+Local Search, Codex, and Zotero do not need a Tunnel. ChatGPT App requires an HTTPS endpoint; the commands below are only a temporary, unauthenticated development fallback and must not be configured for login autostart.
 
 For a brief manual Developer Mode diagnostic, start a tunnel only after both local services pass their checks. Use a tunnel program you already trust and have installed; do not put its token or generated URL in Git. Examples:
 
 ```powershell
-# If cloudflared is already installed
-cloudflared tunnel --url http://127.0.0.1:8787
-
-# Or, if ngrok is already installed and configured
-ngrok http 8787
+$env:SEARCH_CLOUDFLARED = "C:\Tools\cloudflared.exe"
+powershell -NoProfile -ExecutionPolicy Bypass -File ..\..\scripts\start_quick_tunnel.ps1
 ```
 
-Append `/mcp` to the HTTPS URL printed by the tunnel. Keep the terminal open only for the test. Stop the tunnel with `Ctrl+C` immediately afterward, then stop the MCP server and clear `NOTEBOOK_AI_ALLOW_UNAUTHENTICATED_MCP_DEV` from the current shell.
+Only use the `/mcp` URL printed after the script's public health check succeeds. The script does not modify ChatGPT App. Clear the development switch from the current shell after testing.
 
-Unauthenticated tunnel mode is for brief local Developer Mode testing only. A hosted deployment must implement the Apps SDK/MCP OAuth 2.1 protected-resource flow and token validation before accepting traffic. `NOTEBOOK_AI_BACKEND_BEARER_TOKEN` is only a backend-authentication extension point; never commit a real value.
+Unauthenticated tunnel mode is for brief local Developer Mode testing only. A hosted deployment must implement the Apps SDK/MCP OAuth 2.1 protected-resource flow and token validation before accepting traffic. `SEARCH_BACKEND_BEARER_TOKEN` is only a backend-authentication extension point; never commit a real value.
 
 ## Connect from ChatGPT
 
@@ -163,7 +161,7 @@ First test prompt:
 
 > 请在我的资料中搜索“避免动作生成中的脚步滑动”，分别列出 PDF 原文和我的 Zotero 笔记，并标注页码和 fragment_id。
 
-Creating and enabling the app in ChatGPT is a manual user action; this repository never registers the app automatically.
+Creating and enabling the app in ChatGPT is a manual user action; this repository never registers the app automatically. Until `search`, `fetch`, and `export_evidence` have all succeeded inside ChatGPT, the truthful status is `PENDING_CHATGPT_TUNNEL_CONFIGURATION`.
 
 ## Official sources and example lineage
 

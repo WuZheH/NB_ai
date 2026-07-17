@@ -9,6 +9,7 @@ from app.api.library import router as library_router_module
 from app.api.library.chapters import get_book_detail
 from app.api.library.importing import classify_pdf_import
 from app.api.library.search import search_high_quality
+from app.core.paths import DEFAULT_DB_PATH
 from app.domains.chapter_review import _pipeline_legacy, _prompt_legacy
 from app.domains.database_search import _legacy as database_search_legacy
 from app.domains.library import _legacy as library_legacy
@@ -30,19 +31,19 @@ EXPECTED_SERVICE_CONTRACTS = {
         149,
         "67ee7a2ca731c07e346a2a30306f1a7b11445b1c1edb4ad4a0b8b4ba8a59d37b",
         68,
-        "6a915360606f122ded0b4434131a58df84f855f15296ca95bb16b14612d6e1fe",
+        "624f70aa8029610e5bc3d27dbfff903427eb33063d77e2f3216e78e1316e9def",
     ),
     "app.services.chapter_note_correction_prompt_service": (
         52,
         "a81c3f079a79ad1ddc860f910bca780a933729f14f5f6969ea704c5acf39c8b1",
         18,
-        "190c8b106692c52c494b06cc687c96ed8d3920e9ad6b7280f931b29ad9618a56",
+        "ff786aecda8f7c2c8d5b24e5f5f6125c9b88105d95acfb16a3e367f3f2dfadbd",
     ),
     "app.services.database_search_service": (
         20,
         "9d32e20271e6147ade33eda4bc88a3e55c5285c95fa17acb890ac129609db872",
         1,
-        "2efaf2d9e9acc9fb50c41af4f5b3b0c3475613b38c2ce3dbcac4da70fcdae79f",
+        "d5ad44089142c9dd167df7f0f30438ba44b7eac85c6b320ee2823484be9a43b2",
     ),
     "app.services.library_core_service": (
         77,
@@ -79,6 +80,10 @@ def _owned_callable_contract(module) -> list[tuple[str, str, str]]:
             signature = str(inspect.signature(value))
         except (TypeError, ValueError):
             signature = "<unavailable>"
+        signature = signature.replace(
+            repr(DEFAULT_DB_PATH),
+            "Path('<SEARCH_DATA_DIR>/db/research_memory.db')",
+        )
         contract.append((name, signature, type(value).__name__))
     return sorted(contract)
 

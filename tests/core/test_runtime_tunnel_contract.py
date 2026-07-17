@@ -185,7 +185,7 @@ def test_cloudflare_quick_tunnel_probe_is_read_only_and_reports_online(
         env={"USERPROFILE": str(tmp_path)},
         process_reader=lambda: [
             {
-                "ProcessId": 40036,
+                "ProcessId": 43120,
                 "ExecutablePath": str(tmp_path / "cloudflared.exe"),
                 "CommandLine": (
                     f'cloudflared.exe tunnel --url http://127.0.0.1:8787 '
@@ -198,7 +198,7 @@ def test_cloudflare_quick_tunnel_probe_is_read_only_and_reports_online(
     result = probe.diagnose()
     assert result.tunnel_type == "quick"
     assert result.state is TunnelState.QUICK_ONLINE
-    assert result.pid == 40036
+    assert result.pid == 43120
     assert result.public_url == "https://temporary.trycloudflare.com"
     assert result.named_tunnel_configured is False
 
@@ -211,7 +211,7 @@ def test_cloudflare_quick_tunnel_offline_is_not_restarted(
     config = _config(tmp_path, TunnelConfig())
     processes = [
         {
-            "ProcessId": 40036,
+            "ProcessId": 43120,
             "ExecutablePath": str(tmp_path / "cloudflared.exe"),
             "CommandLine": f'cloudflared.exe tunnel --url http://127.0.0.1:8787 --logfile "{log}"',
         }

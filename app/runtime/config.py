@@ -4,19 +4,19 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import shutil
+import sys
 from typing import Any, Mapping
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from app.core.paths import PROJECT_ROOT, RUNTIME_PROJECT_ROOT
+from app.core.paths import DATA_DIR, RUNTIME_PROJECT_ROOT
 from app.runtime.contracts import TunnelDriver
 
 
 RUNTIME_CONFIG_SCHEMA_VERSION = "notebook_ai.runtime.config.v1"
-DEFAULT_PYTHON_EXE = Path(
-    r"D:\LEARNING\Tools\ANACONDA\envs\NOTEBOOK_AI\python.exe"
-)
-DEFAULT_NODE_EXE = Path(r"D:\LEARNING\Tools\node.js\node.exe")
+DEFAULT_PYTHON_EXE = Path(sys.executable).resolve()
+DEFAULT_NODE_EXE = Path(shutil.which("node.exe") or shutil.which("node") or "node.exe")
 DEFAULT_BACKEND_PORT = 8000
 DEFAULT_MCP_PORT = 8787
 DEFAULT_TUNNEL_PROFILE = "notebook-ai"
@@ -30,7 +30,9 @@ FORBIDDEN_SECRET_CONFIG_KEYS = frozenset(
 class RuntimePaths:
     runtime_root: Path
     data_project_root: Path
+    data_dir: Path
     local_app_data: Path
+    roaming_app_data: Path
     runtime_dir: Path
     logs_dir: Path
     config_dir: Path
@@ -53,6 +55,7 @@ class RuntimePaths:
         *,
         runtime_root: str | Path | None = None,
         data_project_root: str | Path | None = None,
+        data_dir: str | Path | None = None,
         project_root: str | Path | None = None,
         env: Mapping[str, str] | None = None,
     ) -> "RuntimePaths":
@@ -65,23 +68,52 @@ class RuntimePaths:
                 raise ValueError("runtime_root conflicts with legacy project_root")
         configured_runtime_root = runtime_root or project_root or RUNTIME_PROJECT_ROOT
         root = Path(configured_runtime_root).resolve()
-        configured_data_root = (
-            data_project_root
-            or environment.get("NOTEBOOK_AI_DATA_PROJECT_ROOT")
-            or project_root
-            or PROJECT_ROOT
-        )
-        data_root = Path(configured_data_root).resolve()
+        configured_data_dir = data_dir or environment.get("SEARCH_DATA_DIR")
+        if configured_data_dir:
+            resolved_data_dir = _resolve_path(configured_data_dir, base=root)
+        else:
+            configured_data_root = (
+                data_project_root
+                or environment.get("NOTEBOOK_AI_DATA_PROJECT_ROOT")
+                or project_root
+            )
+            resolved_data_dir = (
+                _resolve_path(configured_data_root, base=root) / "data"
+                if configured_data_root
+                else DATA_DIR.resolve()
+            )
+        data_root = resolved_data_dir.parent
         local_base = Path(local_value).expanduser().resolve()
+        roaming_value = environment.get("APPDATA")
+        roaming_base = (
+            Path(roaming_value).expanduser().resolve()
+            if roaming_value
+            else local_base
+        )
         local_root = local_base / "Search"
+        roaming_root = roaming_base / "Search"
         legacy_local_root = local_base / "NOTEBOOK_AI"
-        runtime_dir = local_root / "runtime"
-        logs_dir = local_root / "logs"
-        config_dir = local_root / "config"
+        runtime_dir = _optional_path(
+            environment.get("SEARCH_RUNTIME_DIR"),
+            default=local_root / "runtime",
+            base=root,
+        )
+        logs_dir = _optional_path(
+            environment.get("SEARCH_LOG_DIR"),
+            default=local_root / "logs",
+            base=root,
+        )
+        config_dir = _optional_path(
+            environment.get("SEARCH_CONFIG_DIR"),
+            default=roaming_root / "config",
+            base=root,
+        )
         return cls(
             runtime_root=root,
             data_project_root=data_root,
+            data_dir=resolved_data_dir,
             local_app_data=local_root,
+            roaming_app_data=roaming_root,
             runtime_dir=runtime_dir,
             logs_dir=logs_dir,
             config_dir=config_dir,
@@ -182,6 +214,7 @@ class RuntimeConfig:
         *,
         runtime_root: str | Path | None = None,
         data_project_root: str | Path | None = None,
+        data_dir: str | Path | None = None,
         project_root: str | Path | None = None,
         env: Mapping[str, str] | None = None,
     ) -> "RuntimeConfig":
@@ -189,6 +222,7 @@ class RuntimeConfig:
         paths = RuntimePaths.resolve(
             runtime_root=runtime_root,
             data_project_root=data_project_root,
+            data_dir=data_dir,
             project_root=project_root,
             env=environment,
         )
@@ -202,35 +236,49 @@ class RuntimeConfig:
                 raise ValueError("unsupported runtime configuration schema")
             if _contains_forbidden_secret_key(stored):
                 raise ValueError("runtime_config_contains_forbidden_secret")
-        mode = str(environment.get("NOTEBOOK_AI_RUNTIME_MODE") or stored.get("mode") or "local")
+        mode = str(
+            environment.get("SEARCH_RUNTIME_MODE")
+            or environment.get("NOTEBOOK_AI_RUNTIME_MODE")
+            or stored.get("mode")
+            or "local"
+        )
         if mode not in {"local", "remote", "hybrid"}:
             raise ValueError("Search runtime mode must be local, remote, or hybrid")
         python_exe = Path(
-            environment.get("NOTEBOOK_AI_PYTHON_EXE")
+            environment.get("SEARCH_PYTHON")
+            or environment.get("NOTEBOOK_AI_PYTHON_EXE")
             or stored.get("python_exe")
             or DEFAULT_PYTHON_EXE
         )
-        node_value = environment.get("NOTEBOOK_AI_NODE_EXE") or stored.get("node_exe")
+        node_value = (
+            environment.get("SEARCH_NODE")
+            or environment.get("NOTEBOOK_AI_NODE_EXE")
+            or stored.get("node_exe")
+        )
         node_exe = Path(node_value or DEFAULT_NODE_EXE)
         backend_port = _port(
-            environment.get("NOTEBOOK_AI_BACKEND_PORT")
+            environment.get("SEARCH_BACKEND_PORT")
+            or environment.get("NOTEBOOK_AI_BACKEND_PORT")
             or stored.get("backend_port")
             or DEFAULT_BACKEND_PORT,
             "backend_port",
         )
         mcp_port = _port(
-            environment.get("NOTEBOOK_AI_MCP_PORT")
+            environment.get("SEARCH_MCP_PORT")
+            or environment.get("NOTEBOOK_AI_MCP_PORT")
             or stored.get("mcp_port")
             or DEFAULT_MCP_PORT,
             "mcp_port",
         )
         backend_url = str(
-            environment.get("NOTEBOOK_AI_BACKEND_URL")
+            environment.get("SEARCH_BACKEND_URL")
+            or environment.get("NOTEBOOK_AI_BACKEND_URL")
             or stored.get("backend_url")
             or f"http://127.0.0.1:{backend_port}"
         ).rstrip("/")
         frontend_url = str(
-            environment.get("NOTEBOOK_AI_FRONTEND_URL")
+            environment.get("SEARCH_FRONTEND_URL")
+            or environment.get("NOTEBOOK_AI_FRONTEND_URL")
             or stored.get("frontend_url")
             or "http://127.0.0.1:5173"
         ).rstrip("/")
@@ -326,6 +374,20 @@ def _port(value: Any, label: str) -> int:
     if not 1 <= result <= 65535:
         raise ValueError(f"{label} must be from 1 to 65535")
     return result
+
+
+def _resolve_path(value: str | Path, *, base: Path) -> Path:
+    cleaned = str(value or "").strip()
+    if not cleaned or "\x00" in cleaned:
+        raise ValueError("configured path is invalid")
+    candidate = Path(cleaned).expanduser()
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    return candidate.resolve()
+
+
+def _optional_path(value: str | Path | None, *, default: Path, base: Path) -> Path:
+    return _resolve_path(value, base=base) if value else default.resolve()
 
 
 def _clean_identifier(value: Any, label: str, *, optional: bool) -> str | None:

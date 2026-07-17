@@ -7,13 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from app.core.paths import PROJECT_ROOT
+from app.core.paths import OUTPUTS_DIR
 
 
 LARGE_CHUNK_THRESHOLD = 1000
 LARGE_MARKDOWN_CHAR_THRESHOLD = 200_000
 COPY_NOT_RECOMMENDED_CHAR_THRESHOLD = 500_000
-EXPORT_DIR = PROJECT_ROOT / "outputs" / "zotero_markdown_exports"
+EXPORT_DIR = OUTPUTS_DIR / "zotero_markdown_exports"
 
 
 class ZoteroMarkdownExportError(ValueError):
