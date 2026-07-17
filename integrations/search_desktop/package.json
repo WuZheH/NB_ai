@@ -77,6 +77,25 @@
         "to": "app/runtime-project/scripts/index/sync_zotero_note_vectors.py"
       },
       {
+        "from": "../../scripts",
+        "to": "app/runtime-project/scripts",
+        "filter": [
+          "__init__.py",
+          "import_book_ocr_layout_first.py",
+          "importing/import_book_ocr_layout_first.py",
+          "phase110k_p_b_alignment_writeback_plan.py",
+          "phase110k_p_c_import_time_alignment_batch_dry_run.py",
+          "phase110k_p_d_import_alignment_hook_dry_run.py",
+          "phase110k_p_f_batch_alignment_writeback_apply.py",
+          "phase110k_p_inspiration_match_readiness_dry_run.py",
+          "zotero/phase110k_p_b_alignment_writeback_plan.py",
+          "zotero/phase110k_p_c_import_time_alignment_batch_dry_run.py",
+          "zotero/phase110k_p_d_import_alignment_hook_dry_run.py",
+          "zotero/phase110k_p_f_batch_alignment_writeback_apply.py",
+          "zotero/phase110k_p_inspiration_match_readiness_dry_run.py"
+        ]
+      },
+      {
         "from": "../../config/retrieval_query_aliases.json",
         "to": "app/runtime-project/config/retrieval_query_aliases.json"
       },

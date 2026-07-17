@@ -4,7 +4,11 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { invalidatePackagedExecutable } from "../scripts/package-windows-unpacked.mjs";
-import { verifyPackagedResources, verifySourceResources } from "../scripts/verify-packaged-resources.mjs";
+import {
+  PACKAGED_RESOURCE_CONTRACT,
+  verifyPackagedResources,
+  verifySourceResources,
+} from "../scripts/verify-packaged-resources.mjs";
 
 const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const productMetadata = JSON.parse(await readFile(new URL("../electron/product-metadata.json", import.meta.url), "utf8"));
@@ -44,7 +48,11 @@ test("Windows packaging avoids privileged symlink extraction and applies Search 
 
 test("packaging source preflight accepts the complete self-contained runtime contract", async () => {
   const result = await verifySourceResources();
-  assert.deepEqual(result, { status: "ready", scope: "source", count: 18 });
+  assert.deepEqual(result, {
+    status: "ready",
+    scope: "source",
+    count: PACKAGED_RESOURCE_CONTRACT.length,
+  });
 });
 
 test("packaged preflight rejects a missing frontend index", async () => {
@@ -82,6 +90,28 @@ test("packaged preflight rejects a missing background token", async () => {
     await assert.rejects(
       verifyPackagedResources(fixture),
       /search_packaging_token_missing_or_invalid:--search-bg/,
+    );
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("packaged preflight rejects a missing imported Python runtime module", async () => {
+  const fixture = join(FIXTURE_ROOT, "missing-python-runtime-module");
+  const importedModule = join(
+    fixture,
+    "resources",
+    "app",
+    "runtime-project",
+    "scripts",
+    "phase110k_p_d_import_alignment_hook_dry_run.py",
+  );
+  try {
+    await writePackagedFixture(fixture);
+    await rm(importedModule);
+    await assert.rejects(
+      verifyPackagedResources(fixture),
+      /search_packaging_resource_missing:resources\/app\/runtime-project\/scripts\/phase110k_p_d_import_alignment_hook_dry_run\.py/,
     );
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -166,6 +196,10 @@ async function writePackagedFixture(root, {
     ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/build-manifest.json", serverManifest],
     ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/web/dist/widget.html", "<!doctype html><title>Widget</title>"],
   ]);
+  for (const relativePath of PACKAGED_RESOURCE_CONTRACT) {
+    if (relativePath === "resources/search-assets/frontend/index.html" && !includeIndex) continue;
+    if (!files.has(relativePath)) files.set(relativePath, "runtime fixture");
+  }
   if (includeIndex) files.set("resources/search-assets/frontend/index.html", "<!doctype html><title>Search</title>");
   for (const [relativePath, content] of files) {
     const path = join(root, ...relativePath.split("/"));

@@ -7,6 +7,22 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 export const DESKTOP_ROOT = resolve(SCRIPT_DIR, "..");
 export const DEFAULT_PACKAGED_ROOT = join(DESKTOP_ROOT, "dist", "win-unpacked");
 
+const PACKAGED_PYTHON_RUNTIME_MODULES = Object.freeze([
+  "scripts/__init__.py",
+  "scripts/import_book_ocr_layout_first.py",
+  "scripts/importing/import_book_ocr_layout_first.py",
+  "scripts/phase110k_p_b_alignment_writeback_plan.py",
+  "scripts/phase110k_p_c_import_time_alignment_batch_dry_run.py",
+  "scripts/phase110k_p_d_import_alignment_hook_dry_run.py",
+  "scripts/phase110k_p_f_batch_alignment_writeback_apply.py",
+  "scripts/phase110k_p_inspiration_match_readiness_dry_run.py",
+  "scripts/zotero/phase110k_p_b_alignment_writeback_plan.py",
+  "scripts/zotero/phase110k_p_c_import_time_alignment_batch_dry_run.py",
+  "scripts/zotero/phase110k_p_d_import_alignment_hook_dry_run.py",
+  "scripts/zotero/phase110k_p_f_batch_alignment_writeback_apply.py",
+  "scripts/zotero/phase110k_p_inspiration_match_readiness_dry_run.py",
+]);
+
 export const PACKAGED_RESOURCE_CONTRACT = Object.freeze([
   "resources/search-assets/frontend/index.html",
   "resources/search-assets/design-system/tokens.css",
@@ -21,6 +37,7 @@ export const PACKAGED_RESOURCE_CONTRACT = Object.freeze([
   "resources/app/runtime-project/scripts/runtime/notebook_ai_launcher.py",
   "resources/app/runtime-project/scripts/index/status_zotero_note_vectors.py",
   "resources/app/runtime-project/scripts/index/sync_zotero_note_vectors.py",
+  ...PACKAGED_PYTHON_RUNTIME_MODULES.map((path) => `resources/app/runtime-project/${path}`),
   "resources/app/runtime-project/config/retrieval_query_aliases.json",
   "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/package.json",
   "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/index.js",
@@ -42,6 +59,10 @@ const SOURCE_RESOURCE_CONTRACT = Object.freeze(new Map([
   ["resources/app/runtime-project/scripts/runtime/notebook_ai_launcher.py", resolve(DESKTOP_ROOT, "../../scripts/runtime/notebook_ai_launcher.py")],
   ["resources/app/runtime-project/scripts/index/status_zotero_note_vectors.py", resolve(DESKTOP_ROOT, "../../scripts/index/status_zotero_note_vectors.py")],
   ["resources/app/runtime-project/scripts/index/sync_zotero_note_vectors.py", resolve(DESKTOP_ROOT, "../../scripts/index/sync_zotero_note_vectors.py")],
+  ...PACKAGED_PYTHON_RUNTIME_MODULES.map((path) => [
+    `resources/app/runtime-project/${path}`,
+    resolve(DESKTOP_ROOT, "../..", path),
+  ]),
   ["resources/app/runtime-project/config/retrieval_query_aliases.json", resolve(DESKTOP_ROOT, "../../config/retrieval_query_aliases.json")],
   ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/package.json", resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app/package.json")],
   ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/index.js", resolve(DESKTOP_ROOT, "../notebook_ai_chatgpt_app/dist/server/index.js")],

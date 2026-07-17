@@ -19,10 +19,14 @@ const DATA_PROJECT_ROOT = resolve(
 const FRONTEND_DIST = join(PROJECT_ROOT, "frontend", "dist");
 const packageJson = JSON.parse(await readFile(join(DESKTOP_ROOT, "package.json"), "utf8"));
 const metadata = JSON.parse(await readFile(join(DESKTOP_ROOT, "electron", "product-metadata.json"), "utf8"));
+const candidateName = process.env.SEARCH_RUNTIME_CANDIDATE_NAME || "r5";
+if (!/^[a-z0-9-]{1,16}$/.test(candidateName)) {
+  throw new Error("search_r5_candidate_name_invalid");
+}
 const candidateBase = join(
   DESKTOP_ROOT,
   "dist-candidates",
-  "r5",
+  candidateName,
 );
 const packagedRoot = join(candidateBase, "win-unpacked");
 const packagedFrontend = join(packagedRoot, "resources", "search-assets", "frontend");
@@ -58,6 +62,7 @@ await runNode(join(SCRIPT_DIR, "write-local-config.mjs"), [
   DATA_PROJECT_ROOT,
 ]);
 await verifyPackagedResources(packagedRoot);
+await verifyPackagedPythonImport(packagedRuntime);
 
 const frontendAssets = await compareTrees(FRONTEND_DIST, packagedFrontend);
 const runtimeAggregate = await aggregateTree(packagedRuntime);
@@ -65,7 +70,7 @@ const maxRuntimePathLength = await verifyWindowsRuntimePathLengths(packagedRunti
 const executable = join(packagedRoot, "Search.exe");
 const manifest = {
   status: "ready",
-  candidate: "r5",
+  candidate: candidateName,
   version: packageJson.version,
   buildId: metadata.buildId,
   rendererAssetVersion: metadata.rendererAssetVersion,
@@ -213,6 +218,34 @@ function runNode(script, args = [], cwd = DESKTOP_ROOT) {
     child.once("exit", (code, signal) => {
       if (code === 0) resolvePromise();
       else reject(new Error(`search_r5_packaging_step_failed:${code ?? signal ?? "unknown"}`));
+    });
+  });
+}
+
+function verifyPackagedPythonImport(runtimeRoot) {
+  const pythonExe = process.env.NOTEBOOK_AI_PYTHON_EXE
+    || "D:\\LEARNING\\Tools\\ANACONDA\\envs\\NOTEBOOK_AI\\python.exe";
+  const environment = {
+    ...process.env,
+    PYTHONDONTWRITEBYTECODE: "1",
+    NOTEBOOK_AI_RUNTIME_ROOT: runtimeRoot,
+    NOTEBOOK_AI_DATA_PROJECT_ROOT: DATA_PROJECT_ROOT,
+  };
+  delete environment.NOTEBOOK_AI_PROJECT_ROOT;
+  delete environment.PYTHONPATH;
+  delete environment.NODE_PATH;
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(pythonExe, ["-B", "-c", "import app.main"], {
+      cwd: runtimeRoot,
+      shell: false,
+      stdio: "inherit",
+      windowsHide: true,
+      env: environment,
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolvePromise();
+      else reject(new Error(`search_r5_packaged_python_import_failed:${code ?? signal ?? "unknown"}`));
     });
   });
 }

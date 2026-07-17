@@ -11,12 +11,18 @@ const PROJECT_ROOT = resolve(DESKTOP_ROOT, "../..");
 const electronExe = resolve(DESKTOP_ROOT, "node_modules", "electron", "dist", "electron.exe");
 const probe = resolve(DESKTOP_ROOT, "tests", "fixtures", "packagedStatusProbe.mjs");
 const packagedRoot = resolve(commandArgument("--packaged-root") || "");
-if (!commandArgument("--packaged-root")) throw new Error("search_r3_packaged_root_required");
-const manifestName = existsSync(resolve(packagedRoot, "r4-build-manifest.json"))
-  ? "r4-build-manifest.json"
-  : "r3-build-manifest.json";
+if (!commandArgument("--packaged-root")) throw new Error("search_packaged_root_required");
+const manifestName = commandArgument("--manifest") || [
+  "r5-build-manifest.json",
+  "r4-build-manifest.json",
+  "r3-build-manifest.json",
+].find((candidate) => existsSync(resolve(packagedRoot, candidate)));
+if (!manifestName) throw new Error("search_packaged_manifest_not_found");
 const manifest = JSON.parse(await readFile(resolve(packagedRoot, manifestName), "utf8"));
-const tempRoot = resolve(PROJECT_ROOT, ".codex_tmp", "r3", "packaged-status-dom");
+const tempRoot = resolve(
+  commandArgument("--temp-root")
+    || resolve(PROJECT_ROOT, ".codex_tmp", "r3", "packaged-status-dom"),
+);
 
 const { code, stdout, stderr } = await runElectron();
 assert.equal(code, 0, `R3 packaged status DOM probe failed\n${stdout}\n${stderr}`);
