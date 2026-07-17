@@ -89,7 +89,7 @@ export async function createStartupLoggerForApp(app, {
 
 export async function reportStartupFailure({ error, startupLogger, app, consoleObject = console }) {
   try {
-    consoleObject.error("[Search Desktop] startup failed", error);
+    consoleObject.error("[Search] startup failed", error);
   } catch {
     // stderr failures must not replace the original startup failure.
   }

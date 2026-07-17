@@ -22,9 +22,10 @@ test("Windows packaging avoids privileged symlink extraction and applies Search 
   assert.equal(packageJson.build.win.signAndEditExecutable, false);
   assert.equal(packageJson.version, "0.1.3");
   assert.deepEqual(productMetadata, {
+    productName: "Search",
     version: "0.1.3",
-    buildId: "20260717-formal-runtime-self-contained",
-    rendererAssetVersion: "0.1.3-formal-runtime-self-contained",
+    buildId: "20260717-search-runtime-self-contained-r6-final",
+    rendererAssetVersion: "0.1.3-search-runtime-self-contained-r6-final",
   });
   assert.equal(packageJson.build.electronDist, "node_modules/electron/dist");
   assert.match(packageJson.scripts["package:win:unpacked"], /package-windows-unpacked\.mjs/);

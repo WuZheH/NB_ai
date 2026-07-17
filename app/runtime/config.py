@@ -39,6 +39,7 @@ class RuntimePaths:
     supervisor_stop_file: Path
     control_dir: Path
     runtime_config_file: Path
+    legacy_runtime_config_file: Path
     runtime_log_file: Path
     launcher_script: Path
     note_status_script: Path
@@ -71,7 +72,9 @@ class RuntimePaths:
             or PROJECT_ROOT
         )
         data_root = Path(configured_data_root).resolve()
-        local_root = Path(local_value).expanduser().resolve() / "NOTEBOOK_AI"
+        local_base = Path(local_value).expanduser().resolve()
+        local_root = local_base / "Search"
+        legacy_local_root = local_base / "NOTEBOOK_AI"
         runtime_dir = local_root / "runtime"
         logs_dir = local_root / "logs"
         config_dir = local_root / "config"
@@ -87,6 +90,7 @@ class RuntimePaths:
             supervisor_stop_file=runtime_dir / "stop.request",
             control_dir=runtime_dir / "control",
             runtime_config_file=config_dir / "runtime.json",
+            legacy_runtime_config_file=legacy_local_root / "config" / "runtime.json",
             runtime_log_file=logs_dir / "runtime.jsonl",
             launcher_script=root / "scripts" / "runtime" / "notebook_ai_launcher.py",
             note_status_script=root / "scripts" / "index" / "status_zotero_note_vectors.py",
@@ -189,15 +193,18 @@ class RuntimeConfig:
             env=environment,
         )
         stored: dict[str, Any] = {}
-        if paths.runtime_config_file.is_file():
-            stored = json.loads(paths.runtime_config_file.read_text(encoding="utf-8"))
+        runtime_config_file = paths.runtime_config_file
+        if not runtime_config_file.is_file() and paths.legacy_runtime_config_file.is_file():
+            runtime_config_file = paths.legacy_runtime_config_file
+        if runtime_config_file.is_file():
+            stored = json.loads(runtime_config_file.read_text(encoding="utf-8"))
             if stored.get("schema_version") != RUNTIME_CONFIG_SCHEMA_VERSION:
                 raise ValueError("unsupported runtime configuration schema")
             if _contains_forbidden_secret_key(stored):
                 raise ValueError("runtime_config_contains_forbidden_secret")
         mode = str(environment.get("NOTEBOOK_AI_RUNTIME_MODE") or stored.get("mode") or "local")
         if mode not in {"local", "remote", "hybrid"}:
-            raise ValueError("NOTEBOOK_AI runtime mode must be local, remote, or hybrid")
+            raise ValueError("Search runtime mode must be local, remote, or hybrid")
         python_exe = Path(
             environment.get("NOTEBOOK_AI_PYTHON_EXE")
             or stored.get("python_exe")

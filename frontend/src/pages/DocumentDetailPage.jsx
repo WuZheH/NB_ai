@@ -575,7 +575,7 @@ function UnitProcessingPanel({ document, evidencePreview, inspirationNotes, obje
                 <MetricMini label="Zotero annotations" value={gate.annotationCount} />
                 <MetricMini label="用户笔记" value={gate.userNoteCount} />
                 <MetricMini label="仅高亮证据" value={gate.evidenceOnlyCount} />
-                <MetricMini label="已同步到 NOTEBOOK_AI" value={gate.syncedNoteCount} />
+                <MetricMini label="已同步到 Search" value={gate.syncedNoteCount} />
                 <MetricMini label="note correction gate" value={gate.canCorrectNotes ? "ready" : "blocked"} />
                 <MetricMini label="object candidate gate" value={gate.canGenerateObjects ? "ready" : "blocked"} />
                 <MetricMini label="object candidates count" value={unitObjects.length} />

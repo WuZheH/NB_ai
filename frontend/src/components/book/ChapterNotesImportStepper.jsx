@@ -58,11 +58,11 @@ export default function ChapterNotesImportStepper({
   }, [chapter?.chapter_id, dryRunState?.data, dryRunState?.error, dryRunState?.status, onRunDryRun]);
 
   return (
-    <section className="chapterNotesImportStepper" aria-label="Zotero 笔记导入 NOTEBOOK_AI 线性 Stepper">
+    <section className="chapterNotesImportStepper" aria-label="Zotero 笔记导入 Search 线性 Stepper">
       <div className="chapterNotesImportHeader">
         <div>
           <span>R3 Notes Import Linear Flow</span>
-          <strong>Zotero 笔记导入 NOTEBOOK_AI</strong>
+          <strong>Zotero 笔记导入 Search</strong>
         </div>
         <div className="chapterNotesImportSafety">
           <span>只读读取 Zotero notes</span>
@@ -78,7 +78,7 @@ export default function ChapterNotesImportStepper({
         {[
           "Select note import scope",
           "Zotero notes read-only preflight",
-          "Confirm import NOTEBOOK_AI",
+          "Confirm import Search",
           "Import result / already existing",
           "Enter ChatGPT note correction review mode",
         ].map((label, index) => (
@@ -100,7 +100,7 @@ export default function ChapterNotesImportStepper({
             <MetricMini label="zotero_item_key" value={dryRunData?.zotero_item_key || book?.zotero_item_key || "读取后显示"} />
             <MetricMini label="zotero_attachment_key" value={dryRunData?.zotero_attachment_key || book?.zotero_attachment_key || "读取后显示"} />
           </div>
-          <p className="unitSourceNotice">范围固定为当前 book_chapter；Zotero annotation key 只作为来源证据显示，导入身份以 NOTEBOOK_AI note id 为准。</p>
+          <p className="unitSourceNotice">范围固定为当前 book_chapter；Zotero annotation key 只作为来源证据显示，导入身份以 Search note id 为准。</p>
         </section>
 
         <section className="chapterNotesImportStep">
@@ -109,18 +109,18 @@ export default function ChapterNotesImportStepper({
             <button type="button" onClick={onRunDryRun} disabled={dryRunLoading || !chapter?.chapter_id}>
               {dryRunLoading ? "读取中..." : "读取 Zotero notes"}
             </button>
-            <span>GET /zotero-notes/dry-run；只读预检，不 apply，不写 NOTEBOOK_AI DB，不写 Zotero DB。</span>
+            <span>GET /zotero-notes/dry-run；只读预检，不 apply，不写 Search DB，不写 Zotero DB。</span>
           </div>
           {dryRunState?.status === "error" && <StateMessage title="Zotero notes preflight 失败" body={dryRunState.error} />}
           {dryRunData && <DryRunMetrics data={dryRunData} />}
         </section>
 
         <section className="chapterNotesImportStep">
-          <StepTitle number={3} title="Confirm import NOTEBOOK_AI" status={stepStatuses[2]} />
+          <StepTitle number={3} title="Confirm import Search" status={stepStatuses[2]} />
           {dryRunData ? (
             <>
               {alreadyImported && (
-                <p className="chapterNotesImportSuccess">本章 Zotero 笔记已导入 NOTEBOOK_AI：would_insert=0，would_skip_existing={wouldSkipExisting}。无需再次导入，可直接进入笔记纠错审核。</p>
+                <p className="chapterNotesImportSuccess">本章 Zotero 笔记已导入 Search：would_insert=0，would_skip_existing={wouldSkipExisting}。无需再次导入，可直接进入笔记纠错审核。</p>
               )}
               {wouldBlock > 0 && (
                 <p className="chapterNotesImportDanger">dry-run 发现 blocked annotations={wouldBlock}，本阶段不允许导入。</p>
@@ -134,10 +134,10 @@ export default function ChapterNotesImportStepper({
                       onChange={(event) => onConfirmCheckedChange?.(event.target.checked)}
                       disabled={applyLoading}
                     />
-                    <span>确认只向 NOTEBOOK_AI 导入 {wouldInsert} 条 Zotero notes；confirm_write=true；confirmation_context={CHAPTER_ZOTERO_NOTES_IMPORT_CONTEXT}</span>
+                    <span>确认只向 Search 导入 {wouldInsert} 条 Zotero notes；confirm_write=true；confirmation_context={CHAPTER_ZOTERO_NOTES_IMPORT_CONTEXT}</span>
                   </label>
                   <button type="button" onClick={onConfirmImport} disabled={!canConfirmImport}>
-                    {applyLoading ? "导入中..." : "导入到 NOTEBOOK_AI"}
+                    {applyLoading ? "导入中..." : "导入到 Search"}
                   </button>
                 </>
               )}
@@ -212,7 +212,7 @@ function DryRunMetrics({ data }) {
         <MetricMini label="empty note text" value={data.chapter_empty_note_text_count ?? 0} />
         <MetricMini label="with page" value={data.chapter_annotations_with_page_count ?? 0} />
         <MetricMini label="without page" value={data.chapter_annotations_without_page_count ?? 0} />
-        <MetricMini label="NOTEBOOK_AI existing" value={data.would_skip_existing_count ?? 0} />
+        <MetricMini label="Search existing" value={data.would_skip_existing_count ?? 0} />
         <MetricMini label="would_insert" value={data.would_insert_count ?? 0} />
         <MetricMini label="would_block" value={data.would_block_count ?? 0} />
       </div>

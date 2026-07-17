@@ -209,9 +209,9 @@ def build_phase7a_classification_prompt_preview(package: Mapping[str, Any]) -> s
     )
     return "\n".join(
         [
-            "# NOTEBOOK_AI Phase7A note classification dry-run prompt preview",
+            "# Search Phase7A note classification dry-run prompt preview",
             "",
-            "This prompt preview is for manual ChatGPT or a future controlled-generation gate. Do not call OpenAI from NOTEBOOK_AI in Phase7A.",
+            "This prompt preview is for manual ChatGPT or a future controlled-generation gate. Do not call OpenAI from Search in Phase7A.",
             "",
             "## Task instruction",
             "Classify exactly the 67 reviewed user notes from the merged saved note_correction_review. Return only note_classification_review JSON.",
@@ -425,7 +425,7 @@ def build_note_classification_copy_ready_prompt_legacy(package: Mapping[str, Any
     }
     return "\n".join(
         [
-            "# NOTEBOOK_AI 笔记分类审核输入提示词",
+            "# Search 笔记分类审核输入提示词",
             "",
             "## 审核任务说明",
             "请只执行 note_classification_review。输入来自已保存的 note_correction_review，不是对象候选。",
@@ -433,7 +433,7 @@ def build_note_classification_copy_ready_prompt_legacy(package: Mapping[str, Any
             "",
             "## 禁止事项",
             "禁止生成 object_candidates、relation_candidates、mechanism_review_candidate、机制或 insight。",
-            "禁止写入 NOTEBOOK_AI、Zotero、PDF、tags、数据库或 vector store。",
+            "禁止写入 Search、Zotero、PDF、tags、数据库或 vector store。",
             "",
             "## 输出 JSON schema",
             json.dumps(note_classification_output_schema(), ensure_ascii=False, indent=2),

@@ -38,8 +38,8 @@ export function buildBookChapterNoteFirstWorkflow(gate) {
   return [
     {
       number: 1,
-      label: "读取/导入本章 Zotero notes 到 NOTEBOOK_AI",
-      contractLabel: "1 读取/导入本章 Zotero notes 到 NOTEBOOK_AI",
+      label: "读取/导入本章 Zotero notes 到 Search",
+      contractLabel: "1 读取/导入本章 Zotero notes 到 Search",
       status: gate.hasSyncedNotes ? "done" : "locked",
       statusLabel: gate.hasSyncedNotes ? "done" : "locked",
       reason: gate.syncReason,

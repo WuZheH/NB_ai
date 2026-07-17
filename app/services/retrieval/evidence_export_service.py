@@ -112,7 +112,7 @@ def export_evidence(
     else:
         raise EvidenceWorkflowError(
             "unsupported_evidence_format",
-            "JSON evidence export is available for NOTEBOOK_AI notebook-search fragments.",
+            "JSON evidence export is available for Search notebook-search fragments.",
             status_code=400,
         )
 

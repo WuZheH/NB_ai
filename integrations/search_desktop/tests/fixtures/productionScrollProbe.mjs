@@ -57,6 +57,7 @@ try {
     height: 767,
     useContentSize: true,
     show: false,
+    skipTaskbar: true,
     backgroundColor: "#f5f7fa",
     webPreferences: {
       contextIsolation: true,

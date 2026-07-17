@@ -62,6 +62,7 @@ def main() -> int:
             "TMP": str(temp_dir),
             "PYTHONDONTWRITEBYTECODE": "1",
             "ELECTRON_DISABLE_CRASH_REPORTING": "1",
+            "SEARCH_ELECTRON_TEST_MODE": "1",
             "NOTEBOOK_AI_RUNTIME_ROOT": str(runtime_root),
             "NOTEBOOK_AI_DATA_PROJECT_ROOT": str(data_project_root),
             "NOTEBOOK_AI_PYTHON_EXE": str(python_exe),
@@ -95,6 +96,7 @@ def main() -> int:
                 "--no-first-run",
                 "--disable-breakpad",
                 "--disable-crash-reporter",
+                "--search-test-mode",
             ],
             cwd=str(executable.parent),
             env=environment,
@@ -139,14 +141,14 @@ def main() -> int:
             and window["class"] == "Chrome_WidgetWin_1"
             and "Search" in window["title"]
         ]
-        if not search_windows:
-            raise RuntimeError("headless_cold_start_search_window_missing")
+        if search_windows:
+            raise RuntimeError("headless_cold_start_search_window_visible")
         forbidden = monitor.forbidden_windows()
         if forbidden:
             raise RuntimeError(
                 "headless_cold_start_visible_console:" + json.dumps(forbidden, ensure_ascii=False)
             )
-        log_file = local_app_data / "NOTEBOOK_AI" / "logs" / "runtime.jsonl"
+        log_file = local_app_data / "Search" / "logs" / "runtime.jsonl"
         if not log_file.is_file() or log_file.stat().st_size == 0:
             raise RuntimeError("headless_cold_start_runtime_log_missing")
         components = status.get("components") or {}
@@ -180,6 +182,7 @@ def main() -> int:
             },
             "supervisor_pid": (components.get("supervisor") or {}).get("pid"),
             "visible_search_windows": len(search_windows),
+            "electron_test_mode": "hidden",
             "new_forbidden_windows": forbidden,
             "window_samples": monitor.sample_count,
             "runtime_log": str(log_file),

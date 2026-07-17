@@ -127,13 +127,44 @@ def _config(tmp_path: Path) -> RuntimeConfig:
 
 def test_runtime_paths_are_scoped_to_current_user_local_app_data(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    assert config.paths.runtime_dir == (tmp_path / "local" / "NOTEBOOK_AI" / "runtime").resolve()
-    assert config.paths.logs_dir == (tmp_path / "local" / "NOTEBOOK_AI" / "logs").resolve()
-    assert config.paths.config_dir == (tmp_path / "local" / "NOTEBOOK_AI" / "config").resolve()
+    assert config.paths.runtime_dir == (tmp_path / "local" / "Search" / "runtime").resolve()
+    assert config.paths.logs_dir == (tmp_path / "local" / "Search" / "logs").resolve()
+    assert config.paths.config_dir == (tmp_path / "local" / "Search" / "config").resolve()
+    assert config.paths.legacy_runtime_config_file == (
+        tmp_path / "local" / "NOTEBOOK_AI" / "config" / "runtime.json"
+    ).resolve()
     assert config.python_exe.name == "python.exe"
     assert config.paths.runtime_root == (tmp_path / "project").resolve()
     assert config.paths.data_project_root == config.paths.runtime_root
     assert config.paths.mcp_server_entry.as_posix().endswith("dist/server/index.js")
+
+
+def test_runtime_config_reads_legacy_config_without_copying_it(tmp_path: Path) -> None:
+    local_root = tmp_path / "local"
+    legacy_config = local_root / "NOTEBOOK_AI" / "config" / "runtime.json"
+    legacy_config.parent.mkdir(parents=True)
+    legacy_config.write_text(
+        json.dumps({
+            "schema_version": "notebook_ai.runtime.config.v1",
+            "backend_port": 18080,
+            "mcp_port": 18787,
+        }),
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    config = RuntimeConfig.load(
+        project_root=project,
+        env={
+            "LOCALAPPDATA": str(local_root),
+            "NOTEBOOK_AI_PYTHON_EXE": str(tmp_path / "python.exe"),
+            "NOTEBOOK_AI_NODE_EXE": str(tmp_path / "node.exe"),
+        },
+    )
+    assert config.backend_port == 18080
+    assert config.mcp_port == 18787
+    assert not config.paths.runtime_config_file.exists()
+    assert legacy_config.is_file()
 
 
 def test_runtime_paths_split_packaged_code_from_stable_data(tmp_path: Path) -> None:

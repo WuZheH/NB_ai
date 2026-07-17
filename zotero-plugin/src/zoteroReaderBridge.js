@@ -8,12 +8,12 @@
     return {
       log: function (message) {
         if (zotero && typeof zotero.debug === "function") {
-          zotero.debug("[NOTEBOOK_AI Inspiration] " + message);
+          zotero.debug("[Search Inspiration] " + message);
         }
       },
       warn: function (message) {
         if (zotero && typeof zotero.debug === "function") {
-          zotero.debug("[NOTEBOOK_AI Inspiration warning] " + message);
+          zotero.debug("[Search Inspiration warning] " + message);
         }
       }
     };
@@ -1120,7 +1120,7 @@
       var noteInput = { value: "" };
       var noteAccepted = promptService.prompt(
         null,
-        "Notebook AI Inspiration",
+        "Search Inspiration",
         "Enter inspiration note text:",
         noteInput,
         null,
@@ -1137,7 +1137,7 @@
       var tagsInput = { value: "__kl_real_capture_test__, \u7075\u611f" };
       var tagsAccepted = promptService.prompt(
         null,
-        "Notebook AI Inspiration",
+        "Search Inspiration",
         "Enter tags separated by commas:",
         tagsInput,
         null,

@@ -1178,7 +1178,7 @@ export default function ImportPreviewPage({ state, setState, updateSafety, onNav
       <div className="importReviewBanner">
         <p><strong>统一 PDF 导入会先自动识别文献类型和详情页处理单元。</strong></p>
         <p>普通论文走整篇导入预览；书籍走整本书入库，入库后在详情页按章处理笔记、对象和机制。</p>
-        <p><strong>同时导入 Zotero 原生笔记（论文路径）。</strong> 只读取 Zotero annotation notes；不写 Zotero 原库，不调用 LLM。书籍整本入库默认不自动把 Zotero notes 写入 NOTEBOOK_AI。</p>
+        <p><strong>同时导入 Zotero 原生笔记（论文路径）。</strong> 只读取 Zotero annotation notes；不写 Zotero 原库，不调用 LLM。书籍整本入库默认不自动把 Zotero notes 写入 Search。</p>
         <p>用户确认前不会导入章节正文；系统不会自动生成对象或调用 LLM。</p>
       </div>
 
@@ -1795,7 +1795,7 @@ export default function ImportPreviewPage({ state, setState, updateSafety, onNav
         <div className="importReviewBanner">
           <p><strong>整篇导入流程说明。</strong></p>
           <p>整篇/整本导入会复用已生成的导入前预览；论文调用 commit-paper，书籍调用 commit-book。预览阶段不写核心库；确认入库后写入文档正文与 chunks。</p>
-          <p>Zotero 原生数据只读读取；书籍整本入库默认不把 Zotero notes 写入 NOTEBOOK_AI，也不写 Zotero 原库。</p>
+          <p>Zotero 原生数据只读读取；书籍整本入库默认不把 Zotero notes 写入 Search，也不写 Zotero 原库。</p>
           <p>对象审核工作台和 ChatGPT 输入包是后续手动流程；本页不会调用外部 LLM，也不会自动生成机制。</p>
         </div>
       )}

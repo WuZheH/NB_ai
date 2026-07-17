@@ -1,6 +1,6 @@
 /* ============================================================
    RESEARCH WORKSPACE SHELL
-   NotebookLM-inspired three-panel layout, NOTEBOOK_AI branded.
+   NotebookLM-inspired three-panel layout, Search branded.
    ============================================================ */
 .workspaceShellMode {
   grid-template-columns: minmax(0, 1fr);

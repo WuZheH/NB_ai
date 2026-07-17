@@ -6,6 +6,7 @@ import test from "node:test";
 import { IPC_CHANNELS } from "../electron/ipc/channels.js";
 import { normalizeSettingsPatch } from "../electron/ipc/settingsStore.js";
 import { validateLoopbackUrl } from "../electron/main/config.js";
+import { resolveWindowMode } from "../electron/main/window.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const productMetadata = JSON.parse(await readFile(join(ROOT, "electron", "product-metadata.json"), "utf8"));
@@ -15,9 +16,10 @@ test("product brand is Search while NOTEBOOK_AI runtime compatibility remains", 
   assert.equal(packageJson.productName, "Search");
   assert.equal(packageJson.version, "0.1.3");
   assert.deepEqual(productMetadata, {
+    productName: "Search",
     version: "0.1.3",
-    buildId: "20260717-formal-runtime-self-contained",
-    rendererAssetVersion: "0.1.3-formal-runtime-self-contained",
+    buildId: "20260717-search-runtime-self-contained-r6-final",
+    rendererAssetVersion: "0.1.3-search-runtime-self-contained-r6-final",
   });
   assert.equal(packageJson.devDependencies.electron, "37.2.6");
   const config = await readFile(join(ROOT, "electron", "main", "config.js"), "utf8");
@@ -53,6 +55,8 @@ test("Electron security and lifecycle contracts are explicit", async () => {
   assert.match(windowSource, /contextIsolation:\s*true/);
   assert.match(windowSource, /nodeIntegration:\s*false/);
   assert.match(windowSource, /sandbox:\s*true/);
+  assert.match(windowSource, /skipTaskbar:\s*windowMode\.hidden/);
+  assert.match(windowSource, /if \(!windowMode\.hidden\) window\.show\(\)/);
   assert.match(windowSource, /event\.preventDefault\(\)/);
   assert.match(tray, /打开 Search/);
   assert.match(tray, /完全退出/);
@@ -60,6 +64,20 @@ test("Electron security and lifecycle contracts are explicit", async () => {
   assert.doesNotMatch(tray, /重新启动后台|暂停 ChatGPT 连接|恢复 ChatGPT 连接/);
   const application = await readFile(join(ROOT, "electron", "main", "application.js"), "utf8");
   assert.ok(application.indexOf("await coordinator.ensureReady()") < application.indexOf("await windowController.create()"));
+});
+
+test("automated Electron mode stays hidden while normal and acceptance launches stay visible", () => {
+  assert.deepEqual(resolveWindowMode({ env: {}, argv: ["Search.exe"] }), {
+    testMode: false,
+    finalUserAcceptance: false,
+    hidden: false,
+  });
+  assert.equal(resolveWindowMode({ env: { SEARCH_ELECTRON_TEST_MODE: "1" }, argv: [] }).hidden, true);
+  assert.equal(resolveWindowMode({ env: {}, argv: ["--search-test-mode"] }).hidden, true);
+  assert.equal(resolveWindowMode({
+    env: { SEARCH_ELECTRON_TEST_MODE: "1" },
+    argv: ["--final-user-acceptance"],
+  }).hidden, false);
 });
 
 test("desktop navigation exposes real status and settings routes", async () => {

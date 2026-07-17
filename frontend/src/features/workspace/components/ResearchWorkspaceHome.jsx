@@ -10,12 +10,12 @@ export function NotebookWorkspaceHome({ documentId, homeState, onOpenWorkspace, 
   const sources = homeState.sources || [];
   const machineLearningNotebook = buildMachineLearningNotebook(sources, homeState.status);
   return (
-    <div className="notebookHomePage fullNotebookHomePage" aria-label="NOTEBOOK_AI 中文笔记本主页">
+    <div className="notebookHomePage fullNotebookHomePage" aria-label="Search 中文笔记本主页">
       <header className="notebookHomeTopbar">
         <div>
           <span className="notebookHomeBrandMark">N</span>
           <div className="notebookHomeBrandStack">
-            <strong>NOTEBOOK_AI</strong>
+            <strong>Search</strong>
             <h2>本地科研工作台</h2>
             <span>中文笔记本 · 本地资料聚合 · 只读研究入口</span>
           </div>

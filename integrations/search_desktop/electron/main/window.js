@@ -1,6 +1,16 @@
 import { join } from "node:path";
 
-export function createWindowController({ BrowserWindow, shell, config, rendererOrigin, settingsStore, designTokens }) {
+export function resolveWindowMode({ env = process.env, argv = process.argv } = {}) {
+  const testMode = env.SEARCH_ELECTRON_TEST_MODE === "1" || argv.includes("--search-test-mode");
+  const finalUserAcceptance = (
+    env.SEARCH_FINAL_USER_ACCEPTANCE === "1"
+    || argv.includes("--final-user-acceptance")
+  );
+  const hidden = testMode && !finalUserAcceptance;
+  return Object.freeze({ testMode, finalUserAcceptance, hidden });
+}
+
+export function createWindowController({ BrowserWindow, shell, config, rendererOrigin, settingsStore, designTokens, windowMode = { hidden: false } }) {
   let window = null;
   let isQuitting = false;
   let minimizeToTray = true;
@@ -15,6 +25,7 @@ export function createWindowController({ BrowserWindow, shell, config, rendererO
       minWidth: 900,
       minHeight: 640,
       show: false,
+      skipTaskbar: windowMode.hidden,
       icon: config.desktopIcon,
       backgroundColor: designTokens.background,
       autoHideMenuBar: true,
@@ -37,7 +48,9 @@ export function createWindowController({ BrowserWindow, shell, config, rendererO
         window.hide();
       }
     });
-    window.once("ready-to-show", () => window.show());
+    window.once("ready-to-show", () => {
+      if (!windowMode.hidden) window.show();
+    });
     await openRoute(config.defaultRoute);
     return window;
   }
@@ -56,7 +69,7 @@ export function createWindowController({ BrowserWindow, shell, config, rendererO
       return window && !window.isDestroyed() ? window.webContents : null;
     },
     show() {
-      if (!window) return;
+      if (!window || windowMode.hidden) return;
       if (window.isMinimized()) window.restore();
       window.show();
       window.focus();

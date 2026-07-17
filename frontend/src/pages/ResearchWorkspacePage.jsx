@@ -174,7 +174,7 @@ export default function ResearchWorkspacePage({
     <div className="researchWorkspacePage notebookLmInspiredWorkspace">
       <header className="researchWorkspaceTopbar">
         <div>
-          <p className="workspaceKicker">NOTEBOOK_AI</p>
+          <p className="workspaceKicker">Search</p>
           <h2>机器学习</h2>
           <span>
             概率机器学习与相关资料 · 共 10 个来源 · 当前章节：{state.current_chapter?.title || "8 Optimization"}

@@ -41,7 +41,7 @@ test("startup logger preserves stage and original error details", async () => {
   const logger = createStartupLogger({
     userDataPath,
     version: "0.1.3",
-    buildId: "20260717-formal-runtime-self-contained",
+    buildId: "20260717-search-runtime-self-contained-r6-final",
     isPackaged: true,
     resourcesPath: "D:\\Search\\resources",
     now: () => new Date("2026-07-14T10:00:00.000Z"),
@@ -63,7 +63,7 @@ test("startup logger preserves stage and original error details", async () => {
   assert.equal(entries[1].errorMessage, error.message);
   assert.match(entries[1].errorStack, /search_design_token_missing/);
   assert.equal(entries[1].version, "0.1.3");
-  assert.equal(entries[1].buildId, "20260717-formal-runtime-self-contained");
+  assert.equal(entries[1].buildId, "20260717-search-runtime-self-contained-r6-final");
   assert.equal(entries[1].isPackaged, true);
 });
 
@@ -92,7 +92,7 @@ test("stage completion records the last successful startup stage", async () => {
   const logger = createStartupLogger({
     userDataPath: join(TEST_ROOT, "completed-stage"),
     version: "0.1.3",
-    buildId: "20260717-formal-runtime-self-contained",
+    buildId: "20260717-search-runtime-self-contained-r6-final",
     isPackaged: false,
     resourcesPath: "D:\\Search\\resources",
   });
@@ -138,7 +138,7 @@ test("startup failure reaches stderr, the log, and exit code 1", async () => {
   const logger = createStartupLogger({
     userDataPath: join(TEST_ROOT, "reported-failure"),
     version: "0.1.3",
-    buildId: "20260717-formal-runtime-self-contained",
+    buildId: "20260717-search-runtime-self-contained-r6-final",
     isPackaged: true,
     resourcesPath: "D:\\Search\\resources",
   });
@@ -150,7 +150,7 @@ test("startup failure reaches stderr, the log, and exit code 1", async () => {
     consoleObject: { error: (...args) => calls.push(args) },
     app: { exit: (code) => calls.push(["exit", code]) },
   });
-  assert.equal(calls[0][0], "[Search Desktop] startup failed");
+  assert.equal(calls[0][0], "[Search] startup failed");
   assert.equal(calls[0][1], error);
   assert.deepEqual(calls.at(-1), ["exit", 1]);
   const log = await readFile(logger.logPath, "utf8");

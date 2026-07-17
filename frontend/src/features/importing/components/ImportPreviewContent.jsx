@@ -1360,4 +1360,4 @@ export function isEspcnTitle(value = "") {
     || title.includes("espcn");
 }
 
-export const ESPCN_SEED_APPLY_COMMAND = "D:\\LEARNING\\Tools\\ANACONDA\\envs\\NOTEBOOK_AI\\python.exe scripts\\phase110k_r2_seed_espcn_frontend_acceptance_notes.py --db-path data/db/research_memory.db --seed-json data/seeds/espcn10_frontend_acceptance_notes.json --apply --json";
+export const ESPCN_SEED_APPLY_COMMAND = "<Search Python> scripts\\phase110k_r2_seed_espcn_frontend_acceptance_notes.py --db-path data/db/research_memory.db --seed-json data/seeds/espcn10_frontend_acceptance_notes.json --apply --json";

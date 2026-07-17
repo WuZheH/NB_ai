@@ -152,7 +152,7 @@ export default function ChapterNoteClassificationPanel({
 export function buildNoteClassificationCopyPrompt(payload) {
   if (payload?.copy_ready_prompt) return payload.copy_ready_prompt;
   return [
-    "# NOTEBOOK_AI 笔记分类审核输入提示词",
+    "# Search 笔记分类审核输入提示词",
     "",
     "请只执行 note_classification_review。禁止生成 object/relation/mechanism。",
     "",

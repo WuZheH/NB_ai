@@ -244,7 +244,7 @@ function NoteCorrectionHumanAuditWorkbench({
           <span>human audit workbench</span>
           <strong>人工审计工作台</strong>
         </div>
-        <p>人工审计操作不会自动写数据库；只有显式点击保存按钮才写 NOTEBOOK_AI review 表，且不会写 Zotero。</p>
+        <p>人工审计操作不会自动写数据库；只有显式点击保存按钮才写 Search review 表，且不会写 Zotero。</p>
         <p>最终新笔记是未来写回 Zotero 的候选文本。</p>
         <p>写回 Zotero 必须在下一阶段通过 Zotero 插件显式确认。</p>
       </div>
@@ -515,10 +515,10 @@ function NoteCorrectionAuditSavePanel({
     <section className="noteCorrectionAuditSavePanel" aria-label="保存人工审计结果">
       <div className="noteCorrectionAuditHeader">
         <div>
-          <span>NOTEBOOK_AI persistence</span>
-          <strong>保存人工审计结果到 NOTEBOOK_AI</strong>
+          <span>Search persistence</span>
+          <strong>保存人工审计结果到 Search</strong>
         </div>
-        <p>只保存 NOTEBOOK_AI 内部 correction review；不写 Zotero，不写 vector store，不生成 classification/object/relation/mechanism。</p>
+        <p>只保存 Search 内部 correction review；不写 Zotero，不写 vector store，不生成 classification/object/relation/mechanism。</p>
       </div>
       <div className="unitProcessingMetrics">
         <MetricMini label="confirmed_items" value={`${summary.confirmed_items} / ${summary.total_items}`} />
@@ -558,9 +558,9 @@ function NoteCorrectionAuditSavePanel({
       )}
       <div className="noteCorrectionCopyRow">
         <button type="button" onClick={submitSave} disabled={!canSave}>
-          {saving ? "保存中..." : "保存人工审计结果到 NOTEBOOK_AI"}
+          {saving ? "保存中..." : "保存人工审计结果到 Search"}
         </button>
-        <span>点击后只保存到 NOTEBOOK_AI，不写 Zotero。当前不会生成对象、关系、机制。将只保存到 NOTEBOOK_AI，不写 Zotero，不生成对象/关系/机制。</span>
+        <span>点击后只保存到 Search，不写 Zotero。当前不会生成对象、关系、机制。将只保存到 Search，不写 Zotero，不生成对象/关系/机制。</span>
       </div>
       <p className="unitSourceNotice">confirmation_context=save_note_correction_review_after_user_audit</p>
       {saveState?.status === "error" && <StateMessage title="保存请求失败" body={saveState.error} />}

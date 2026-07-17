@@ -483,9 +483,9 @@ def build_phase7g_relation_candidate_prompt_preview(
     preview = relation_candidates[:12]
     return "\n".join(
         [
-            "# NOTEBOOK_AI Phase7G relation candidate dry-run prompt preview",
+            "# Search Phase7G relation candidate dry-run prompt preview",
             "",
-            "This preview is for later manual review only. NOTEBOOK_AI did not call an LLM in Phase7G.",
+            "This preview is for later manual review only. Search did not call an LLM in Phase7G.",
             "",
             "## Task boundary",
             "Use approved object candidates only. Propose relation candidates only.",

@@ -35,14 +35,14 @@ export function BookUnitProcessingPanel({ chapters, dryRuns, onRunDryRun }) {
                 <MetricMini label="Zotero annotations" value={gate.annotationCount} />
                 <MetricMini label="用户笔记" value={gate.userNoteCount} />
                 <MetricMini label="仅高亮证据" value={gate.evidenceOnlyCount} />
-                <MetricMini label="已同步到 NOTEBOOK_AI" value={gate.syncedNoteCount} />
+                <MetricMini label="已同步到 Search" value={gate.syncedNoteCount} />
                 <MetricMini label="note correction gate" value={gate.canCorrectNotes ? "ready" : "blocked"} />
                 <MetricMini label="object candidate gate" value={gate.canGenerateObjects ? "ready" : "blocked"} />
                 <MetricMini label="object candidates count" value={chapter.object_count || 0} />
                 <MetricMini label="reviewed object count" value={gate.reviewedObjectCount} />
                 <MetricMini label="mechanism readiness" value={gate.reviewedObjectCount ? "ready gate" : "blocked"} />
               </div>
-              <p className="unitSourceNotice">Zotero annotations / 用户笔记 / 仅高亮证据均指已同步到 NOTEBOOK_AI 的 notes；source=zotero_plugin 只作为 legacy desktop capture 显示。</p>
+              <p className="unitSourceNotice">Zotero annotations / 用户笔记 / 仅高亮证据均指已同步到 Search 的 notes；source=zotero_plugin 只作为 legacy desktop capture 显示。</p>
               {gate.evidenceOnlyCount > 0 && (
                 <p className="unitEvidenceNotice">有 {gate.evidenceOnlyCount} 条 Zotero 高亮没有笔记内容；不进入笔记纠错/分类审核，但可作为 source-led 原文片段来源。</p>
               )}
@@ -151,7 +151,7 @@ export function BookNoteFirstWorkspace({
     <section className="bookImportWorkspace noteFirstWorkspace">
       <div className="sectionHeader">
         <h3>R3 Notes Import Linear Flow</h3>
-        <span>Zotero 笔记导入 NOTEBOOK_AI</span>
+        <span>Zotero 笔记导入 Search</span>
       </div>
 
       <div className="noteFirstWorkspaceGrid">
@@ -271,13 +271,13 @@ export function BookNoteFirstWorkspace({
           <div className="bookAdvancedStatusBody">
             <div className="noteFirstPanelHeader">
               <span>只读状态诊断</span>
-              <strong>{gate.hasSyncedNotes ? "已导入 NOTEBOOK_AI 或已存在" : "尚未导入 NOTEBOOK_AI"}</strong>
+              <strong>{gate.hasSyncedNotes ? "已导入 Search 或已存在" : "尚未导入 Search"}</strong>
             </div>
             <div className="unitProcessingMetrics">
               <MetricMini label="Zotero annotations" value={gate.annotationCount} />
               <MetricMini label="用户笔记" value={gate.userNoteCount} />
               <MetricMini label="仅高亮证据" value={gate.evidenceOnlyCount} />
-              <MetricMini label="已同步到 NOTEBOOK_AI" value={gate.syncedNoteCount} />
+              <MetricMini label="已同步到 Search" value={gate.syncedNoteCount} />
               <MetricMini label="笔记纠错 gate" value={gate.canCorrectNotes ? "ready" : "blocked"} />
               <MetricMini label="对象候选 gate" value="locked" />
             </div>
@@ -338,7 +338,7 @@ export function ChapterZoteroDryRunCard({ chapter, dryRunState, onRun, compact =
         <button type="button" onClick={onRun} disabled={loading || !chapter?.chapter_id}>
           {buttonLabel}
         </button>
-        <span>只读辅助入口；不 apply，不写 NOTEBOOK_AI DB，不写 Zotero DB，不生成对象候选，不生成机制。</span>
+        <span>只读辅助入口；不 apply，不写 Search DB，不写 Zotero DB，不生成对象候选，不生成机制。</span>
         {dryRunState?.status === "error" && <StateMessage title="dry-run 失败" body={dryRunState.error} />}
         {data && (
           <details className="chapterZoteroDryRunDetails">
@@ -360,7 +360,7 @@ export function ChapterZoteroDryRunCard({ chapter, dryRunState, onRun, compact =
           {buttonLabel}
         </button>
       </div>
-      <p className="unitSourceNotice">只读辅助入口；不 apply，不写 NOTEBOOK_AI DB，不写 Zotero DB，不生成对象候选，不生成机制。</p>
+      <p className="unitSourceNotice">只读辅助入口；不 apply，不写 Search DB，不写 Zotero DB，不生成对象候选，不生成机制。</p>
       {dryRunState?.status === "error" && <StateMessage title="dry-run 失败" body={dryRunState.error} />}
       {data && (
         <details className="chapterZoteroDryRunDetails">

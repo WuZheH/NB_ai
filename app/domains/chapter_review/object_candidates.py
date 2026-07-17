@@ -604,9 +604,9 @@ def build_phase7d_object_candidate_prompt_preview(
 ) -> str:
     return "\n".join(
         [
-            "# NOTEBOOK_AI Phase7D object candidate dry-run prompt preview",
+            "# Search Phase7D object candidate dry-run prompt preview",
             "",
-            "This is a future manual/controlled-generation prompt preview. NOTEBOOK_AI must not call an LLM in Phase7D.",
+            "This is a future manual/controlled-generation prompt preview. Search must not call an LLM in Phase7D.",
             "",
             "## Task boundary",
             "Use the saved note_classification_review to propose object candidate JSON only.",

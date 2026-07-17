@@ -73,7 +73,7 @@ class RealEmbeddingModelEmbedder(BaseEmbedder):
         except ImportError as exc:
             raise RuntimeError(
                 "sentence-transformers is not installed. "
-                "Install dependencies with the NOTEBOOK_AI conda Python first."
+                "Install dependencies with the Search conda Python first."
             ) from exc
 
         try:

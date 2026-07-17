@@ -15,10 +15,12 @@ test("packaged smoke exercises the real Search executable for at least ten secon
   assert.match(smoke, /\.HasExited/);
 });
 
-test("packaged smoke validates window identity and final ready startup stage", () => {
+test("packaged smoke keeps the real window hidden and validates final ready startup stage", () => {
+  assert.match(smoke, /SEARCH_ELECTRON_TEST_MODE = "1"/);
+  assert.match(smoke, /--search-test-mode/);
   assert.match(smoke, /MainWindowHandle/);
-  assert.match(smoke, /MainWindowTitle/);
-  assert.match(smoke, /WindowTitle -notmatch "Search"/);
+  assert.match(smoke, /search_packaged_smoke_window_visible/);
+  assert.match(smoke, /visible_window_count = 0/);
   assert.match(smoke, /event -eq "stage_completed"/);
   assert.match(smoke, /stage -eq "ready"/);
   assert.match(smoke, /lastSuccessfulStage -eq "ready"/);
@@ -27,6 +29,7 @@ test("packaged smoke validates window identity and final ready startup stage", (
 test("packaged smoke keeps all mutable paths inside the task temp root", () => {
   assert.match(smoke, /\.codex_tmp\\search-desktop-startup-0\.1\.3\\packaged-smoke/);
   assert.match(smoke, /--user-data-dir=\$UserData/);
+  assert.match(smoke, /SEARCH_ELECTRON_TEST_MODE/);
   for (const name of ["LOCALAPPDATA", "APPDATA", "TEMP", "TMP"]) {
     assert.match(smoke, new RegExp(`\\$env:${name} =`));
   }

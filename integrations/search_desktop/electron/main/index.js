@@ -1,9 +1,11 @@
 import * as electron from "electron";
 import { createSearchDesktop } from "./application.js";
+import { resolveWindowMode } from "./window.js";
 import { createStartupLoggerForApp, reportStartupFailure } from "./startupLogger.js";
 
 const { app } = electron;
 app.setName("Search");
+const windowMode = resolveWindowMode();
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -15,7 +17,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady()
     .then(async () => {
       startupLogger = await createStartupLoggerForApp(app);
-      desktop = await createSearchDesktop(electron, { startupLogger });
+      desktop = await createSearchDesktop(electron, { startupLogger, windowMode });
     })
     .catch(async (error) => {
       await reportStartupFailure({ error, startupLogger, app });

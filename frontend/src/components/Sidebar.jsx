@@ -41,7 +41,7 @@ export default function Sidebar({ view, onSelectNav }) {
       <div className="brand">
         <div className="brandMark">N</div>
         <div className="brandText">
-          <h1>NOTEBOOK_AI</h1>
+          <h1>Search</h1>
           <span>本地科研工作台</span>
         </div>
       </div>

@@ -10,7 +10,7 @@ import { createTrayController } from "../tray/createTray.js";
 import { loadSearchDesignTokens } from "./designTokens.js";
 import { STARTUP_STAGE } from "./startupLogger.js";
 
-export async function createSearchDesktop(electron, { startupLogger } = {}) {
+export async function createSearchDesktop(electron, { startupLogger, windowMode } = {}) {
   const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, shell } = electron;
   await startStage(startupLogger, STARTUP_STAGE.CONFIG_RESOLVED);
   const config = resolveDesktopConfig({
@@ -49,6 +49,7 @@ export async function createSearchDesktop(electron, { startupLogger } = {}) {
     rendererOrigin,
     settingsStore: settings,
     designTokens,
+    windowMode,
   });
   const unregisterIpc = registerIpcHandlers({
     ipcMain,

@@ -55,6 +55,7 @@ async function run() {
       width: 1200,
       height: 820,
       show: false,
+      skipTaskbar: true,
       webPreferences: {
         preload: PRELOAD,
         contextIsolation: true,

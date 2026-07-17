@@ -109,7 +109,7 @@ def _record(
 
 
 def _markdown(records: list[dict[str, Any]], *, query: str | None) -> str:
-    lines = ["# NOTEBOOK_AI Evidence Export", ""]
+    lines = ["# Search Evidence Export", ""]
     if query:
         lines.extend([f"Query: {_single_line(query)}", ""])
     for index, record in enumerate(records, start=1):

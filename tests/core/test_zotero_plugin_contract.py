@@ -24,7 +24,7 @@ def test_zotero_plugin_files_and_manifest_contract_exist() -> None:
         assert (PLUGIN_ROOT / relative_path).is_file(), relative_path
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["name"] == "Notebook AI Inspiration"
+    assert manifest["name"] == "Search Inspiration"
     assert manifest["applications"]["zotero"]["id"] == "notebook-ai-inspiration@notebook-ai.local"
 
 

@@ -187,7 +187,7 @@ def _to_notebook_fragment(
             zotero_url=zotero_url,
             can_open_pdf=pdf_url is not None,
             can_open_zotero=zotero_url is not None,
-            pdf_disabled_reason=None if pdf_url else "No mapped NOTEBOOK_AI PDF document is available.",
+            pdf_disabled_reason=None if pdf_url else "No mapped Search PDF document is available.",
             zotero_disabled_reason=None if zotero_url else "No Zotero item or attachment URI is available.",
         ),
     )

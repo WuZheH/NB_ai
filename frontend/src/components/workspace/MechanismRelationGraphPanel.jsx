@@ -83,7 +83,7 @@ export default function MechanismRelationGraphPanel({
         <WorkspaceStatusPill status="read_only">图谱只读</WorkspaceStatusPill>
       </div>
 
-      <section className="workspaceStudioToolGrid" aria-label="Notebook AI Studio tools">
+      <section className="workspaceStudioToolGrid" aria-label="Search Studio tools">
         <button
           type="button"
           className={studioToolCardClass(activeTool === "graph")}

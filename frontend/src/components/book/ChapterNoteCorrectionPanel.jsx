@@ -395,7 +395,7 @@ export function buildNoteCorrectionCopyPrompt(payload) {
     },
   };
   return [
-    "# NOTEBOOK_AI 笔记纠错审核输入提示词",
+    "# Search 笔记纠错审核输入提示词",
     "",
     "## 审核任务说明",
     "这里生成的是发给 ChatGPT 的输入，不是审核结果。请只做 note_correction_review，并返回 JSON。",
@@ -404,7 +404,7 @@ export function buildNoteCorrectionCopyPrompt(payload) {
     "",
     "## 禁止事项",
     "禁止生成 classification/object/relation/mechanism。",
-    "禁止写入 NOTEBOOK_AI、Zotero、PDF、tags、数据库或 vector store。",
+    "禁止写入 Search、Zotero、PDF、tags、数据库或 vector store。",
     "",
     "## 输出 JSON schema",
     JSON.stringify(schema, null, 2),

@@ -62,7 +62,7 @@ def build_zotero_markdown_export(
     if len(candidates) > 1:
         raise ZoteroMarkdownExportError(
             "ambiguous_attachment_mapping",
-            "Multiple NOTEBOOK_AI documents map to this Zotero attachment; pass a more specific key or resolve the duplicate import.",
+            "Multiple Search documents map to this Zotero attachment; pass a more specific key or resolve the duplicate import.",
             status_code=409,
             candidates=[_candidate_public(item) for item in candidates],
         )
@@ -76,7 +76,7 @@ def build_zotero_markdown_export(
     if not chunks and not notes:
         raise ZoteroMarkdownExportError(
             "attachment_export_not_found",
-            "No NOTEBOOK_AI document chunks or Zotero inspiration notes were found for this attachment.",
+            "No Search document chunks or Zotero inspiration notes were found for this attachment.",
             status_code=404,
         )
 
@@ -274,7 +274,7 @@ def _render_markdown(
     notes: list[dict[str, Any]],
 ) -> str:
     lines: list[str] = [
-        f"# NOTEBOOK_AI Export: {metadata['title']}",
+        f"# Search Export: {metadata['title']}",
         "",
         "## Metadata",
         f"- document_id: {_field(metadata.get('document_id'))}",
@@ -458,7 +458,7 @@ def _write_export_file(metadata: Mapping[str, Any], markdown: str) -> Path:
 
 def _safe_slug(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-").lower()
-    return slug[:80] or "notebook-ai-export"
+    return slug[:80] or "search-export"
 
 
 def _candidate_public(item: Mapping[str, Any]) -> dict[str, Any]:

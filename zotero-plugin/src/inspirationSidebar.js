@@ -1,7 +1,7 @@
 (function (ns) {
   "use strict";
 
-  var SIDEBAR_TITLE = "Notebook AI Inspirations";
+  var SIDEBAR_TITLE = "Search Inspirations";
   var HIGHLIGHT_UNAVAILABLE_WARNING = "highlight unavailable";
   var DIALOG_HOST_WAIT_ATTEMPTS = 20;
   var DIALOG_HOST_WAIT_INTERVAL_MS = 50;

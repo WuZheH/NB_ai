@@ -9,7 +9,7 @@ from app.services import mechanism_draft_prompt_service
 EXPORT_MODE = "manual_chatgpt_prompt"
 USER_INSTRUCTIONS = [
     "Copy this prompt into ChatGPT.",
-    "Paste the JSON response back into NOTEBOOK_AI.",
+    "Paste the JSON response back into Search.",
     "Do not edit the original note_text or selected_text fields.",
 ]
 
@@ -460,8 +460,8 @@ def _unique_ints(values: list[Any]) -> list[int]:
 def _manual_workflow_header() -> str:
     return (
         "MANUAL CHATGPT COPY/PASTE WORKFLOW\n"
-        "Copy this complete prompt into ChatGPT. Paste back JSON only into NOTEBOOK_AI for validation.\n"
-        "NOTEBOOK_AI does not call a model and will not automatically accept or persist the draft.\n\n"
+        "Copy this complete prompt into ChatGPT. Paste back JSON only into Search for validation.\n"
+        "Search does not call a model and will not automatically accept or persist the draft.\n\n"
     )
 
 

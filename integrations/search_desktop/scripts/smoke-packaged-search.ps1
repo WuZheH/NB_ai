@@ -216,6 +216,7 @@ $OriginalEnvironment = @{
     TEMP = $env:TEMP
     TMP = $env:TMP
     ELECTRON_DISABLE_CRASH_REPORTING = $env:ELECTRON_DISABLE_CRASH_REPORTING
+    SEARCH_ELECTRON_TEST_MODE = $env:SEARCH_ELECTRON_TEST_MODE
     NOTEBOOK_AI_RUNTIME_ROOT = $env:NOTEBOOK_AI_RUNTIME_ROOT
     NOTEBOOK_AI_DATA_PROJECT_ROOT = $env:NOTEBOOK_AI_DATA_PROJECT_ROOT
     NOTEBOOK_AI_PROJECT_ROOT = $env:NOTEBOOK_AI_PROJECT_ROOT
@@ -235,6 +236,7 @@ try {
     $env:TEMP = $TempDirectory
     $env:TMP = $TempDirectory
     $env:ELECTRON_DISABLE_CRASH_REPORTING = "1"
+    $env:SEARCH_ELECTRON_TEST_MODE = "1"
     $env:NOTEBOOK_AI_RUNTIME_ROOT = $RuntimeRoot
     $env:NOTEBOOK_AI_DATA_PROJECT_ROOT = $ProjectRoot
     Remove-Item "Env:NOTEBOOK_AI_PROJECT_ROOT" -ErrorAction SilentlyContinue
@@ -251,6 +253,7 @@ try {
         "--no-first-run",
         "--disable-breakpad",
         "--disable-crash-reporter"
+        "--search-test-mode"
     )
     $StartedAt = Get-Date
     $SearchProcess = Start-Process `
@@ -278,7 +281,7 @@ try {
         throw "search_packaged_smoke_process_identity_mismatch"
     }
 
-    $WindowProcess = $null
+    $VisibleWindowProcesses = @()
     $ReadyEntries = @()
     $WindowDeadline = (Get-Date).AddSeconds($RuntimeReadyTimeoutSeconds)
     while ((Get-Date) -lt $WindowDeadline) {
@@ -296,14 +299,14 @@ try {
                 $_.lastSuccessfulStage -eq "ready"
             })
         }
+        $VisibleWindowProcesses = @()
         foreach ($Candidate in @(Get-ExactSearchProcesses -ExpectedExecutable $ExecutablePath)) {
             $CandidateProcess = Get-Process -Id ([int]$Candidate.ProcessId) -ErrorAction SilentlyContinue
             if ($CandidateProcess -and [int64]$CandidateProcess.MainWindowHandle -ne 0) {
-                $WindowProcess = $CandidateProcess
-                break
+                $VisibleWindowProcesses += $CandidateProcess
             }
         }
-        if ($WindowProcess -and $ReadyEntries.Count -gt 0) { break }
+        if ($ReadyEntries.Count -gt 0) { break }
         Start-Sleep -Milliseconds 250
     }
     if (-not (Test-Path -LiteralPath $StartupLog -PathType Leaf)) {
@@ -312,13 +315,8 @@ try {
     if ($ReadyEntries.Count -eq 0) {
         throw "search_packaged_smoke_ready_stage_missing"
     }
-    if (-not $WindowProcess) {
-        throw "search_packaged_smoke_window_missing"
-    }
-    $WindowHandle = [int64]$WindowProcess.MainWindowHandle
-    $WindowTitle = [string]$WindowProcess.MainWindowTitle
-    if ($WindowTitle -notmatch "Search") {
-        throw "search_packaged_smoke_window_title_invalid"
+    if ($VisibleWindowProcesses.Count -gt 0) {
+        throw "search_packaged_smoke_window_visible"
     }
 
     # A second launch must hand off to the existing single instance without
@@ -353,8 +351,8 @@ try {
         status = "ready"
         pid = $SearchProcess.Id
         runtime_seconds = $RuntimeSeconds
-        main_window_handle = $WindowHandle
-        main_window_title = $WindowTitle
+        visible_window_count = 0
+        electron_test_mode = "hidden"
         duplicate_instance_reused = $true
         startup_log = $StartupLog
         last_startup_stage = "ready"

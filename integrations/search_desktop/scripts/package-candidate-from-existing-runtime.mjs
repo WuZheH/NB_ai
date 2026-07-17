@@ -78,6 +78,7 @@ process.stdout.write(`${JSON.stringify({
   status: "ready",
   output,
   executable: join(output, "Search.exe"),
+  productName: metadata.productName,
   version: packageJson.version,
   buildId: metadata.buildId,
   projectRoot: PROJECT_ROOT,

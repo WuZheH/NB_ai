@@ -12,7 +12,7 @@
   elements.refresh.textContent = isSettings ? "重新读取" : "重新检查";
 
   if (!bridge) {
-    elements.summary.textContent = "当前不是 Search Desktop 环境。";
+    elements.summary.textContent = "当前不是 Search 环境。";
     elements.refresh.disabled = true;
     return;
   }

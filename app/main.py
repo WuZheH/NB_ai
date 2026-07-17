@@ -45,7 +45,7 @@ def create_app() -> FastAPI:
         enable_mechanism_draft_candidate_writes=False,
     )
     app = FastAPI(
-        title="NOTEBOOK_AI Local Product API",
+        title="Search Local Product API",
         version="16A",
         description="Local-first product API shell for safe read and dry-run workflows.",
         lifespan=lifespan,

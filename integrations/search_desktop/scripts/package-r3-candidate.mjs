@@ -44,6 +44,7 @@ const executable = join(packagedRoot, "Search.exe");
 const manifest = {
   status: "ready",
   candidate: "r3",
+  productName: metadata.productName,
   version: packageJson.version,
   buildId: metadata.buildId,
   rendererAssetVersion: metadata.rendererAssetVersion,

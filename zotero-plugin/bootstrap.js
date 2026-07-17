@@ -10,23 +10,23 @@ var NOTEBOOK_AI_LIBRARY_MENU_ITEMS = [];
 
 var PLUGIN_VERSION = "0.1.0";
 var CAPTURE_MENU_ITEM_ID = "notebook-ai-inspiration-capture-selection";
-var CAPTURE_MENU_LABEL = "Notebook AI Inspiration: Capture Current Selection";
+var CAPTURE_MENU_LABEL = "Search Inspiration: Capture Current Selection";
 var PROMPT_CAPTURE_MENU_ITEM_ID = "notebook-ai-inspiration-capture-selection-prompt";
-var PROMPT_CAPTURE_MENU_LABEL = "Notebook AI Inspiration: Capture Selection with Prompt";
+var PROMPT_CAPTURE_MENU_LABEL = "Search Inspiration: Capture Selection with Prompt";
 var LIST_MENU_ITEM_ID = "notebook-ai-inspiration-list-current-notes";
-var LIST_MENU_LABEL = "Notebook AI Inspiration: List Current Attachment Notes";
+var LIST_MENU_LABEL = "Search Inspiration: List Current Attachment Notes";
 var SIDEBAR_MENU_ITEM_ID = "notebook-ai-inspiration-open-notes-sidebar";
-var SIDEBAR_MENU_LABEL = "Notebook AI Inspiration: Open Notes Sidebar";
+var SIDEBAR_MENU_LABEL = "Search Inspiration: Open Notes Sidebar";
 var REFRESH_MENU_ITEM_ID = "notebook-ai-inspiration-refresh-notes";
-var REFRESH_MENU_LABEL = "Notebook AI Inspiration: Refresh Notes";
+var REFRESH_MENU_LABEL = "Search Inspiration: Refresh Notes";
 var COPY_MARKDOWN_MENU_ITEM_ID = "notebook-ai-inspiration-copy-current-pdf-markdown";
-var COPY_MARKDOWN_MENU_LABEL = "Notebook AI Inspiration: Copy Current PDF Markdown";
+var COPY_MARKDOWN_MENU_LABEL = "Search Inspiration: Copy Current PDF Markdown";
 var SAVE_MARKDOWN_MENU_ITEM_ID = "notebook-ai-inspiration-save-current-pdf-markdown";
-var SAVE_MARKDOWN_MENU_LABEL = "NOTEBOOK_AI: Save Current PDF Markdown";
+var SAVE_MARKDOWN_MENU_LABEL = "Search: Save Current PDF Markdown";
 var LIBRARY_EXPORT_MARKDOWN_MENU_ITEM_ID = "notebook-ai-export-markdown-selected-pdf";
-var LIBRARY_EXPORT_MARKDOWN_MENU_LABEL = "NOTEBOOK_AI: Export Markdown for Selected PDF";
+var LIBRARY_EXPORT_MARKDOWN_MENU_LABEL = "Search: Export Markdown for Selected PDF";
 var TOOLS_MENU_ITEM_ID = "notebook-ai-inspiration-run-smoke-sync";
-var TOOLS_MENU_LABEL = "Notebook AI Inspiration: Run Smoke Sync";
+var TOOLS_MENU_LABEL = "Search Inspiration: Run Smoke Sync";
 
 var MODULE_PATHS = [
   "src/inspirationStore.js",
@@ -336,7 +336,7 @@ async function onToolsMenuRefreshCommand() {
 async function onToolsMenuCopyMarkdownCommand() {
   try {
     var result = await Zotero.NotebookAIInspirationPlugin.copyCurrentPdfMarkdown();
-    showMarkdownExportResult("NOTEBOOK_AI Markdown Copy", result);
+    showMarkdownExportResult("Search Markdown Copy", result);
     log("tools menu copy Markdown result: " + JSON.stringify({
       status: result.status,
       copy_status: result.copy_status || null,
@@ -351,7 +351,7 @@ async function onToolsMenuCopyMarkdownCommand() {
 async function onToolsMenuSaveMarkdownCommand() {
   try {
     var result = await Zotero.NotebookAIInspirationPlugin.saveCurrentPdfMarkdown();
-    showMarkdownExportResult("NOTEBOOK_AI Current PDF Markdown", result);
+    showMarkdownExportResult("Search Current PDF Markdown", result);
     log("tools menu save Markdown result: " + JSON.stringify({
       status: result.status,
       output_path: result.output_path || null,
@@ -365,7 +365,7 @@ async function onToolsMenuSaveMarkdownCommand() {
 async function onLibraryMenuExportMarkdownCommand() {
   try {
     var result = await Zotero.NotebookAIInspirationPlugin.saveMarkdownForSelectedLibraryPdf();
-    showMarkdownExportResult("NOTEBOOK_AI Selected PDF Markdown", result);
+    showMarkdownExportResult("Search Selected PDF Markdown", result);
     log("library menu export Markdown result: " + JSON.stringify({
       status: result.status,
       error: result.error_code || result.error || null,
@@ -376,7 +376,7 @@ async function onLibraryMenuExportMarkdownCommand() {
     }));
   } catch (error) {
     log("library menu export Markdown failed: " + String(error));
-    showMarkdownExportResult("NOTEBOOK_AI Selected PDF Markdown", {
+    showMarkdownExportResult("Search Selected PDF Markdown", {
       status: "FAILED",
       error: "menu_export_failed",
       error_message: String(error)
@@ -471,6 +471,6 @@ function firstExistingElement(document, ids) {
 
 function log(message) {
   if (typeof Zotero !== "undefined" && typeof Zotero.debug === "function") {
-    Zotero.debug("[NOTEBOOK_AI Inspiration] " + message);
+    Zotero.debug("[Search Inspiration] " + message);
   }
 }

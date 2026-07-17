@@ -1011,7 +1011,7 @@ def build_note_correction_scoped_copy_ready_prompt(package: Mapping[str, Any]) -
     chatgpt_package = _chatgpt_input_package(package)
     return "\n".join(
         [
-            "# NOTEBOOK_AI 笔记纠错审核输入提示词",
+            "# Search 笔记纠错审核输入提示词",
             "",
             "## 审核任务说明",
             "这里生成的是发给 ChatGPT 的输入，不是审核结果。请只做 note_correction_review，并返回 JSON。",
@@ -1028,7 +1028,7 @@ def build_note_correction_scoped_copy_ready_prompt(package: Mapping[str, Any]) -
             "禁止 classification。",
             "禁止生成 object_candidates、relation_candidates、mechanism_review_candidate。",
             "禁止生成 object/relation/mechanism 或 insight。",
-            "禁止声称已经写入 NOTEBOOK_AI、Zotero、PDF、tags、数据库或 vector store。",
+            "禁止声称已经写入 Search、Zotero、PDF、tags、数据库或 vector store。",
             "",
             "## PN68YPTT unmatched warning",
             pn68_warning,
@@ -2402,7 +2402,7 @@ def _validate_pn68_warning(items: list[Mapping[str, Any]], errors: list[str]) ->
         errors.append("PN68YPTT item is required")
         return
     if not pn68.get("matched_expected_note_id"):
-        errors.append("PN68YPTT must match a legal NOTEBOOK_AI note identity")
+        errors.append("PN68YPTT must match a legal Search note identity")
     status = str(pn68.get("correction_status") or "")
     issue_type = str(pn68.get("issue_type") or "")
     reviewer_warning = str(pn68.get("reviewer_warning") or "")
