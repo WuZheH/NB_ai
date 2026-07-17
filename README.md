@@ -80,10 +80,9 @@ conda env create -f .\environment.yml
 conda activate search
 $env:SEARCH_PYTHON = (Get-Command python.exe).Source
 $env:SEARCH_NODE = (Get-Command node.exe).Source
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows.ps1 -CheckOnly
 ```
 
-若需要由项目脚本安装锁定依赖，必须先激活非 base Conda 环境或使用项目内 `.venv`，然后显式执行：
+接下来选择一种依赖恢复方式。若由项目脚本安装全部锁定依赖，必须先激活非 base Conda 环境或使用项目内 `.venv`，然后显式执行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows.ps1 -Install
@@ -96,6 +95,12 @@ npm --prefix .\frontend ci --cache .\.codex_tmp\npm-cache --no-audit --no-fund
 npm --prefix .\integrations\search_desktop ci --cache .\.codex_tmp\npm-cache --no-audit --no-fund
 npm --prefix .\integrations\notebook_ai_chatgpt_app ci --cache .\.codex_tmp\npm-cache --no-audit --no-fund
 npm --prefix .\packages\search-design-system ci --cache .\.codex_tmp\npm-cache --no-audit --no-fund
+```
+
+依赖恢复完成后再运行环境检查：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows.ps1 -CheckOnly
 ```
 
 构建并启动开发版：
