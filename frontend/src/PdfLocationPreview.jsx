@@ -48,8 +48,12 @@ function PdfLocationPreview({
   const manualZoomKeyRef = useRef("");
   const pendingFocusRef = useRef(null);
   const autoFitKeyRef = useRef("");
+  const renderAttemptRef = useRef(0);
   const [scale, setScale] = useState(DEFAULT_SCALE);
+  const [autoFitState, setAutoFitState] = useState({ pdfKey: "", scale: null });
+  const [completedFocusKey, setCompletedFocusKey] = useState("");
   const [renderState, setRenderState] = useState({
+    attempt: 0,
     status: "idle",
     width: 0,
     height: 0,
@@ -90,6 +94,7 @@ function PdfLocationPreview({
 
   const canFocusHighlight = shouldShowHighlights && rects.length > 0 && !isApproximateRegion;
   const focusMode = isLayoutRegion ? "layout" : "exact";
+  const pdfSelectionKey = `${resolvedPdfUrl}:${pdfPage || ""}`;
   const focusKey = useMemo(() => {
     if (!canFocusHighlight || !pdfPage) return "";
     const rectKey = rects
@@ -103,6 +108,31 @@ function PdfLocationPreview({
       rectKey
     ].join(":");
   }, [canFocusHighlight, chunkId, pdfPage, location?.locator_status, location?.status, location?.visual_mode, rects]);
+  const renderMatchesSelection = renderState.status === "ready"
+    && renderState.pageNumber === pdfPage
+    && Number.isFinite(renderState.scale)
+    && Math.abs(renderState.scale - scale) < 0.001;
+  const canvasDimensionsReady = renderState.width > 0
+    && renderState.height > 0
+    && renderState.backingWidth > 0
+    && renderState.backingHeight > 0;
+  const manualZoomSettled = Boolean(focusKey && manualZoomKeyRef.current === focusKey);
+  const autoFitSettled = !fitWidthOnLoad
+    || manualZoomSettled
+    || (autoFitState.pdfKey === pdfSelectionKey
+      && Number.isFinite(autoFitState.scale)
+      && Math.abs(autoFitState.scale - scale) < 0.001);
+  const focusSettled = !canFocusHighlight
+    || completedFocusKey === focusKey
+    || manualZoomSettled;
+  const previewReady = Boolean(
+    resolvedPdfUrl
+    && pdfPage
+    && renderMatchesSelection
+    && canvasDimensionsReady
+    && autoFitSettled
+    && focusSettled
+  );
 
   useEffect(() => {
     if (pendingFocusRef.current && pendingFocusRef.current.key !== focusKey) {
@@ -112,18 +142,33 @@ function PdfLocationPreview({
 
   useEffect(() => {
     if (!resolvedPdfUrl || !pdfPage) {
-      setRenderState({ status: "idle", width: 0, height: 0, baseWidth: 0, baseHeight: 0, pageNumber: null, scale: null, outputScale: 1, backingWidth: 0, backingHeight: 0, errorTitle: "", errorMessage: "" });
+      setRenderState({ attempt: 0, status: "idle", width: 0, height: 0, baseWidth: 0, baseHeight: 0, pageNumber: null, scale: null, outputScale: 1, backingWidth: 0, backingHeight: 0, errorTitle: "", errorMessage: "" });
       return undefined;
     }
 
     let cancelled = false;
     let loadingTask;
+    const attempt = renderAttemptRef.current + 1;
+    renderAttemptRef.current = attempt;
+    const stageContext = {
+      attempt,
+      documentId: Number(documentId) || null,
+      chunkId: Number(chunkId) || null,
+      pageNumber: pdfPage,
+      scale
+    };
+    const reportStage = (stage, detail = {}) => emitPdfPreviewStage(stage, {
+      ...stageContext,
+      ...detail
+    });
 
     function fail(stage, error) {
       const diagnostic = pdfPreviewError(stage, error);
       console.error("[PDF preview]", diagnostic.consoleMessage);
+      reportStage("render_failed", { failureStage: stage });
       if (!cancelled) {
         setRenderState({
+          attempt,
           status: "error",
           width: 0,
           height: 0,
@@ -141,8 +186,10 @@ function PdfLocationPreview({
     }
 
     async function renderPage() {
+      reportStage("render_requested");
       setRenderState((current) => ({
         ...current,
+        attempt,
         status: "loading",
         pageNumber: pdfPage,
         scale,
@@ -152,11 +199,13 @@ function PdfLocationPreview({
       let pdfjsLib;
       try {
         pdfjsLib = await loadPdfJsForPreview();
+        reportStage("pdfjs_worker_ready");
       } catch (error) {
         fail("runtime", error);
         return;
       }
       try {
+        reportStage("pdf_document_requested");
         loadingTask = pdfjsLib.getDocument({
           url: resolvedPdfUrl,
           disableRange: true,
@@ -171,6 +220,7 @@ function PdfLocationPreview({
       let pdf;
       try {
         pdf = await loadingTask.promise;
+        reportStage("pdf_document_loaded", { pageCount: Number(pdf.numPages) || null });
       } catch (error) {
         fail("load", error);
         return;
@@ -179,6 +229,7 @@ function PdfLocationPreview({
       let page;
       try {
         page = await pdf.getPage(pdfPage);
+        reportStage("pdf_page_loaded");
       } catch (error) {
         fail("page", error);
         return;
@@ -201,14 +252,23 @@ function PdfLocationPreview({
         canvas.height = backingHeight;
         canvas.style.width = `${viewport.width}px`;
         canvas.style.height = `${viewport.height}px`;
+        reportStage("canvas_dimensions_committed", {
+          cssWidth: viewport.width,
+          cssHeight: viewport.height,
+          backingWidth,
+          backingHeight
+        });
         const renderContext = {
           canvasContext: context,
           viewport,
           transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined
         };
         await page.render(renderContext).promise;
+        reportStage("pdf_page_rendered");
         if (!cancelled) {
+          reportStage("react_ready_scheduled");
           setRenderState({
+            attempt,
             status: "ready",
             width: viewport.width,
             height: viewport.height,
@@ -232,9 +292,55 @@ function PdfLocationPreview({
 
     return () => {
       cancelled = true;
+      reportStage("render_cancelled");
       if (loadingTask) loadingTask.destroy();
     };
   }, [resolvedPdfUrl, pdfPage, scale]);
+
+  useEffect(() => {
+    if (renderState.status !== "ready") return;
+    emitPdfPreviewStage("react_ready_committed", {
+      attempt: renderState.attempt,
+      documentId: Number(documentId) || null,
+      chunkId: Number(chunkId) || null,
+      pageNumber: renderState.pageNumber,
+      scale: renderState.scale,
+      cssWidth: renderState.width,
+      cssHeight: renderState.height,
+      backingWidth: renderState.backingWidth,
+      backingHeight: renderState.backingHeight
+    });
+  }, [renderState, documentId, chunkId]);
+
+  useEffect(() => {
+    if (!previewReady) return;
+    emitPdfPreviewStage("preview_ready_committed", {
+      attempt: renderState.attempt,
+      documentId: Number(documentId) || null,
+      chunkId: Number(chunkId) || null,
+      pageNumber: renderState.pageNumber,
+      scale: renderState.scale,
+      cssWidth: renderState.width,
+      cssHeight: renderState.height,
+      backingWidth: renderState.backingWidth,
+      backingHeight: renderState.backingHeight,
+      highlightStrategy: pdfHighlightMode(location),
+      highlightCount: rects.length
+    });
+  }, [
+    previewReady,
+    renderState.attempt,
+    renderState.pageNumber,
+    renderState.scale,
+    renderState.width,
+    renderState.height,
+    renderState.backingWidth,
+    renderState.backingHeight,
+    documentId,
+    chunkId,
+    location,
+    rects.length
+  ]);
 
   useEffect(() => {
     if (!fitWidthOnLoad || renderState.status !== "ready" || !scrollerRef.current) return;
@@ -244,8 +350,9 @@ function PdfLocationPreview({
     if (autoFitKeyRef.current === fitKey) return;
     autoFitKeyRef.current = fitKey;
     const fitScale = clampScale(Math.max(120, scrollerRef.current.clientWidth - 24) / baseWidth);
+    setAutoFitState({ pdfKey: pdfSelectionKey, scale: fitScale });
     if (Math.abs(fitScale - scale) > 0.05) setZoom(fitScale, { manual: false });
-  }, [fitWidthOnLoad, renderState.status, renderState.baseWidth, pageWidth, resolvedPdfUrl, pdfPage, scale]);
+  }, [fitWidthOnLoad, renderState.status, renderState.baseWidth, pageWidth, resolvedPdfUrl, pdfPage, pdfSelectionKey, scale]);
 
   useEffect(() => {
     if (renderState.status !== "ready" || !canFocusHighlight || !focusKey || !scrollerRef.current || !pageWidth || !pageHeight) return;
@@ -313,6 +420,7 @@ function PdfLocationPreview({
     scroller.scrollTop = scroll.top;
     pendingFocusRef.current = null;
     autoFocusKeyRef.current = focusKey;
+    setCompletedFocusKey(focusKey);
   }, [renderState.status, renderState.width, renderState.height, renderState.pageNumber, renderState.scale, pageWidth, pageHeight, focusKey, scale, pdfPage]);
 
   function setZoom(nextScale, options = {}) {
@@ -346,7 +454,23 @@ function PdfLocationPreview({
   }
 
   return (
-    <section className="pdfPreviewPanel" aria-label="PDF 定位预览" data-testid="pdf-location-preview">
+    <section
+      className="pdfPreviewPanel"
+      aria-label="PDF 定位预览"
+      data-testid="pdf-location-preview"
+      data-preview-status={renderState.status}
+      data-preview-ready={previewReady ? "true" : "false"}
+      data-render-attempt={renderState.attempt}
+      data-page-number={renderState.pageNumber || ""}
+      data-chunk-id={chunkId || ""}
+      data-render-scale={renderState.scale || ""}
+      data-canvas-width={renderState.width || 0}
+      data-canvas-height={renderState.height || 0}
+      data-canvas-backing-width={renderState.backingWidth || 0}
+      data-canvas-backing-height={renderState.backingHeight || 0}
+      data-highlight-strategy={previewReady ? pdfHighlightMode(location) : ""}
+      data-highlight-count={previewReady ? rects.length : 0}
+    >
       <div className="pdfPreviewHeader">
         <div>
           <h3>PDF 定位预览</h3>
@@ -451,6 +575,13 @@ function getPdfOutputScale() {
   const ratio = typeof window !== "undefined" ? Number(window.devicePixelRatio || 1) : 1;
   if (!Number.isFinite(ratio) || ratio <= 0) return 1;
   return Math.min(2, ratio);
+}
+
+function emitPdfPreviewStage(stage, detail = {}) {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+  window.dispatchEvent(new CustomEvent("search:pdf-preview-stage", {
+    detail: { stage, ...detail }
+  }));
 }
 
 function pdfPreviewError(stage, error) {

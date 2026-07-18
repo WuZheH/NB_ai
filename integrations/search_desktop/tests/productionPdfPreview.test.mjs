@@ -16,15 +16,22 @@ const CRASH_DUMPS_TMP = resolve(ROOT, "..", "..", ".codex_tmp", "electron-pdf-pr
 test("production renderer renders a readable local PDF preview at supported desktop sizes", { timeout: 90000 }, async () => {
   for (const viewport of [{ width: 1440, height: 900 }, { width: 1600, height: 900 }, { width: 1920, height: 1080 }]) {
     const { payload, stdout, stderr, code } = await runProbe(viewport);
+    const diagnostic = JSON.stringify({ metrics: payload.metrics, timeline: compactTimeline(payload.timeline) }, null, 2);
     assert.equal(code, 0, `production PDF probe failed\n${stdout}\n${stderr}`);
     assert.equal(payload.status, "ok", `${payload.error || "production PDF metrics missing"}\n${stdout}\n${stderr}`);
-    assert.equal(payload.metrics.canvasPresent, true);
-    assert.equal(payload.metrics.first.strategy, "exact");
+    assert.equal(payload.metrics.canvasPresent, true, diagnostic);
+    assert.equal(payload.metrics.first.strategy, "exact", diagnostic);
     assert.ok(payload.metrics.first.highlightCount > 0, JSON.stringify(payload.metrics));
+    assert.equal(payload.metrics.first.pageNumber, 1, diagnostic);
+    assert.equal(payload.metrics.first.chunkId, 1, diagnostic);
+    assert.ok(payload.metrics.first.canvasRectWidth > 0 && payload.metrics.first.canvasRectHeight > 0, diagnostic);
     assert.equal(payload.metrics.textInitial.allInside, true, JSON.stringify(payload.metrics.textInitial));
     assert.equal(payload.metrics.textInitial.targetIntersected, true, JSON.stringify(payload.metrics.textInitial));
-    assert.equal(payload.metrics.second.strategy, "exact");
+    assert.equal(payload.metrics.second.strategy, "exact", diagnostic);
     assert.equal(payload.metrics.second.highlightCount, 2);
+    assert.equal(payload.metrics.second.pageNumber, 1, diagnostic);
+    assert.equal(payload.metrics.second.chunkId, 2, diagnostic);
+    assert.ok(payload.metrics.zoomed.scale > payload.metrics.second.scale, diagnostic);
     assert.equal(payload.metrics.bboxInitial.allInside, true, JSON.stringify(payload.metrics.bboxInitial));
     assert.equal(payload.metrics.bboxInitial.targetIntersected, true, JSON.stringify(payload.metrics.bboxInitial));
     assert.equal(payload.metrics.bboxZoomed.allInside, true, JSON.stringify(payload.metrics.bboxZoomed));
@@ -48,6 +55,25 @@ test("production renderer renders a readable local PDF preview at supported desk
     console.log("production PDF layout metrics:", JSON.stringify({ requested: viewport, actual: payload.metrics.viewport, layout: payload.metrics.layout }));
   }
 });
+
+function compactTimeline(timeline = []) {
+  return timeline
+    .filter((entry) => entry.kind !== "dom_snapshot" || entry.previewStatus || entry.strategy)
+    .map((entry) => ({
+      sequence: entry.sequence,
+      atMs: entry.atMs,
+      kind: entry.kind,
+      stage: entry.stage,
+      attempt: entry.attempt,
+      previewStatus: entry.previewStatus,
+      chunkId: entry.chunkId,
+      pageNumber: entry.pageNumber,
+      scale: entry.scale,
+      canvas: entry.canvasWidth && entry.canvasHeight ? `${entry.canvasWidth}x${entry.canvasHeight}` : undefined,
+      strategy: entry.strategy,
+      highlightCount: entry.highlightCount,
+    }));
+}
 
 async function runProbe({ width, height }) {
   await mkdir(PROJECT_TMP, { recursive: true });

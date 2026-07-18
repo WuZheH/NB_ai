@@ -64,6 +64,26 @@ test("Search layout gives the established PDF preview a readable desktop rail an
   assert.match(styles, /\.searchPreviewPdfStage \.pdfPreviewScroller[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto/);
 });
 
+test("PDF preview readiness waits for the final rendered selection and committed overlay", async () => {
+  const preview = await readFile(new URL("../src/PdfLocationPreview.jsx", import.meta.url), "utf8");
+  const probe = await readFile(new URL("../../integrations/search_desktop/tests/fixtures/productionPdfPreviewProbe.mjs", import.meta.url), "utf8");
+  for (const contractPart of [
+    "renderMatchesSelection",
+    "canvasDimensionsReady",
+    "autoFitSettled",
+    "focusSettled",
+    "previewReady",
+    'data-preview-ready={previewReady ? "true" : "false"}',
+    'emitPdfPreviewStage("preview_ready_committed"',
+  ]) {
+    assert.match(preview, new RegExp(contractPart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(probe, /waitForPreviewReady\(\{ chunkId: 1, pageNumber: 1, strategy: "exact", highlightCount: 1 \}/);
+  assert.match(probe, /snapshot\?\.ready/);
+  assert.match(probe, /snapshot\.canvasRectWidth > 0/);
+  assert.doesNotMatch(probe, /pdf_first_preview[\s\S]{0,200}document\.querySelector\('\[data-testid="pdf-highlight-layer"\]'\)/);
+});
+
 test("fragment annotation coordinates are only adapted into the legacy coordinate contract", () => {
   const location = adaptFragmentLocator({
     document_id: 10,

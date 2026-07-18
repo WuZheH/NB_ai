@@ -73,7 +73,10 @@ async function runProbe() {
       console.log(`SEARCH_PDF_RENDERER_CONSOLE=${level}:${message}`);
     });
     await window.loadURL(`${rendererOrigin}/retrieval`);
+    await installPdfPreviewTimeline();
+    await recordProbeStage("renderer_ready");
     await waitFor("document.querySelector('[data-testid=\"retrieval-results-scroll\"]')");
+    await recordProbeStage("route_completed");
     await submitSearch("PDF fixture");
     await waitFor("document.querySelectorAll('[data-result-index]').length === 12 || document.querySelector('.localRetrievalState.error')");
     const count = await window.webContents.executeJavaScript("document.querySelectorAll('[data-result-index]').length");
@@ -82,16 +85,19 @@ async function runProbe() {
       throw new Error(`fixture_search_failed:${error}`);
     }
     const before = await window.webContents.executeJavaScript(`(() => { const pane=document.querySelector('[data-testid="retrieval-results-scroll"]'); pane.scrollTop=Math.min(300,pane.scrollHeight-pane.clientHeight); globalThis.__pdfPreviewResultsPane=pane; return pane.scrollTop; })()`);
+    await recordProbeStage("first_result_selected");
     await clickPreview(1);
-    await waitFor("document.querySelector('[data-testid=\"pdf-page-canvas\"]') && document.querySelector('[data-testid=\"pdf-highlight-layer\"]')?.dataset.strategy === 'exact' && document.querySelectorAll('[data-testid=\"pdf-highlight-rect\"]').length > 0", 16000, "pdf_first_preview");
-    const first = await window.webContents.executeJavaScript(`(() => ({ strategy: document.querySelector('[data-testid="pdf-highlight-layer"]')?.dataset.strategy, highlightCount: document.querySelectorAll('[data-testid="pdf-highlight-rect"]').length }))()`);
+    const first = await waitForPreviewReady({ chunkId: 1, pageNumber: 1, strategy: "exact", highlightCount: 1 }, 16000, "pdf_first_preview");
     const textInitial = await waitForHighlightGeometry("text_initial");
+    await recordProbeStage("first_snapshot_completed");
     await clickPreview(2);
-    await waitFor("document.querySelector('[data-testid=\"pdf-highlight-layer\"]')?.dataset.strategy === 'exact' && document.querySelectorAll('[data-testid=\"pdf-highlight-rect\"]').length === 2", 16000, "pdf_second_preview");
+    const second = await waitForPreviewReady({ chunkId: 2, pageNumber: 1, strategy: "exact", highlightCount: 2 }, 16000, "pdf_second_preview");
     const bboxInitial = await waitForHighlightGeometry("bbox_initial");
+    await recordProbeStage("second_snapshot_completed");
     const zoomBefore = await window.webContents.executeJavaScript("Number.parseInt(document.querySelector('.pdfZoomControls span')?.textContent || '0', 10)");
     await window.webContents.executeJavaScript(`(() => { const button=[...document.querySelectorAll('.pdfZoomControls button')].find((item)=>item.textContent.trim()==='+'); if(!button) throw new Error('pdf_zoom_button_missing'); button.click(); })()`);
     await waitFor(`Number.parseInt(document.querySelector('.pdfZoomControls span')?.textContent || '0', 10) > ${zoomBefore}`, 8000, "pdf_zoom");
+    const zoomed = await waitForPreviewReady({ chunkId: 2, pageNumber: 1, strategy: "exact", highlightCount: 2 }, 8000, "pdf_zoom_ready");
     const bboxZoomed = await waitForHighlightGeometry("bbox_zoomed");
     const metrics = await window.webContents.executeJavaScript(`(() => {
       const pane=document.querySelector('[data-testid="retrieval-results-scroll"]');
@@ -111,7 +117,8 @@ async function runProbe() {
         canvasPresent: Boolean(document.querySelector('[data-testid="pdf-page-canvas"]')),
         first: ${JSON.stringify(first)},
         textInitial: ${JSON.stringify(textInitial)},
-        second: { strategy: document.querySelector('[data-testid="pdf-highlight-layer"]')?.dataset.strategy, highlightCount: document.querySelectorAll('[data-testid="pdf-highlight-rect"]').length },
+        second: ${JSON.stringify(second)},
+        zoomed: ${JSON.stringify(zoomed)},
         bboxInitial: ${JSON.stringify(bboxInitial)},
         bboxZoomed: ${JSON.stringify(bboxZoomed)},
         resultScroll: { before: ${JSON.stringify(before)}, after: pane.scrollTop, sameNode: globalThis.__pdfPreviewResultsPane === pane },
@@ -134,9 +141,11 @@ async function runProbe() {
         remoteWorkerRequested: ${JSON.stringify(remoteWorkerRequested)},
       };
     })()`);
-    await sendCallback({ status: "ok", metrics });
+    const timeline = await readPdfPreviewTimeline();
+    await sendCallback({ status: "ok", metrics, timeline });
   } catch (error) {
-    await sendCallback({ status: "error", error: String(error?.stack || error) }).catch(() => {});
+    const timeline = await readPdfPreviewTimeline().catch(() => []);
+    await sendCallback({ status: "error", error: String(error?.stack || error), timeline }).catch(() => {});
     process.exitCode = 1;
   } finally {
     await delay(120);
@@ -145,6 +154,108 @@ async function runProbe() {
     if (fixtureServer) await new Promise((resolvePromise) => fixtureServer.close(resolvePromise));
     app.quit();
   }
+}
+
+async function installPdfPreviewTimeline() {
+  await window.webContents.executeJavaScript(`(() => {
+    const timeline = [];
+    let lastDomSnapshot = "";
+    const record = (kind, detail = {}) => {
+      timeline.push({
+        sequence: timeline.length + 1,
+        atMs: Number(performance.now().toFixed(3)),
+        kind,
+        ...detail,
+      });
+    };
+    const snapshot = () => {
+      const preview = document.querySelector('[data-testid="pdf-location-preview"]');
+      const canvas = document.querySelector('[data-testid="pdf-page-canvas"]');
+      const layer = document.querySelector('[data-testid="pdf-highlight-layer"]');
+      const detail = {
+        previewStatus: preview?.dataset.previewStatus || null,
+        previewReady: preview?.dataset.previewReady || null,
+        attempt: Number(preview?.dataset.renderAttempt || 0),
+        chunkId: Number(preview?.dataset.chunkId || 0),
+        pageNumber: Number(preview?.dataset.pageNumber || 0),
+        canvasWidth: Number(canvas?.width || 0),
+        canvasHeight: Number(canvas?.height || 0),
+        strategy: layer?.dataset.strategy || null,
+        highlightCount: document.querySelectorAll('[data-testid="pdf-highlight-rect"]').length,
+      };
+      const encoded = JSON.stringify(detail);
+      if (encoded === lastDomSnapshot) return;
+      lastDomSnapshot = encoded;
+      record('dom_snapshot', detail);
+    };
+    addEventListener('search:pdf-preview-stage', (event) => {
+      record('preview_stage', event.detail || {});
+      queueMicrotask(snapshot);
+    });
+    const observer = new MutationObserver(snapshot);
+    observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+    globalThis.__searchPdfPreviewTimeline = { timeline, record, snapshot, observer };
+    record('timeline_installed');
+    snapshot();
+  })()`);
+}
+
+async function waitForPreviewReady(expected, timeout = 8000, label = "") {
+  const started = Date.now();
+  let snapshot = null;
+  while (Date.now() - started < timeout) {
+    snapshot = await window.webContents.executeJavaScript(`(() => {
+      const preview = document.querySelector('[data-testid="pdf-location-preview"]');
+      const canvas = document.querySelector('[data-testid="pdf-page-canvas"]');
+      const layer = document.querySelector('[data-testid="pdf-highlight-layer"]');
+      if (!preview || !canvas) return null;
+      return {
+        ready: preview.dataset.previewReady === 'true',
+        status: preview.dataset.previewStatus || '',
+        attempt: Number(preview.dataset.renderAttempt || 0),
+        chunkId: Number(preview.dataset.chunkId || 0),
+        pageNumber: Number(preview.dataset.pageNumber || 0),
+        scale: Number(preview.dataset.renderScale || 0),
+        cssWidth: Number(preview.dataset.canvasWidth || 0),
+        cssHeight: Number(preview.dataset.canvasHeight || 0),
+        backingWidth: Number(preview.dataset.canvasBackingWidth || 0),
+        backingHeight: Number(preview.dataset.canvasBackingHeight || 0),
+        canvasRectWidth: canvas.getBoundingClientRect().width,
+        canvasRectHeight: canvas.getBoundingClientRect().height,
+        strategy: layer?.dataset.strategy || '',
+        highlightCount: document.querySelectorAll('[data-testid="pdf-highlight-rect"]').length,
+      };
+    })()`);
+    if (
+      snapshot?.ready
+      && snapshot.status === "ready"
+      && snapshot.chunkId === expected.chunkId
+      && snapshot.pageNumber === expected.pageNumber
+      && snapshot.strategy === expected.strategy
+      && snapshot.highlightCount === expected.highlightCount
+      && snapshot.cssWidth > 0
+      && snapshot.cssHeight > 0
+      && snapshot.backingWidth > 0
+      && snapshot.backingHeight > 0
+      && snapshot.canvasRectWidth > 0
+      && snapshot.canvasRectHeight > 0
+    ) {
+      await recordProbeStage(`semantic_ready:${label}`);
+      return snapshot;
+    }
+    await delay(40);
+  }
+  const timeline = await readPdfPreviewTimeline();
+  throw new Error(`preview_ready_timeout:${label}:${JSON.stringify({ expected, snapshot, timeline })}`);
+}
+
+async function recordProbeStage(stage) {
+  await window.webContents.executeJavaScript(`globalThis.__searchPdfPreviewTimeline?.record('probe_stage', { stage: ${JSON.stringify(stage)} })`);
+}
+
+async function readPdfPreviewTimeline() {
+  if (!window || window.isDestroyed()) return [];
+  return window.webContents.executeJavaScript("globalThis.__searchPdfPreviewTimeline?.timeline || []");
 }
 
 async function highlightGeometry() {
