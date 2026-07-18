@@ -38,12 +38,6 @@ class RuntimeState(StrEnum):
     FAILED = "failed"
 
 
-class TunnelDriver(StrEnum):
-    OPENAI_SECURE_TUNNEL = "openai_secure_tunnel"
-    CLOUDFLARE_QUICK_DEV = "cloudflare_quick_dev"
-    NONE = "none"
-
-
 class TunnelState(StrEnum):
     NOT_CONFIGURED = "tunnel_not_configured"
     CLIENT_MISSING = "tunnel_client_missing"

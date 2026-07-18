@@ -9,14 +9,13 @@ import webbrowser
 from typing import Any, Sequence
 
 from app.runtime.config import RuntimeConfig
-from app.runtime.contracts import TunnelDriver
 from app.runtime.supervisor import RuntimeController, RuntimeStartupError, RuntimeSupervisor
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="notebook-ai-runtime",
-        description="Manage the local NOTEBOOK_AI FastAPI, MCP, and secure-tunnel runtime.",
+        description="Manage the local Search FastAPI and MCP runtime, with read-only external Tunnel diagnostics.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("start", "ensure-running", "stop", "restart", "status", "doctor"):
@@ -26,16 +25,6 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("open-web")
     commands.add_parser("supervise", help=argparse.SUPPRESS)
 
-    configure = commands.add_parser("configure-tunnel")
-    configure.add_argument("--tunnel-id")
-    configure.add_argument("--profile")
-    configure.add_argument(
-        "--driver",
-        choices=[driver.value for driver in TunnelDriver],
-        default=TunnelDriver.OPENAI_SECURE_TUNNEL.value,
-    )
-    configure.add_argument("--client-path")
-    configure.add_argument("--ready-url")
     commands.add_parser("tunnel-status")
     signal = commands.add_parser("signal")
     signal.add_argument(
@@ -74,32 +63,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _emit({"status": "open_requested", "target": "notebook_ai_local_web"})
         if arguments.command == "supervise":
             return RuntimeSupervisor(config).supervise_forever()
-        if arguments.command == "configure-tunnel":
-            driver = TunnelDriver(arguments.driver)
-            if driver is TunnelDriver.OPENAI_SECURE_TUNNEL and not arguments.tunnel_id:
-                raise ValueError("--tunnel-id is required for openai_secure_tunnel")
-            configured = config.with_tunnel(
-                tunnel_id=arguments.tunnel_id,
-                profile=arguments.profile or config.tunnel.profile,
-                driver=driver,
-                client_path=arguments.client_path or config.tunnel.client_path,
-                ready_url=arguments.ready_url or config.tunnel.ready_url,
-            )
-            configured.save()
-            return _emit(
-                {
-                    "status": "configured",
-                    "driver": configured.tunnel.driver.value,
-                    "tunnel_id_configured": bool(configured.tunnel.tunnel_id),
-                    "profile": configured.tunnel.profile,
-                    "secret_saved": False,
-                    "client_initialization": (
-                        "documented_init_required"
-                        if driver is TunnelDriver.OPENAI_SECURE_TUNNEL
-                        else "not_applicable"
-                    ),
-                }
-            )
         if arguments.command == "tunnel-status":
             return _emit(controller.tunnel_status(run_doctor=False))
         if arguments.command == "signal":

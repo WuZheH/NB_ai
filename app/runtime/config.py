@@ -7,11 +7,9 @@ from pathlib import Path
 import shutil
 import sys
 from typing import Any, Mapping
-from urllib.parse import urlparse
 from uuid import uuid4
 
 from app.core.paths import DATA_DIR, RUNTIME_PROJECT_ROOT
-from app.runtime.contracts import TunnelDriver
 
 
 RUNTIME_CONFIG_SCHEMA_VERSION = "notebook_ai.runtime.config.v1"
@@ -19,8 +17,6 @@ DEFAULT_PYTHON_EXE = Path(sys.executable).resolve()
 DEFAULT_NODE_EXE = Path(shutil.which("node.exe") or shutil.which("node") or "node.exe")
 DEFAULT_BACKEND_PORT = 8000
 DEFAULT_MCP_PORT = 8787
-DEFAULT_TUNNEL_PROFILE = "notebook-ai"
-DEFAULT_TUNNEL_TARGET = "http://127.0.0.1:8787/mcp"
 FORBIDDEN_SECRET_CONFIG_KEYS = frozenset(
     {"api_key", "apikey", "authorization", "password", "secret", "token"}
 )
@@ -155,44 +151,6 @@ class RuntimePaths:
 
 
 @dataclass(frozen=True)
-class TunnelConfig:
-    driver: TunnelDriver = TunnelDriver.OPENAI_SECURE_TUNNEL
-    tunnel_id: str | None = None
-    profile: str = DEFAULT_TUNNEL_PROFILE
-    client_path: str | None = None
-    ready_url: str | None = None
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "TunnelConfig":
-        tunnel_id = _clean_identifier(value.get("tunnel_id"), "tunnel_id", optional=True)
-        profile = _clean_identifier(
-            value.get("profile") or DEFAULT_TUNNEL_PROFILE,
-            "profile",
-            optional=False,
-        )
-        client_path = value.get("client_path")
-        ready_url = _local_ready_url(value.get("ready_url"))
-        return cls(
-            driver=TunnelDriver(
-                value.get("driver", TunnelDriver.OPENAI_SECURE_TUNNEL.value)
-            ),
-            tunnel_id=tunnel_id,
-            profile=profile or DEFAULT_TUNNEL_PROFILE,
-            client_path=str(client_path).strip() if client_path else None,
-            ready_url=ready_url,
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "driver": self.driver.value,
-            "tunnel_id": self.tunnel_id,
-            "profile": self.profile,
-            "client_path": self.client_path,
-            "ready_url": self.ready_url,
-        }
-
-
-@dataclass(frozen=True)
 class RuntimeConfig:
     paths: RuntimePaths
     python_exe: Path
@@ -201,8 +159,6 @@ class RuntimeConfig:
     mcp_port: int = DEFAULT_MCP_PORT
     backend_url: str = "http://127.0.0.1:8000"
     frontend_url: str = "http://127.0.0.1:5173"
-    tunnel_target: str = DEFAULT_TUNNEL_TARGET
-    tunnel: TunnelConfig = TunnelConfig()
     mode: str = "local"
     health_timeout_seconds: float = 60.0
     monitor_interval_seconds: float = 2.0
@@ -282,7 +238,6 @@ class RuntimeConfig:
             or stored.get("frontend_url")
             or "http://127.0.0.1:5173"
         ).rstrip("/")
-        tunnel = TunnelConfig.from_dict(stored.get("tunnel") or {})
         return cls(
             paths=paths,
             python_exe=python_exe,
@@ -291,8 +246,6 @@ class RuntimeConfig:
             mcp_port=mcp_port,
             backend_url=backend_url,
             frontend_url=frontend_url,
-            tunnel_target=f"http://127.0.0.1:{mcp_port}/mcp",
-            tunnel=tunnel,
             mode=mode,
             health_timeout_seconds=float(stored.get("health_timeout_seconds") or 60.0),
             monitor_interval_seconds=float(stored.get("monitor_interval_seconds") or 2.0),
@@ -312,47 +265,11 @@ class RuntimeConfig:
             "health_timeout_seconds": self.health_timeout_seconds,
             "monitor_interval_seconds": self.monitor_interval_seconds,
             "max_restart_count": self.max_restart_count,
-            "tunnel": self.tunnel.to_dict(),
         }
 
     def save(self) -> None:
         self.paths.ensure()
         atomic_write_json(self.paths.runtime_config_file, self.to_persisted_dict())
-
-    def with_tunnel(
-        self,
-        *,
-        tunnel_id: str | None,
-        profile: str,
-        driver: TunnelDriver = TunnelDriver.OPENAI_SECURE_TUNNEL,
-        client_path: str | None = None,
-        ready_url: str | None = None,
-    ) -> "RuntimeConfig":
-        validated = TunnelConfig.from_dict(
-            {
-                "driver": driver.value,
-                "tunnel_id": tunnel_id,
-                "profile": profile,
-                "client_path": client_path,
-                "ready_url": ready_url,
-            }
-        )
-        return RuntimeConfig(
-            paths=self.paths,
-            python_exe=self.python_exe,
-            node_exe=self.node_exe,
-            backend_port=self.backend_port,
-            mcp_port=self.mcp_port,
-            backend_url=self.backend_url,
-            frontend_url=self.frontend_url,
-            tunnel_target=self.tunnel_target,
-            tunnel=validated,
-            mode=self.mode,
-            health_timeout_seconds=self.health_timeout_seconds,
-            monitor_interval_seconds=self.monitor_interval_seconds,
-            max_restart_count=self.max_restart_count,
-        )
-
 
 def atomic_write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -390,17 +307,6 @@ def _optional_path(value: str | Path | None, *, default: Path, base: Path) -> Pa
     return _resolve_path(value, base=base) if value else default.resolve()
 
 
-def _clean_identifier(value: Any, label: str, *, optional: bool) -> str | None:
-    if value is None and optional:
-        return None
-    result = str(value or "").strip()
-    if not result and optional:
-        return None
-    if not result or len(result) > 128 or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for ch in result):
-        raise ValueError(f"invalid {label}")
-    return result
-
-
 def _contains_forbidden_secret_key(value: Any) -> bool:
     if isinstance(value, Mapping):
         for key, child in value.items():
@@ -411,24 +317,3 @@ def _contains_forbidden_secret_key(value: Any) -> bool:
     elif isinstance(value, list):
         return any(_contains_forbidden_secret_key(child) for child in value)
     return False
-
-
-def _local_ready_url(value: Any) -> str | None:
-    if value is None or not str(value).strip():
-        return None
-    result = str(value).strip()
-    parsed = urlparse(result)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "localhost"}
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or parsed.port is None
-        or parsed.path != "/readyz"
-    ):
-        raise ValueError(
-            "tunnel ready_url must be an explicit loopback HTTP /readyz URL"
-        )
-    return result

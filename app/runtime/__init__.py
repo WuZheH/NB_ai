@@ -10,7 +10,6 @@ from app.runtime.contracts import (
     ComponentName,
     ComponentState,
     RuntimeState,
-    TunnelDriver,
     TunnelState,
 )
 
@@ -20,6 +19,5 @@ __all__ = [
     "RuntimeConfig",
     "RuntimePaths",
     "RuntimeState",
-    "TunnelDriver",
     "TunnelState",
 ]

@@ -47,7 +47,7 @@ from app.runtime.process_manager import (
     ProcessStartError,
     hidden_windows_subprocess_options,
 )
-from app.runtime.tunnel import CloudflareTunnelProbe, TunnelDriverBoundary
+from app.runtime.tunnel import CloudflareTunnelProbe
 
 
 class RuntimeStartupError(RuntimeError):
@@ -156,7 +156,6 @@ class RuntimeSupervisor:
         self.config = config
         self.process_manager = process_manager or ProcessManager()
         self.logger = logger or RuntimeMetadataLogger(config.paths.runtime_log_file)
-        self.tunnel = TunnelDriverBoundary(config)
         self.tunnel_probe = CloudflareTunnelProbe(config)
         self.control_queue = ControlRequestQueue(config.paths.control_dir)
         self._managed: dict[ComponentName, ManagedProcess] = {}
@@ -354,7 +353,6 @@ class RuntimeSupervisor:
         stopped_all = True
         for component in (
             ComponentName.ZOTERO_NOTE_INDEX,
-            ComponentName.TUNNEL,
             ComponentName.MCP,
             ComponentName.FASTAPI,
         ):
@@ -503,86 +501,6 @@ class RuntimeSupervisor:
             port=self.config.mcp_port,
         )
 
-    def _start_tunnel(self) -> None:
-        adopted = self._managed.get(ComponentName.TUNNEL)
-        if adopted is not None and self.process_manager.is_alive(adopted):
-            self._update_tunnel_readiness(adopted)
-            return
-        spec = self.tunnel.process_spec()
-        started = time.monotonic()
-        try:
-            process = self.process_manager.spawn(spec)
-        except (ProcessStartError, RuntimeError) as exc:
-            raise RuntimeStartupError("tunnel_start_failed") from exc
-        self._managed[ComponentName.TUNNEL] = process
-        time.sleep(1.0)
-        if not self.process_manager.is_alive(process):
-            self._managed.pop(ComponentName.TUNNEL, None)
-            raise RuntimeStartupError("tunnel_unhealthy")
-        if self.config.tunnel.ready_url:
-            self.status.tunnel_state = TunnelState.STARTING
-            self._set_owned(ComponentName.TUNNEL, process, ComponentState.STARTING)
-            try:
-                self._persist(self.status.state, error_code=self.status.error_code)
-            except Exception as exc:
-                if self._stop_managed_process(process):
-                    self._managed.pop(ComponentName.TUNNEL, None)
-                raise RuntimeStartupError("tunnel_status_persist_failed") from exc
-            readiness = self._wait_for_tunnel_readiness(process)
-            self._update_tunnel_readiness(process, readiness=readiness)
-        else:
-            self._update_tunnel_readiness(process)
-        tunnel_status = self.status.components[ComponentName.TUNNEL.value]
-        self.logger.log(
-            component=ComponentName.TUNNEL.value,
-            state=tunnel_status.state.value,
-            pid=process.pid,
-            duration=time.monotonic() - started,
-            error_code=tunnel_status.error_code,
-        )
-
-    def _wait_for_tunnel_readiness(self, process: ManagedProcess) -> HealthResult:
-        deadline = time.monotonic() + self.config.health_timeout_seconds
-        next_heartbeat = time.monotonic() + 10.0
-        last = HealthResult(False, "tunnel_readiness_timeout")
-        while time.monotonic() < deadline:
-            if not self.process_manager.is_alive(process):
-                return HealthResult(False, "tunnel_process_exited")
-            last = self.tunnel.readiness()
-            if last.ready:
-                return last
-            now = time.monotonic()
-            if now >= next_heartbeat:
-                self._safe_persist(self.status.state, error_code=self.status.error_code)
-                next_heartbeat = now + 10.0
-            time.sleep(0.25)
-        return last
-
-    def _update_tunnel_readiness(
-        self,
-        process: ManagedProcess,
-        *,
-        readiness: HealthResult | None = None,
-    ) -> bool | None:
-        readiness = readiness or self.tunnel.readiness()
-        if readiness.ready:
-            self.status.tunnel_state = TunnelState.READY
-            self._set_owned(ComponentName.TUNNEL, process, ComponentState.READY)
-            return True
-        if self.config.tunnel.ready_url:
-            self.status.tunnel_state = TunnelState.UNHEALTHY
-            self._set_owned(ComponentName.TUNNEL, process, ComponentState.DEGRADED)
-            self.status.components[ComponentName.TUNNEL.value].error_code = (
-                "tunnel_readiness_failed"
-            )
-            return False
-        self.status.tunnel_state = TunnelState.STARTING
-        self._set_owned(ComponentName.TUNNEL, process, ComponentState.STARTING)
-        self.status.components[ComponentName.TUNNEL.value].error_code = (
-            "tunnel_readiness_unverified"
-        )
-        return None
-
     def _spawn_and_wait(
         self,
         component: ComponentName,
@@ -644,12 +562,6 @@ class RuntimeSupervisor:
             elif alive and component is ComponentName.MCP:
                 alive = port_is_listening(self.config.mcp_port)
                 health_error = None if alive else "port_not_listening"
-            elif alive and component is ComponentName.TUNNEL:
-                tunnel_ready = self._update_tunnel_readiness(process)
-                if tunnel_ready is not False:
-                    continue
-                alive = False
-                health_error = "tunnel_readiness_failed"
             if alive:
                 continue
             current = self.status.components.get(component.value)
@@ -667,20 +579,13 @@ class RuntimeSupervisor:
             if restart_count > self.config.max_restart_count:
                 self._managed.pop(component, None)
                 if current:
-                    current.state = (
-                        ComponentState.DEGRADED
-                        if component is ComponentName.TUNNEL
-                        else ComponentState.FAILED
-                    )
+                    current.state = ComponentState.FAILED
                     current.error_code = f"{component.value}_restart_exhausted"
                     current.restart_count = restart_count
-                if component is ComponentName.TUNNEL:
-                    self.status.tunnel_state = TunnelState.UNHEALTHY
-                else:
-                    self._persist(
-                        RuntimeState.FAILED,
-                        error_code=f"{component.value}_restart_exhausted",
-                    )
+                self._persist(
+                    RuntimeState.FAILED,
+                    error_code=f"{component.value}_restart_exhausted",
+                )
                 continue
             self.logger.log(
                 component=component.value,
@@ -695,8 +600,6 @@ class RuntimeSupervisor:
                     self._start_fastapi()
                 elif component is ComponentName.MCP:
                     self._start_mcp()
-                elif component is ComponentName.TUNNEL:
-                    self._start_tunnel()
                 replacement = self.status.components.get(component.value)
                 if replacement:
                     replacement.restart_count = restart_count
@@ -1307,7 +1210,6 @@ class RuntimeController:
         stop_failed = False
         for name in (
             ComponentName.ZOTERO_NOTE_INDEX.value,
-            ComponentName.TUNNEL.value,
             ComponentName.MCP.value,
             ComponentName.FASTAPI.value,
             ComponentName.SUPERVISOR.value,

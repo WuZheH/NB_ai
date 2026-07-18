@@ -54,7 +54,7 @@ def check_fastapi_liveness(url: str) -> HealthResult:
 
 
 def check_fastapi_health(url: str, *, timeout_seconds: float = 5.0) -> HealthResult:
-    """Verify the formal read-only retrieval readiness contract."""
+    """Verify retrieval readiness or a safe, genuinely empty library."""
 
     write_flags = (
         "db_write_performed",
@@ -64,8 +64,18 @@ def check_fastapi_health(url: str, *, timeout_seconds: float = 5.0) -> HealthRes
     )
     result = check_json_health(
         f"{url.rstrip('/')}/api/v1/retrieval/index/status",
-        validator=lambda value: value.get("status") == "ready"
-        and value.get("ready") is True
+        validator=lambda value: (
+            value.get("status") == "ready" and value.get("ready") is True
+            or (
+                value.get("status") == "missing"
+                and value.get("ready") is False
+                and value.get("data_state") == "empty_library"
+                and value.get("library_database_exists") is False
+                and value.get("index_exists") is False
+                and value.get("manifest_exists") is False
+                and value.get("reasons") == ["index_and_manifest_missing"]
+            )
+        )
         and all(value.get(flag) in {None, False} for flag in write_flags),
         timeout_seconds=timeout_seconds,
     )

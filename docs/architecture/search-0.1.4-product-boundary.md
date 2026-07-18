@@ -95,7 +95,7 @@ MCP 的唯一 Node 入口是 `integrations/notebook_ai_chatgpt_app/server/index.
 ChatGPT App -> HTTPS Tunnel -> loopback MCP /mcp
 ```
 
-Quick Tunnel 仅用于临时开发验证；地址可能变化。持久部署需要用户自行提供 named tunnel、域名、凭据和认证策略。Search 可以诊断 Tunnel，但不自动修改第三方账户或应用配置，也不把凭据写入普通状态界面或 Git。
+Quick Tunnel 仅由独立辅助脚本用于临时开发验证；地址可能变化。持久部署需要用户在 Search 外部自行提供并管理 named tunnel、域名、凭据和认证策略。Search 管理 FastAPI 与 MCP 的本地进程生命周期，但对 Tunnel 只做只读诊断，不启动、暂停、恢复或配置 Tunnel，也不自动修改第三方账户或应用配置，不把凭据写入普通状态界面或 Git。
 
 ## 路径、配置与数据
 

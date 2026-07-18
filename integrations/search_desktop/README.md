@@ -29,7 +29,7 @@ npm --prefix frontend run build
 npm --prefix integrations/search_desktop start
 ```
 
-If `frontend/dist/index.html` is absent, Search opens a local diagnostic screen with the error `renderer_build_missing`. Secure Tunnel configuration is optional for local search and does not block the window.
+If `frontend/dist/index.html` is absent, Search opens a local diagnostic screen with the error `renderer_build_missing`. An external HTTPS Tunnel is optional for local search: Search reports its status but does not configure, start, pause, or resume it.
 
 ## Runtime and shutdown
 

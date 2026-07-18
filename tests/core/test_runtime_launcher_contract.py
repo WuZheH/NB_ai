@@ -84,6 +84,37 @@ def test_fastapi_readiness_rejects_write_flags(monkeypatch) -> None:
     assert result.error_code == "backend_index_not_ready"
 
 
+def test_fastapi_readiness_accepts_only_a_safe_empty_library(monkeypatch) -> None:
+    observed: list[bool] = []
+
+    def fake_check(url: str, *, validator, timeout_seconds: float = 2.0):
+        del url, timeout_seconds
+        safe_empty = {
+            "status": "missing",
+            "ready": False,
+            "data_state": "empty_library",
+            "library_database_exists": False,
+            "index_exists": False,
+            "manifest_exists": False,
+            "reasons": ["index_and_manifest_missing"],
+            "production_db_write_performed": False,
+        }
+        observed.extend(
+            (
+                validator(safe_empty),
+                validator({**safe_empty, "data_state": "configured"}),
+                validator({**safe_empty, "library_database_exists": True}),
+                validator({**safe_empty, "status": "corrupt"}),
+                validator({**safe_empty, "production_db_write_performed": True}),
+            )
+        )
+        return HealthResult(True)
+
+    monkeypatch.setattr(runtime_health, "check_json_health", fake_check)
+    assert runtime_health.check_fastapi_health("http://127.0.0.1:8000").ready
+    assert observed == [True, False, False, False, False]
+
+
 def test_mcp_contract_requires_three_read_only_tools_and_widget_mime(monkeypatch) -> None:
     monkeypatch.setattr(runtime_health, "check_mcp_health", lambda port: HealthResult(True))
 
@@ -221,7 +252,7 @@ def test_runtime_paths_split_packaged_code_from_stable_data(tmp_path: Path) -> N
     assert config.paths.mcp_server_entry.is_relative_to(runtime_root)
 
 
-def test_runtime_cli_exposes_lifecycle_and_tunnel_commands() -> None:
+def test_runtime_cli_exposes_local_lifecycle_and_read_only_tunnel_status() -> None:
     parser = build_parser()
     subparsers = next(
         action for action in parser._actions if action.dest == "command"  # noqa: SLF001
@@ -235,10 +266,10 @@ def test_runtime_cli_exposes_lifecycle_and_tunnel_commands() -> None:
         "doctor",
         "logs",
         "open-web",
-        "configure-tunnel",
         "tunnel-status",
         "signal",
     }.issubset(subparsers.choices)
+    assert "configure-tunnel" not in subparsers.choices
     assert "tunnel-doctor" not in subparsers.choices
     signal_parser = subparsers.choices["signal"]
     action = next(
@@ -516,6 +547,7 @@ def test_startup_never_runs_note_index_status_or_sync(
     config.paths.mcp_server_entry.parent.mkdir(parents=True)
     config.paths.mcp_server_entry.write_text("built", encoding="utf-8")
     supervisor = RuntimeSupervisor(config)
+    assert not hasattr(supervisor, "tunnel")
     monkeypatch.setattr(
         supervisor,
         "_ensure_note_index",
@@ -705,11 +737,6 @@ def test_startup_detects_quick_tunnel_without_starting_or_stopping_it(
             pid=43120,
             public_url="https://temporary.trycloudflare.com",
         ),
-    )
-    monkeypatch.setattr(
-        supervisor,
-        "_start_tunnel",
-        lambda: pytest.fail("Phase A attempted to start a tunnel"),
     )
     monkeypatch.setattr(
         supervisor,
@@ -951,65 +978,6 @@ def test_supervisor_internal_persist_failure_rolls_back_owned_children(
     )
     assert supervisor.supervise_forever() == 1
     assert rollbacks == ["rollback"]
-
-
-def test_tunnel_liveness_is_not_reported_as_verified_readiness(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    supervisor = RuntimeSupervisor(_config(tmp_path))
-    spec = ProcessSpec("tunnel", Path("tunnel-client.exe"), ("run",), tmp_path)
-    process = ManagedProcess(spec, ProcessIdentity(17, 1.0, "tunnel-client.exe"))
-    monkeypatch.setattr(supervisor.tunnel, "process_spec", lambda: spec)
-    monkeypatch.setattr(supervisor.process_manager, "spawn", lambda value: process)
-    monkeypatch.setattr(supervisor.process_manager, "is_alive", lambda value: True)
-    monkeypatch.setattr("app.runtime.supervisor.time.sleep", lambda value: None)
-    monkeypatch.setattr(supervisor.logger, "log", lambda **kwargs: None)
-    supervisor._start_tunnel()
-    assert supervisor.status.tunnel_state is TunnelState.STARTING
-    assert (
-        supervisor.status.components[ComponentName.TUNNEL.value].state
-        is ComponentState.STARTING
-    )
-
-
-def test_explicit_tunnel_readiness_failure_triggers_bounded_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    base = _config(tmp_path)
-    config = replace(
-        base,
-        tunnel=replace(
-            base.tunnel,
-            ready_url="http://127.0.0.1:9494/readyz",
-        ),
-    )
-    supervisor = RuntimeSupervisor(config)
-    spec = ProcessSpec("tunnel", Path("tunnel-client.exe"), ("run",), tmp_path)
-    process = ManagedProcess(spec, ProcessIdentity(18, 1.0, "tunnel-client.exe"))
-    supervisor._managed[ComponentName.TUNNEL] = process
-    supervisor.status.components["tunnel"] = ComponentStatus(
-        component=ComponentName.TUNNEL,
-        state=ComponentState.READY,
-        owned=True,
-        identity=process.identity,
-    )
-    monkeypatch.setattr(supervisor.process_manager, "is_alive", lambda value: True)
-    stopped: list[ManagedProcess] = []
-    monkeypatch.setattr(
-        supervisor,
-        "_stop_managed_process",
-        lambda value: stopped.append(value) or True,
-    )
-    monkeypatch.setattr(
-        supervisor.tunnel, "readiness", lambda: HealthResult(False, "unreachable")
-    )
-    monkeypatch.setattr("app.runtime.supervisor.time.sleep", lambda value: None)
-    restarted: list[str] = []
-    monkeypatch.setattr(supervisor, "_start_tunnel", lambda: restarted.append("tunnel"))
-    monkeypatch.setattr(supervisor, "_persist", lambda *args, **kwargs: None)
-    supervisor._monitor_once()
-    assert stopped == [process]
-    assert restarted == ["tunnel"]
 
 
 def test_status_reconciles_stale_pid_and_health_before_claiming_ready(

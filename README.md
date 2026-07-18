@@ -169,6 +169,8 @@ ChatGPT 无法直接访问 `127.0.0.1`，因此需要以下外部链路：
 ChatGPT → HTTPS Tunnel → 127.0.0.1:8787/mcp
 ```
 
+Search 管理本地 FastAPI 8000 和 MCP 8787 的进程生命周期；对外部 Tunnel 只做状态诊断，不负责启动、暂停、恢复或配置。
+
 临时 Quick Tunnel 仅用于开发测试。先检查，再显式启动：
 
 ```powershell
@@ -179,7 +181,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_quick_tunnel
 
 脚本会隐藏启动 cloudflared，并且只有公网健康检查通过后才输出形如 `https://<随机子域>.trycloudflare.com/mcp` 的精确 URL。它不会修改 ChatGPT App，也不会把凭据写入 Git。Quick Tunnel URL 会变化，旧 URL 失效时 `@search` 可能返回 `mcp_network_error`。
 
-在 ChatGPT App 的 MCP 配置中手动粘贴脚本输出的 `/mcp` URL。固定地址需要 Cloudflare 账户、域名、named tunnel、credentials 和公网认证方案；匿名开发 MCP 不应直接作为长期公网服务。credentials、`cert.pem` 和本地配置均被 `.gitignore` 排除。
+在 ChatGPT App 的 MCP 配置中手动粘贴脚本输出的 `/mcp` URL。固定地址需要 Cloudflare 账户、域名、named tunnel、credentials 和公网认证方案，并在 Search 外部由用户配置和管理；匿名开发 MCP 不应直接作为长期公网服务。credentials、`cert.pem` 和本地配置均被 `.gitignore` 排除。
 
 当前源码发布状态为：
 
