@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getJson } from "../api/client.js";
-import SearchWorkflowPanel from "../components/workspace/SearchWorkflowPanel.jsx";
+import WorkspaceSearchSessionPanel from "../components/workspace/SearchWorkflowPanel.jsx";
 import SourcePdfPanel from "../components/workspace/SourcePdfPanel.jsx";
 import WorkspaceLayout from "../components/workspace/WorkspaceLayout.jsx";
 import { NotebookWorkspaceHome } from "../features/workspace/components/ResearchWorkspaceHome.jsx";
@@ -26,12 +26,10 @@ export default function ResearchWorkspacePage({
     sources: [],
     error: "",
   });
-  const [sourceTarget, setSourceTarget] = useState(null);
 
   useEffect(() => {
     if (!documentId || !chapterId) {
       setWorkspaceState({ status: "idle", data: null, error: "" });
-      setSourceTarget(null);
       return;
     }
     let cancelled = false;
@@ -115,12 +113,6 @@ export default function ResearchWorkspacePage({
   const documentTitle = state.document?.title || state.document_title || "当前资料";
   const chapterTitle = state.current_chapter?.title || state.chapter_title || `章节 ${chapterId}`;
   const sourceCount = Number(state.source_count || 0);
-  const handleViewSource = (target) => {
-    setSourceTarget(target);
-  };
-  const handleClearSourceTarget = () => {
-    setSourceTarget(null);
-  };
   return (
     <div className="researchWorkspacePage notebookLmInspiredWorkspace">
       <header className="researchWorkspaceTopbar">
@@ -147,15 +139,12 @@ export default function ResearchWorkspacePage({
         sourcePanel={
           <SourcePdfPanel
             workspaceState={state}
-            sourceTarget={sourceTarget}
-            onClearSourceTarget={handleClearSourceTarget}
           />
         }
         workbenchPanel={
           <>
-            <SearchWorkflowPanel
-              state={state}
-              onViewSource={handleViewSource}
+            <WorkspaceSearchSessionPanel
+              onBackToSearch={onBackToSearch}
             />
           </>
         }

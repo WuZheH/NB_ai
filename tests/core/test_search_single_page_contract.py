@@ -70,6 +70,8 @@ def test_unified_page_uses_mature_preview_and_all_search_controls() -> None:
 def test_search_session_covers_workspace_round_trip_state() -> None:
     page = _read("frontend/src/pages/LocalRetrievalPage.jsx")
     session = _read("frontend/src/features/retrieval/state/searchSession.js")
+    workspace = _read("frontend/src/pages/ResearchWorkspacePage.jsx")
+    workspace_search = _read("frontend/src/components/workspace/SearchWorkflowPanel.jsx")
     for field in (
         "query",
         "searchKind",
@@ -84,6 +86,14 @@ def test_search_session_covers_workspace_round_trip_state() -> None:
     assert "registerSearchSessionCapture" in session
     assert "captureSearchSessionBeforeNavigation" in session
     assert "writeSearchSession" in session
+    assert "summarizeSearchSession" in session
+    assert "WorkspaceSearchSessionPanel" in workspace
+    assert "readSearchSession" in workspace_search
+    assert "summarizeSearchSession" in workspace_search
+    assert "/api/v1/search/database" not in workspace_search
+    assert "getJson" not in workspace_search
+    assert "useState" not in workspace_search
+    assert "<form" not in workspace_search
 
 
 def test_packaged_chromium_keeps_the_legacy_pdfjs_runtime() -> None:

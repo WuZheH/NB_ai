@@ -1,149 +1,107 @@
-import { useMemo, useState } from "react";
-import { getJson } from "../../api/client.js";
-import FiveLayerSearchResults from "./FiveLayerSearchResults.jsx";
+import {
+  readSearchSession,
+  summarizeSearchSession,
+} from "../../features/retrieval/state/searchSession.js";
 import WorkspaceStatusPill from "./WorkspaceStatusPill.jsx";
 
-export default function SearchWorkflowPanel({ state, onViewSource, homeMode = false }) {
-  const [query, setQuery] = useState("");
-  const [searchState, setSearchState] = useState({ status: "idle", query: "", data: null, error: "" });
-  const documentId = state?.document?.document_id;
-  const chapterId = state?.current_chapter?.chapter_id;
-  const resilienceFallbackActive = Boolean(state?.workspace_resilience_fallback?.active);
-  const showSearchDetails = searchState.status !== "idle";
-
-  const layerRows = useMemo(() => {
-    const source = state?.source_ingestion_status || {};
-    const notes = state?.notes_import_status || {};
-    return [
-      {
-        id: "passages",
-        title: "PDF 原文",
-        status: source.chunked ? "available" : "unavailable",
-        reason: source.chunked ? `${Number(source.chunk_count || 0)} 条可检索证据` : "当前资料尚无可检索片段",
-      },
-      {
-        id: "notes",
-        title: "笔记",
-        status: Number(notes.existing || 0) > 0 ? "available" : "unavailable",
-        reason: Number(notes.existing || 0) > 0 ? `${Number(notes.existing || 0)} 条关联笔记` : "当前范围没有关联笔记",
-      },
-    ];
-  }, [state]);
-
-  async function runDatabaseSearch(cleanQuery) {
-    if (!cleanQuery) {
-      setSearchState({ status: "idle", query: "", data: null, error: "" });
-      return;
-    }
-    if ((!documentId || !chapterId) && !homeMode) {
-      setSearchState({ status: "error", query: cleanQuery, data: null, error: "选择来源后可限定搜索范围。" });
-      return;
-    }
-    setSearchState({ status: "loading", query: cleanQuery, data: null, error: "" });
-    try {
-      const payload = await getJson(buildDatabaseSearchPath(cleanQuery, { documentId, chapterId, homeMode }));
-      setSearchState({ status: "ready", query: cleanQuery, data: payload, error: "" });
-    } catch (error) {
-      setSearchState({
-        status: "error",
-        query: cleanQuery,
-        data: null,
-        error: safePanelErrorMessage(error, "数据暂不可用，本地 API 恢复后自动更新。"),
-      });
-    }
-  }
-
-  async function handleSubmit(event) {
-    event.preventDefault();
-    await runDatabaseSearch(query.trim());
-  }
-
-  function handleRelatedQuery(nextQuery) {
-    const cleanQuery = String(nextQuery || "").trim();
-    if (!cleanQuery) return;
-    setQuery(cleanQuery);
-    void runDatabaseSearch(cleanQuery);
-  }
+export default function WorkspaceSearchSessionPanel({ onBackToSearch }) {
+  const session = summarizeSearchSession(readSearchSession());
+  const visibleResults = session.results.slice(0, 4);
+  const modeLabel = session.searchKind === "keyword" ? "关键词搜索" : "高质量搜索";
+  const currentResult = session.preview;
 
   return (
-    <div className="workspacePanelStack searchWorkflowPanel">
+    <div
+      className="workspacePanelStack searchWorkflowPanel workspaceSearchSessionPanel"
+      data-testid="workspace-search-session"
+    >
       <div className="workspacePanelHeader">
         <div>
-          <p className="workspaceKicker">科研检索</p>
-          <h3>数据库搜索</h3>
-          <span>从当前资料范围检索 PDF 原文与关联笔记。</span>
+          <p className="workspaceKicker">统一搜索会话</p>
+          <h3>搜索上下文</h3>
+          <span>Workspace 读取统一搜索页的结果、Preview 与证据篮子状态。</span>
         </div>
-        <div className="workspaceSearchChipRow" aria-label="search safety chips">
+        <div className="workspaceSearchChipRow" aria-label="统一搜索会话状态">
           <WorkspaceStatusPill status="read_only">只读</WorkspaceStatusPill>
-          <WorkspaceStatusPill status="reviewed">{Number(state?.notes_import_status?.existing || 0)} 条笔记</WorkspaceStatusPill>
-          <WorkspaceStatusPill status="planned">不调用 LLM</WorkspaceStatusPill>
+          <WorkspaceStatusPill status={session.hasSession ? "available" : "planned"}>
+            {session.hasSession ? modeLabel : "尚无会话"}
+          </WorkspaceStatusPill>
         </div>
       </div>
-
-      {resilienceFallbackActive && (
-        <p className="workspaceSampleNotice warning">数据暂不可用，本地 API 恢复后自动更新。</p>
-      )}
 
       <div className="workspaceSearchBody" data-scroll-region="search-results-no-overlay">
-        {searchState.query && (
-          <div className="workspaceSearchNotice">
-            <strong>检索：{searchState.query}</strong>
-            <span>证据包主线：原文片段和用户笔记可加入 evidence packet。</span>
+        {!session.hasSession ? (
+          <div className="workspaceSearchNoQuery">
+            <strong>尚未建立搜索会话</strong>
+            <span>返回“搜索”执行检索后，Workspace 会显示同一会话的摘要。</span>
           </div>
+        ) : (
+          <>
+            <div className="workspaceSearchNotice">
+              <strong>检索：{session.query || "未输入检索词"}</strong>
+              <span>搜索状态、当前结果和证据选择均由统一搜索页维护。</span>
+            </div>
+
+            <dl className="workspacePipelineFacts" aria-label="搜索会话摘要">
+              <div><dt>模式</dt><dd>{modeLabel}</dd></div>
+              <div><dt>结果</dt><dd>{session.resultCount} 条</dd></div>
+              <div><dt>证据篮子</dt><dd>{session.basket.length} 条</dd></div>
+              <div><dt>Preview</dt><dd>{previewLabel(session.previewStatus, currentResult)}</dd></div>
+            </dl>
+
+            {currentResult && (
+              <article className="workspaceLayerCard available" aria-label="当前搜索结果">
+                <div>
+                  <h4>{resultTitle(currentResult)}</h4>
+                  <p>{resultLocation(currentResult)}</p>
+                </div>
+                <WorkspaceStatusPill status="available">当前结果</WorkspaceStatusPill>
+              </article>
+            )}
+
+            {visibleResults.length > 0 && (
+              <section className="workspaceLayerList" aria-label="统一搜索结果摘要">
+                {visibleResults.map((result, index) => (
+                  <article
+                    key={result.fragment_id || result.display_id || index}
+                    className="workspaceLayerCard available"
+                  >
+                    <div>
+                      <h4>{resultTitle(result)}</h4>
+                      <p>{resultExcerpt(result)}</p>
+                    </div>
+                  </article>
+                ))}
+              </section>
+            )}
+          </>
         )}
-
-        <div className={`workspaceSearchConversation ${showSearchDetails ? "withResults" : "idle"}`}>
-          <FiveLayerSearchResults
-            searchState={searchState}
-            onViewSource={onViewSource}
-            onRunRelatedQuery={handleRelatedQuery}
-          />
-        </div>
-
-        {showSearchDetails && (
-          <details className="workspaceDisclosure searchLayerDisclosure" data-disclosure-layout="in-flow">
-            <summary>检索层状态</summary>
-            <section className="workspaceLayerList" aria-label="five search layers">
-              {layerRows.map((layer) => (
-                <article key={layer.id} className={`workspaceLayerCard ${layer.status}`}>
-                  <div>
-                    <h4>{layer.title}</h4>
-                    <p>{layer.reason}</p>
-                  </div>
-                  <WorkspaceStatusPill status={layer.status} />
-                </article>
-              ))}
-            </section>
-          </details>
-        )}
-
       </div>
 
-      <form className="workspaceSearchBox workspaceSearchComposer" data-composer-layout="flex-footer-no-overlay" onSubmit={handleSubmit} aria-label="research search box">
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索论文、笔记、灵感、对象、PDF chunks 或用户笔记…"
-        />
-        <button type="submit">搜索</button>
-      </form>
+      <button type="button" className="workspacePillButton secondary" onClick={onBackToSearch}>
+        返回搜索查看结果与 PDF Preview
+      </button>
     </div>
   );
 }
 
-function buildDatabaseSearchPath(query, { documentId, chapterId, homeMode }) {
-  const params = new URLSearchParams();
-  params.set("q", query);
-  params.set("limit", homeMode ? "8" : "10");
-  if (documentId) params.set("document_id", String(documentId));
-  if (chapterId) params.set("chapter_id", String(chapterId));
-  return `/api/v1/search/database?${params.toString()}`;
+function previewLabel(status, result) {
+  if (result) return resultLocation(result);
+  if (status === "loading_fragment") return "正在加载";
+  if (status === "error") return "加载失败";
+  return "未选择";
 }
 
-function safePanelErrorMessage(error, fallback) {
-  const detail = error?.payload?.detail;
-  if (typeof detail === "string" && detail.trim() && !/failed to fetch/i.test(detail)) {
-    return detail;
-  }
-  return fallback;
+function resultTitle(result) {
+  return result?.document_title || result?.title || "未命名来源";
+}
+
+function resultLocation(result) {
+  const page = result?.pdf_page ?? result?.page_number;
+  return page ? `PDF 第 ${page} 页` : "来源位置待确认";
+}
+
+function resultExcerpt(result) {
+  const text = result?.text || result?.note_text || result?.selected_text || "该结果没有摘要。";
+  return String(text).replace(/\s+/g, " ").trim().slice(0, 180);
 }
