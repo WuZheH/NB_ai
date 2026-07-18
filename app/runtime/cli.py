@@ -37,15 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
     configure.add_argument("--client-path")
     configure.add_argument("--ready-url")
     commands.add_parser("tunnel-status")
-    commands.add_parser("tunnel-doctor")
     signal = commands.add_parser("signal")
     signal.add_argument(
         "action",
         choices=[
             "restart",
             "sync_zotero_notes",
-            "pause_tunnel",
-            "resume_tunnel",
         ],
     )
     signal.add_argument("--request-id")
@@ -105,8 +102,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if arguments.command == "tunnel-status":
             return _emit(controller.tunnel_status(run_doctor=False))
-        if arguments.command == "tunnel-doctor":
-            return _emit(controller.tunnel_status(run_doctor=True))
         if arguments.command == "signal":
             controller.signal(arguments.action, request_id=arguments.request_id)
             return _emit({"status": "accepted", "action": arguments.action})

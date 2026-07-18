@@ -9,9 +9,7 @@ from typing import Any, Literal
 RUNTIME_SCHEMA_VERSION = "notebook_ai.runtime.v1"
 CONTROL_SCHEMA_VERSION = "notebook_ai.runtime.control.v1"
 ALLOWED_ZOTERO_CONTROL_ACTIONS = frozenset({"restart", "sync_zotero_notes"})
-ALLOWED_RUNTIME_CONTROL_ACTIONS = frozenset(
-    {*ALLOWED_ZOTERO_CONTROL_ACTIONS, "pause_tunnel", "resume_tunnel"}
-)
+ALLOWED_RUNTIME_CONTROL_ACTIONS = frozenset(ALLOWED_ZOTERO_CONTROL_ACTIONS)
 
 
 class ComponentName(StrEnum):
@@ -165,8 +163,6 @@ class RuntimeStatus:
 ControlAction = Literal[
     "restart",
     "sync_zotero_notes",
-    "pause_tunnel",
-    "resume_tunnel",
 ]
 
 

@@ -9,7 +9,6 @@ const ALLOWED_COMMANDS = new Set([
   "status",
   "doctor",
   "logs",
-  "tunnel-status",
   "signal",
 ]);
 
@@ -110,18 +109,6 @@ export class LauncherClient {
 
   logs() {
     return this.run("logs");
-  }
-
-  tunnelStatus() {
-    return this.run("tunnel-status");
-  }
-
-  pauseTunnel() {
-    return this.run("signal", ["pause_tunnel"]);
-  }
-
-  resumeTunnel() {
-    return this.run("signal", ["resume_tunnel"]);
   }
 }
 

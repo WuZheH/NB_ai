@@ -47,13 +47,6 @@ export function registerIpcHandlers({
       await windowController.openRoute(route);
       return { status: "opened", route };
     }),
-    [IPC_CHANNELS.chatgptPause]: trusted(async (paused) => {
-      if (typeof paused !== "boolean") throw new Error("invalid_chatgpt_pause_value");
-      if (!windowController.tunnelPauseSupported) {
-        return { status: "unsupported", error_code: "tunnel_pause_not_supported" };
-      }
-      return paused ? launcherClient.pauseTunnel() : launcherClient.resumeTunnel();
-    }),
   };
   for (const [channel, handler] of Object.entries(handles)) ipcMain.handle(channel, handler);
   const onStatus = (status) => windowController.send(IPC_CHANNELS.runtimeSubscribe, status);

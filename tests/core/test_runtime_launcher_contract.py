@@ -237,9 +237,14 @@ def test_runtime_cli_exposes_lifecycle_and_tunnel_commands() -> None:
         "open-web",
         "configure-tunnel",
         "tunnel-status",
-        "tunnel-doctor",
         "signal",
     }.issubset(subparsers.choices)
+    assert "tunnel-doctor" not in subparsers.choices
+    signal_parser = subparsers.choices["signal"]
+    action = next(
+        item for item in signal_parser._actions if item.dest == "action"  # noqa: SLF001
+    )
+    assert set(action.choices) == {"restart", "sync_zotero_notes"}
 
 
 def test_single_instance_lock_rejects_second_holder(tmp_path: Path) -> None:

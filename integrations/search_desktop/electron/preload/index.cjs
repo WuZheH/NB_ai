@@ -18,7 +18,6 @@ const channels = Object.freeze({
   settingsGet: "search:settings-get",
   settingsUpdate: "search:settings-update",
   openRoute: "search:open-route",
-  chatgptPause: "search:chatgpt-pause",
 });
 
 contextBridge.exposeInMainWorld("searchDesktop", Object.freeze({
@@ -34,7 +33,6 @@ contextBridge.exposeInMainWorld("searchDesktop", Object.freeze({
   getSettings: () => ipcRenderer.invoke(channels.settingsGet),
   updateSettings: (patch) => ipcRenderer.invoke(channels.settingsUpdate, patch),
   openRoute: (route) => ipcRenderer.invoke(channels.openRoute, route),
-  setChatGptPaused: (paused) => ipcRenderer.invoke(channels.chatgptPause, paused === true),
   onRuntimeStatus: (listener) => {
     if (typeof listener !== "function") return () => {};
     const handler = (_event, status) => listener(status);

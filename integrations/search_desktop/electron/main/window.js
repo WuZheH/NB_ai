@@ -62,7 +62,6 @@ export function createWindowController({ BrowserWindow, shell, config, rendererO
   }
 
   return {
-    tunnelPauseSupported: false,
     create,
     openRoute,
     getWebContents() {

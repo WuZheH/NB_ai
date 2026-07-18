@@ -160,7 +160,6 @@ class RuntimeSupervisor:
         self.tunnel_probe = CloudflareTunnelProbe(config)
         self.control_queue = ControlRequestQueue(config.paths.control_dir)
         self._managed: dict[ComponentName, ManagedProcess] = {}
-        self._tunnel_paused = False
         self.status = _empty_status(RuntimeState.STOPPED)
 
     def supervise_forever(self) -> int:
@@ -804,28 +803,12 @@ class RuntimeSupervisor:
         for request in self.control_queue.consume():
             if request.action == "sync_zotero_notes":
                 self._sync_note_index_while_running()
-            elif request.action == "pause_tunnel":
-                self._refresh_tunnel_status()
-            elif request.action == "resume_tunnel":
-                self._refresh_tunnel_status()
             elif request.action == "restart":
                 if not self.stop_components():
                     raise RuntimeStartupError("runtime_stop_failed")
                 self._set_supervisor(ComponentState.STARTING)
                 self._persist(RuntimeState.STARTING)
                 self.start_components()
-
-    def _pause_tunnel(self) -> None:
-        """Retain the legacy signal as a detection-only Phase A operation."""
-
-        self._refresh_tunnel_status()
-        self._persist(self._derive_runtime_state())
-
-    def _resume_tunnel(self) -> None:
-        """Retain the legacy signal as a detection-only Phase A operation."""
-
-        self._refresh_tunnel_status()
-        self._persist(self._derive_runtime_state())
 
     def _sync_note_index_while_running(self) -> None:
         try:

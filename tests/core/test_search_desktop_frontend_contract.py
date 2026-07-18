@@ -12,6 +12,7 @@ def _read(relative: str) -> str:
 
 def test_search_desktop_status_and_settings_are_real_frontend_surfaces() -> None:
     page = _read("frontend/src/pages/DesktopSettingsPage.jsx")
+    preload = _read("integrations/search_desktop/electron/preload/index.cjs")
     routes = _read("frontend/src/app/routes.js")
     sidebar = _read("frontend/src/components/Sidebar.jsx")
     app = _read("frontend/src/app/App.jsx")
@@ -25,12 +26,15 @@ def test_search_desktop_status_and_settings_are_real_frontend_surfaces() -> None
         assert f"bridge.{method}" in page
     for forbidden in ("bridge.restartRuntime", "bridge.openLogs", "bridge.setChatGptPaused"):
         assert forbidden not in page
+    assert "setChatGptPaused" not in preload
+    assert "search:chatgpt-pause" not in preload
     for label in (
         "检索后端",
         "MCP 后端",
         "Codex MCP",
         "Zotero 后端",
         "ChatGPT Tunnel",
+        "Search 仅诊断 Tunnel 状态，不启动、暂停或恢复 Tunnel。",
         "重新检查",
         "技术详情",
     ):

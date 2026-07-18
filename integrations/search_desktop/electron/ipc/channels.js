@@ -8,5 +8,4 @@ export const IPC_CHANNELS = Object.freeze({
   settingsGet: "search:settings-get",
   settingsUpdate: "search:settings-update",
   openRoute: "search:open-route",
-  chatgptPause: "search:chatgpt-pause",
 });

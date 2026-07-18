@@ -27,8 +27,6 @@ function createFixture() {
   coordinator.restart = async () => { calls.push("restart"); return { status: "ready" }; };
   const launcherClient = {
     async logs() { calls.push("logs"); return { logs_dir: "D:\\logs" }; },
-    async pauseTunnel() { calls.push("pause"); return { status: "paused" }; },
-    async resumeTunnel() { calls.push("resume"); return { status: "ready" }; },
   };
   const autostart = {
     async status() { calls.push("autostart-status"); return { status: "not_installed" }; },
@@ -38,7 +36,6 @@ function createFixture() {
     async read() { calls.push("settings-read"); return { minimizeToTray: true }; },
   };
   const windowController = {
-    tunnelPauseSupported: true,
     getWebContents: () => sender.webContents,
     async openLogsDirectory() { calls.push("open-logs"); return { status: "opened" }; },
     async setMinimizeToTray() { calls.push("settings-update"); },
@@ -89,7 +86,6 @@ test("every privileged IPC handler rejects an unknown sender before side effects
     [IPC_CHANNELS.autostartSet]: [true],
     [IPC_CHANNELS.settingsUpdate]: [{ minimizeToTray: false }],
     [IPC_CHANNELS.openRoute]: ["/retrieval"],
-    [IPC_CHANNELS.chatgptPause]: [true],
   };
   for (const [channel, handler] of fixture.handlers) {
     await assert.rejects(

@@ -132,9 +132,7 @@ test("desktop startup never installs, builds, or rebuilds indexes", async () => 
   const source = (await Promise.all(files.map((path) => readFile(join(ROOT, path), "utf8")))).join("\n");
   assert.doesNotMatch(source, /npm\s+(?:install|ci|run\s+build)/i);
   assert.doesNotMatch(source, /build_zotero_note_vectors|build_vector/i);
-  assert.doesNotMatch(source, /run\(["']pause-tunnel["']/);
-  assert.doesNotMatch(source, /run\(["']resume-tunnel["']/);
-  assert.match(source, /run\(["']signal["'], \[["']pause_tunnel["']\]\)/);
+  assert.doesNotMatch(source, /pause[_-]tunnel|resume[_-]tunnel|tunnel-status/);
 });
 
 test("desktop renderer consumes the shared Search design system", async () => {

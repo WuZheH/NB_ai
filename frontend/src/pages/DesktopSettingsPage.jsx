@@ -165,7 +165,7 @@ export function presentRuntime(runtime) {
       {
         name: "ChatGPT Tunnel",
         ...tunnel,
-        note: `${tunnel.note} · 类型：${tunnel.typeLabel} · 检查：${checkedAt}`,
+        note: `${tunnel.note} · 类型：${tunnel.typeLabel} · 检查：${checkedAt} · Search 仅诊断 Tunnel 状态，不启动、暂停或恢复 Tunnel。`,
       },
     ],
   };
