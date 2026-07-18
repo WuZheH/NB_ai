@@ -1,1 +1,0 @@
-"""Database search domain implementation."""

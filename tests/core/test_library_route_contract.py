@@ -8,9 +8,9 @@ from fastapi.routing import APIRoute
 from app.api import library_api
 
 
-EXPECTED_LIBRARY_ROUTE_COUNT = 64
+EXPECTED_LIBRARY_ROUTE_COUNT = 30
 EXPECTED_LIBRARY_ROUTE_FINGERPRINT = (
-    "72090549df3c671608d7524264d26b6bfb2353775bcfa3d583d82d89ca3c139f"
+    "7b6f350d7cc639f490702966b2dd74406b5d307a2c53bf8b42707000f44a5334"
 )
 
 
@@ -37,7 +37,7 @@ def _route_contract() -> list[dict[str, object]]:
     return contract
 
 
-def test_library_route_metadata_and_order_match_the_legacy_contract() -> None:
+def test_library_route_metadata_and_order_match_the_canonical_product_contract() -> None:
     contract = _route_contract()
     encoded = json.dumps(
         contract,
