@@ -42,12 +42,15 @@ from app.runtime.supervisor import (
 from app.runtime.tunnel import ChatGptTunnelStatus
 
 
-def test_fastapi_startup_uses_index_readiness_and_monitor_uses_liveness(monkeypatch) -> None:
-    observed: list[tuple[str, bool, bool]] = []
+def test_fastapi_startup_uses_index_readiness_and_monitor_uses_search_liveness(
+    monkeypatch,
+) -> None:
+    observed: list[tuple[str, bool, bool, bool]] = []
 
     def fake_check(url: str, *, validator, timeout_seconds: float = 2.0):
         observed.append((
             url,
+            validator({"status": "ok", "app": "Search"}),
             validator({"status": "ok", "app": "NOTEBOOK_AI"}),
             validator({"status": "ready", "ready": True}),
         ))
@@ -60,9 +63,10 @@ def test_fastapi_startup_uses_index_readiness_and_monitor_uses_liveness(monkeypa
         (
             "http://127.0.0.1:8000/api/v1/retrieval/index/status",
             False,
+            False,
             True,
         ),
-        ("http://127.0.0.1:8000/health", True, False),
+        ("http://127.0.0.1:8000/health", True, False, False),
     ]
 
 

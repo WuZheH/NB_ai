@@ -49,7 +49,7 @@ def check_fastapi_liveness(url: str) -> HealthResult:
     return check_json_health(
         f"{url.rstrip('/')}/health",
         validator=lambda value: value.get("status") == "ok"
-        and value.get("app") == "NOTEBOOK_AI",
+        and value.get("app") == "Search",
     )
 
 
