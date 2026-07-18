@@ -18,7 +18,6 @@ EXPECTED_MAJOR_ROUTES = {
     "/api/v1/library/documents/{document_id}": "GET",
     "/api/v1/library/books/{document_id}": "GET",
     "/api/v1/library/books/{document_id}/chapters/{chapter_id}/workspace-state": "GET",
-    "/api/v1/search/database": "GET",
     "/api/v1/retrieval/search": "POST",
     "/api/v1/retrieval/index/status": "GET",
     "/api/v1/retrieval/evidence/export": "POST",
@@ -69,4 +68,12 @@ def test_product_import_chain_does_not_import_legacy_chapter_routers() -> None:
         "chapter_workspace_state_service",
     ):
         assert legacy_service not in read_common_source
+
+
+def test_obsolete_database_search_route_is_not_mounted() -> None:
+    paths = {route.path for route in app.routes}
+    main_source = (ROOT / "app/main.py").read_text(encoding="utf-8")
+    assert "/api/v1/search/database" not in paths
+    assert "app.api.search_api" not in main_source
+    assert "search_router" not in main_source
 

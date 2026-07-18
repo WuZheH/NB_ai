@@ -10,7 +10,6 @@ from app.api.import_api import router as import_router
 from app.api.library.router import router as library_router
 from app.api.product_api import router as product_router
 from app.api.retrieval_api import router as retrieval_router
-from app.api.search_api import router as search_router
 from app.api.zotero_api import configure_production_connection_factories, router as zotero_router
 from app.core.config import settings
 from app.services.vector_store_worker import start_vector_store_worker, stop_vector_store_worker
@@ -19,7 +18,6 @@ from app.services.vector_store_worker import start_vector_store_worker, stop_vec
 API_ROUTERS = (
     product_router,
     library_router,
-    search_router,
     retrieval_router,
     evidence_export_router,
     import_router,

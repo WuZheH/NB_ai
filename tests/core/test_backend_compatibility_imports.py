@@ -12,12 +12,10 @@ from app.api.library.importing import classify_pdf_import
 from app.api.library.search import search_high_quality
 from app.core.paths import DEFAULT_DB_PATH
 from app.domains.chapter_review import _pipeline_legacy, _prompt_legacy
-from app.domains.database_search import _legacy as database_search_legacy
 from app.domains.library import _legacy as library_legacy
 from app.services import (
     chapter_note_correction_prompt_service,
     chapter_review_pipeline_service,
-    database_search_service,
     library_core_service,
     library_service,
 )
@@ -38,12 +36,6 @@ EXPECTED_SERVICE_CONTRACTS = {
         "a81c3f079a79ad1ddc860f910bca780a933729f14f5f6969ea704c5acf39c8b1",
         18,
         "ff786aecda8f7c2c8d5b24e5f5f6125c9b88105d95acfb16a3e367f3f2dfadbd",
-    ),
-    "app.services.database_search_service": (
-        20,
-        "9d32e20271e6147ade33eda4bc88a3e55c5285c95fa17acb890ac129609db872",
-        1,
-        "d5ad44089142c9dd167df7f0f30438ba44b7eac85c6b320ee2823484be9a43b2",
     ),
     "app.services.library_core_service": (
         77,
@@ -107,7 +99,6 @@ def test_backend_service_facades_preserve_public_names_and_signatures() -> None:
     modules = (
         chapter_review_pipeline_service,
         chapter_note_correction_prompt_service,
-        database_search_service,
         library_core_service,
     )
     for module in modules:
@@ -139,7 +130,6 @@ def test_backend_service_facades_reexport_the_internal_implementations() -> None
         chapter_note_correction_prompt_service.validate_chapter_note_correction_review
         is _prompt_legacy.validate_chapter_note_correction_review
     )
-    assert database_search_service.build_database_search is database_search_legacy.build_database_search
     assert library_core_service.search_library is library_legacy.search_library
     assert library_service._core is library_core_service
 
