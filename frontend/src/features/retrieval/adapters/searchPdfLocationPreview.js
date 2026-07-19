@@ -27,6 +27,7 @@ export function buildSearchPdfLocationPreview(result) {
       chunkId: result?.chunk_id ?? null,
       quote: result?.selected_text || result?.text || "",
       highlightText: result?.selected_text || result?.text || "",
+      restoreState: result?.pdf_preview_state || null,
       fitWidthOnLoad: true,
     },
   };

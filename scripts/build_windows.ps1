@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 
 $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $DesktopRoot = Join-Path $ProjectRoot "integrations\search_desktop"
+. (Join-Path $PSScriptRoot "lib\search_tree_hash.ps1")
 if (-not $BuildId) { throw "search_build_id_required" }
 if ($BuildId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') {
     throw "search_build_id_invalid"
@@ -147,34 +148,6 @@ if ($CheckOnly) {
     exit 0
 }
 
-function Get-TreeInfo {
-    param([Parameter(Mandatory = $true)][string]$Root)
-    $ResolvedRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
-    $Rows = [System.Collections.Generic.List[string]]::new()
-    [int64]$TotalBytes = 0
-    $Files = @(Get-ChildItem -LiteralPath $ResolvedRoot -Recurse -File | Sort-Object FullName)
-    foreach ($File in $Files) {
-        $Relative = $File.FullName.Substring($ResolvedRoot.Length).TrimStart('\', '/').Replace('\', '/')
-        $Hash = (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
-        $Rows.Add("$Relative`t$Hash`t$($File.Length)")
-        $TotalBytes += [int64]$File.Length
-    }
-    $Payload = if ($Rows.Count) { ($Rows -join "`n") + "`n" } else { "" }
-    $Bytes = [System.Text.Encoding]::UTF8.GetBytes($Payload)
-    $Hasher = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $Digest = $Hasher.ComputeHash($Bytes)
-    }
-    finally {
-        $Hasher.Dispose()
-    }
-    [pscustomobject]@{
-        file_count = $Files.Count
-        total_bytes = $TotalBytes
-        sha256 = ([System.BitConverter]::ToString($Digest)).Replace("-", "")
-    }
-}
-
 $SafeBuildName = $BuildId -replace '[^A-Za-z0-9._-]', '-'
 $BuildRunRoot = Join-Path $ProjectRoot ".codex_tmp\build\$SafeBuildName"
 $TempDir = Join-Path $BuildRunRoot "temp"
@@ -307,8 +280,8 @@ try {
         }
     }
 
-    $FrontendInfo = Get-TreeInfo (Join-Path $ProjectRoot "frontend\dist")
-    $PackagedFrontendInfo = Get-TreeInfo (Join-Path $PackagedRoot "resources\search-assets\frontend")
+    $FrontendInfo = Get-SearchTreeHash (Join-Path $ProjectRoot "frontend\dist")
+    $PackagedFrontendInfo = Get-SearchTreeHash (Join-Path $PackagedRoot "resources\search-assets\frontend")
     if ($FrontendInfo.sha256 -ne $PackagedFrontendInfo.sha256) {
         throw "search_packaged_frontend_does_not_match_latest_build"
     }
@@ -336,8 +309,8 @@ try {
         }
     }
     $Executable = Join-Path $PackagedRoot "Search.exe"
-    $AppInfo = Get-TreeInfo (Join-Path $PackagedRoot "resources\app")
-    $TreeInfo = Get-TreeInfo $PackagedRoot
+    $AppInfo = Get-SearchTreeHash (Join-Path $PackagedRoot "resources\app")
+    $TreeInfo = Get-SearchTreeHash $PackagedRoot
     $Manifest = [ordered]@{
         status = "ready"
         build_identity = $BuildIdentity
@@ -354,6 +327,9 @@ try {
         search_exe_sha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash.ToUpperInvariant()
         resources_app_sha256 = $AppInfo.sha256
         complete_tree_sha256 = $TreeInfo.sha256
+        tree_hash_schema = $TreeInfo.schema_version
+        tree_hash_path_sort = $TreeInfo.path_sort
+        tree_hash_empty_directories = $TreeInfo.empty_directories
         frontend_tree_sha256 = $FrontendInfo.sha256
         production_data_bundled = $false
         machine_local_config_bundled = $false

@@ -9,9 +9,10 @@ import test from "node:test";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ELECTRON_EXE = resolve(ROOT, "node_modules", "electron", "dist", "electron.exe");
 const PROBE = resolve(ROOT, "tests", "fixtures", "productionPdfPreviewProbe.mjs");
-const PROJECT_TMP = resolve(ROOT, "..", "..", ".codex_tmp", "electron-pdf-preview-process");
-const USER_DATA_TMP = resolve(ROOT, "..", "..", ".codex_tmp", "electron-pdf-preview-user-data");
-const CRASH_DUMPS_TMP = resolve(ROOT, "..", "..", ".codex_tmp", "electron-pdf-preview-crashes");
+const TEST_TMP_ROOT = resolve(process.env.SEARCH_TEST_TMP_ROOT || resolve(ROOT, "..", "..", ".codex_tmp"));
+const PROJECT_TMP = resolve(TEST_TMP_ROOT, "electron-pdf-preview-process");
+const USER_DATA_TMP = resolve(TEST_TMP_ROOT, "electron-pdf-preview-user-data");
+const CRASH_DUMPS_TMP = resolve(TEST_TMP_ROOT, "electron-pdf-preview-crashes");
 
 test("production renderer renders a readable local PDF preview at supported desktop sizes", { timeout: 90000 }, async () => {
   for (const viewport of [{ width: 1440, height: 900 }, { width: 1600, height: 900 }, { width: 1920, height: 1080 }]) {
@@ -22,20 +23,31 @@ test("production renderer renders a readable local PDF preview at supported desk
     assert.equal(payload.metrics.canvasPresent, true, diagnostic);
     assert.equal(payload.metrics.first.strategy, "exact", diagnostic);
     assert.ok(payload.metrics.first.highlightCount > 0, JSON.stringify(payload.metrics));
-    assert.equal(payload.metrics.first.pageNumber, 1, diagnostic);
+    assert.equal(payload.metrics.first.pageNumber, 2, diagnostic);
     assert.equal(payload.metrics.first.chunkId, 1, diagnostic);
     assert.ok(payload.metrics.first.canvasRectWidth > 0 && payload.metrics.first.canvasRectHeight > 0, diagnostic);
     assert.equal(payload.metrics.textInitial.allInside, true, JSON.stringify(payload.metrics.textInitial));
     assert.equal(payload.metrics.textInitial.targetIntersected, true, JSON.stringify(payload.metrics.textInitial));
     assert.equal(payload.metrics.second.strategy, "exact", diagnostic);
     assert.equal(payload.metrics.second.highlightCount, 2);
-    assert.equal(payload.metrics.second.pageNumber, 1, diagnostic);
+    assert.equal(payload.metrics.second.pageNumber, 2, diagnostic);
     assert.equal(payload.metrics.second.chunkId, 2, diagnostic);
     assert.ok(payload.metrics.zoomed.scale > payload.metrics.second.scale, diagnostic);
     assert.equal(payload.metrics.bboxInitial.allInside, true, JSON.stringify(payload.metrics.bboxInitial));
     assert.equal(payload.metrics.bboxInitial.targetIntersected, true, JSON.stringify(payload.metrics.bboxInitial));
     assert.equal(payload.metrics.bboxZoomed.allInside, true, JSON.stringify(payload.metrics.bboxZoomed));
     assert.equal(payload.metrics.bboxZoomed.targetIntersected, true, JSON.stringify(payload.metrics.bboxZoomed));
+    assert.equal(payload.metrics.roundTrips.iterations.length, viewport.width === 1600 ? 5 : 1, diagnostic);
+    for (const roundTrip of payload.metrics.roundTrips.iterations) {
+      assert.equal(roundTrip.ready.ready, true, diagnostic);
+      assert.equal(roundTrip.ready.pageNumber, 2, diagnostic);
+      assert.equal(roundTrip.ready.highlightCount, 2, diagnostic);
+      assert.equal(roundTrip.restored.restoreStatus, "restored", diagnostic);
+      assert.ok(roundTrip.restored.scrollTop > 0, diagnostic);
+      assert.equal(roundTrip.restored.basketCount, 1, diagnostic);
+      assert.equal(roundTrip.geometry.allInside, true, diagnostic);
+      assert.equal(roundTrip.geometry.targetIntersected, true, diagnostic);
+    }
     assert.equal(payload.metrics.resultScroll.sameNode, true);
     assert.ok(payload.metrics.resultScroll.before > 0);
     assert.ok(Math.abs(payload.metrics.resultScroll.after - payload.metrics.resultScroll.before) <= 1);

@@ -12,7 +12,7 @@ import {
 
 const ROOT = resolve(import.meta.dirname, "..");
 const PROJECT_ROOT = resolve(ROOT, "../..");
-const TEST_ROOT = join(PROJECT_ROOT, ".codex_tmp", `search-desktop-startup-${process.pid}`);
+const TEST_ROOT = join(process.env.SEARCH_TEST_TMP_ROOT || join(PROJECT_ROOT, ".codex_tmp"), `search-desktop-startup-${process.pid}`);
 const TEST_IDENTITY = Object.freeze({
   schema_version: "search.build-identity.v1",
   build_mode: "packaged",

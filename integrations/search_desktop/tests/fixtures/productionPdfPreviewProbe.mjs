@@ -8,8 +8,9 @@ import { RendererServer } from "../../electron/runtime/rendererServer.js";
 const DESKTOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PROJECT_ROOT = resolve(DESKTOP_ROOT, "..", "..");
 const FRONTEND_DIST = resolve(PROJECT_ROOT, "frontend", "dist");
-const TEST_USER_DATA = resolve(PROJECT_ROOT, ".codex_tmp", "electron-pdf-preview-user-data");
-const TEST_CRASH_DUMPS = resolve(PROJECT_ROOT, ".codex_tmp", "electron-pdf-preview-crashes");
+const TEST_TMP_ROOT = resolve(process.env.SEARCH_TEST_TMP_ROOT || resolve(PROJECT_ROOT, ".codex_tmp"));
+const TEST_USER_DATA = resolve(TEST_TMP_ROOT, "electron-pdf-preview-user-data");
+const TEST_CRASH_DUMPS = resolve(TEST_TMP_ROOT, "electron-pdf-preview-crashes");
 const CALLBACK_URL = String(process.env.SEARCH_PDF_PREVIEW_CALLBACK_URL || "").trim();
 const VIEWPORT_WIDTH = positiveInteger(process.env.SEARCH_PDF_PREVIEW_WIDTH, 1440);
 const VIEWPORT_HEIGHT = positiveInteger(process.env.SEARCH_PDF_PREVIEW_HEIGHT, 900);
@@ -87,17 +88,20 @@ async function runProbe() {
     const before = await window.webContents.executeJavaScript(`(() => { const pane=document.querySelector('[data-testid="retrieval-results-scroll"]'); pane.scrollTop=Math.min(300,pane.scrollHeight-pane.clientHeight); globalThis.__pdfPreviewResultsPane=pane; return pane.scrollTop; })()`);
     await recordProbeStage("first_result_selected");
     await clickPreview(1);
-    const first = await waitForPreviewReady({ chunkId: 1, pageNumber: 1, strategy: "exact", highlightCount: 1 }, 16000, "pdf_first_preview");
+    const first = await waitForPreviewReady({ chunkId: 1, pageNumber: 2, strategy: "exact", highlightCount: 1 }, 16000, "pdf_first_preview");
     const textInitial = await waitForHighlightGeometry("text_initial");
     await recordProbeStage("first_snapshot_completed");
     await clickPreview(2);
-    const second = await waitForPreviewReady({ chunkId: 2, pageNumber: 1, strategy: "exact", highlightCount: 2 }, 16000, "pdf_second_preview");
+    const second = await waitForPreviewReady({ chunkId: 2, pageNumber: 2, strategy: "exact", highlightCount: 2 }, 16000, "pdf_second_preview");
     const bboxInitial = await waitForHighlightGeometry("bbox_initial");
+    const resultScrollAfterSwitch = await window.webContents.executeJavaScript(`(() => { const pane=document.querySelector('[data-testid="retrieval-results-scroll"]'); return { after: pane.scrollTop, sameNode: globalThis.__pdfPreviewResultsPane === pane }; })()`);
     await recordProbeStage("second_snapshot_completed");
+    await addSecondResultToBasket();
+    const roundTrips = await runWorkspaceRoundTrips(VIEWPORT_WIDTH === 1600 ? 5 : 1);
     const zoomBefore = await window.webContents.executeJavaScript("Number.parseInt(document.querySelector('.pdfZoomControls span')?.textContent || '0', 10)");
     await window.webContents.executeJavaScript(`(() => { const button=[...document.querySelectorAll('.pdfZoomControls button')].find((item)=>item.textContent.trim()==='+'); if(!button) throw new Error('pdf_zoom_button_missing'); button.click(); })()`);
     await waitFor(`Number.parseInt(document.querySelector('.pdfZoomControls span')?.textContent || '0', 10) > ${zoomBefore}`, 8000, "pdf_zoom");
-    const zoomed = await waitForPreviewReady({ chunkId: 2, pageNumber: 1, strategy: "exact", highlightCount: 2 }, 8000, "pdf_zoom_ready");
+    const zoomed = await waitForPreviewReady({ chunkId: 2, pageNumber: 2, strategy: "exact", highlightCount: 2 }, 8000, "pdf_zoom_ready");
     const bboxZoomed = await waitForHighlightGeometry("bbox_zoomed");
     const metrics = await window.webContents.executeJavaScript(`(() => {
       const pane=document.querySelector('[data-testid="retrieval-results-scroll"]');
@@ -121,7 +125,8 @@ async function runProbe() {
         zoomed: ${JSON.stringify(zoomed)},
         bboxInitial: ${JSON.stringify(bboxInitial)},
         bboxZoomed: ${JSON.stringify(bboxZoomed)},
-        resultScroll: { before: ${JSON.stringify(before)}, after: pane.scrollTop, sameNode: globalThis.__pdfPreviewResultsPane === pane },
+        roundTrips: ${JSON.stringify(roundTrips)},
+        resultScroll: { before: ${JSON.stringify(before)}, after: ${JSON.stringify(resultScrollAfterSwitch.after)}, sameNode: ${JSON.stringify(resultScrollAfterSwitch.sameNode)} },
         layout: {
           workspaceColumns: workspaceStyle.gridTemplateColumns,
           resultsWidth: resultRect.width,
@@ -269,11 +274,11 @@ async function highlightGeometry() {
       const box = node.getBoundingClientRect();
       return { left: box.left - pageRect.left, top: box.top - pageRect.top, width: box.width, height: box.height };
     });
-    // The fixture text is positioned at PDF user-space [72, 690, 300, 712].
+    // The fixture text is positioned at PDF user-space [72, 190, 300, 212].
     // PDF.js uses a bottom-left source origin and applies rotation in the
     // viewport.  This independent expected rectangle checks DOM placement,
     // not only the number of overlay nodes.
-    const source = { x0: 72, y0: 690, x1: 300, y1: 712 };
+    const source = { x0: 72, y0: 190, x1: 300, y1: 212 };
     const scale = rotation % 180 === 0 ? canvasRect.width / 612 : canvasRect.width / 792;
     const expected = rotation % 360 === 90
       ? { left: source.y0 * scale, top: source.x0 * scale, width: (source.y1 - source.y0) * scale, height: (source.x1 - source.x0) * scale }
@@ -304,6 +309,7 @@ function startFixtureServer() {
     response.setHeader("access-control-allow-headers", "content-type, accept, range");
     if (request.method === "OPTIONS") return response.writeHead(204).end();
     if (url.pathname === "/api/v1/retrieval/notebook-search") return json(response, searchFixture());
+    if (url.pathname === "/api/v1/library/read-shelf") return json(response, { items: [] });
     if (url.pathname.endsWith("/locator")) return json(response, locatorFixture(url.pathname.includes("fixture-02") ? 2 : 1));
     if (url.pathname.startsWith("/api/v1/library/evidence/") && url.pathname.endsWith("/pdf-location")) {
       const chunkId = Number(url.pathname.split("/").at(-2));
@@ -328,7 +334,7 @@ function searchFixture() {
 }
 
 function resultFixture(rank) {
-  return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, chunk_id: rank, document_title: `PDF fixture document ${rank}`, pdf_page: 1, final_rank: rank, final_score: 0.9, reranker_score: 0.8, semantic_score: 0.7, tags: [], provenance: [], text: "PDF preview target text across the rendered page" };
+  return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, chunk_id: rank, document_title: `PDF fixture document ${rank}`, pdf_page: 2, final_rank: rank, final_score: 0.9, reranker_score: 0.8, semantic_score: 0.7, tags: [], provenance: [], text: "PDF preview target text across the rendered page" };
 }
 
 function positiveInteger(value, fallback) {
@@ -337,23 +343,23 @@ function positiveInteger(value, fallback) {
 }
 
 function detailFixture(rank) {
-  return { ...resultFixture(rank), text: "PDF preview target text across the rendered page", context_before: "fixture before", context_after: "fixture after", content_hash: "a".repeat(64), open_target: { pdf_url: "/api/v1/library/documents/1/pdf#page=1", can_open_pdf: true, can_open_zotero: false } };
+  return { ...resultFixture(rank), text: "PDF preview target text across the rendered page", context_before: "fixture before", context_after: "fixture after", content_hash: "a".repeat(64), open_target: { pdf_url: "/api/v1/library/documents/1/pdf#page=2", can_open_pdf: true, can_open_zotero: false } };
 }
 
 function locatorFixture(rank) {
-  const bbox = rank === 2 ? [{ x0: 72, y0: 690, x1: 200, y1: 712 }, { x0: 205, y0: 690, x1: 300, y1: 712 }] : [];
-  return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, pdf_page: 1, page_index: 0, page_label: "1", bbox: bbox.length ? { pageIndex: 0, rects: bbox.map((rect) => [rect.x0, rect.y0, rect.x1, rect.y1]) } : null, rects: bbox, selected_text: "PDF preview target text across the rendered page", locator_strategy: bbox.length ? "bbox" : "text", pdf_available: true, pdf_endpoint: "/api/v1/library/documents/1/pdf#page=1", warnings: [] };
+  const bbox = rank === 2 ? [{ x0: 72, y0: 190, x1: 200, y1: 212 }, { x0: 205, y0: 190, x1: 300, y1: 212 }] : [];
+  return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, pdf_page: 2, page_index: 1, page_label: "2", bbox: bbox.length ? { pageIndex: 1, rects: bbox.map((rect) => [rect.x0, rect.y0, rect.x1, rect.y1]) } : null, rects: bbox, selected_text: "PDF preview target text across the rendered page", locator_strategy: bbox.length ? "bbox" : "text", pdf_available: true, pdf_endpoint: "/api/v1/library/documents/1/pdf#page=2", warnings: [] };
 }
 
 function legacyLocationFixture(chunkId) {
   const rects = chunkId === 2
-    ? [{ x0: 72, y0: 80, x1: 200, y1: 102 }, { x0: 205, y0: 80, x1: 300, y1: 102 }]
-    : [{ x0: 72, y0: 80, x1: 300, y1: 102 }];
+    ? [{ x0: 72, y0: 580, x1: 200, y1: 602 }, { x0: 205, y0: 580, x1: 300, y1: 602 }]
+    : [{ x0: 72, y0: 580, x1: 300, y1: 602 }];
   return {
     status: "located",
     locator_status: "exact_text_location",
     locator_reason: "fixture legacy locator",
-    pdf_page: 1,
+    pdf_page: 2,
     page_width: 612,
     page_height: 792,
     rects,
@@ -373,6 +379,69 @@ async function clickPreview(rank) {
   await window.webContents.executeJavaScript(`(() => { const card=document.querySelector('[data-result-index="${rank - 1}"]'); const button=[...card.querySelectorAll('button')].find((item)=>item.textContent.trim()==='预览'); if(!button) throw new Error('preview_button_missing'); button.click(); })()`);
 }
 
+async function addSecondResultToBasket() {
+  await window.webContents.executeJavaScript(`(() => {
+    const card=document.querySelector('[data-result-index="1"]');
+    const button=card?.querySelector('button[aria-label="加入证据篮子"]');
+    if(!button) throw new Error('evidence_basket_add_missing');
+    button.click();
+  })()`);
+  await waitFor("document.querySelectorAll('.localEvidenceBasketItem').length === 1", 8000, "evidence_basket_added");
+}
+
+async function runWorkspaceRoundTrips(count) {
+  const baseline = await readRestoreSnapshot();
+  if (!(baseline.scrollTop > 0)) throw new Error(`pdf_location_not_scrolled:${JSON.stringify(baseline)}`);
+  const iterations = [];
+  for (let index = 0; index < count; index += 1) {
+    await recordProbeStage(`workspace_round_trip_${index + 1}_start`);
+    await window.webContents.executeJavaScript(`(() => {
+      const button=[...document.querySelectorAll('.navItem')].find((item)=>item.querySelector('.navLabel')?.textContent.trim()==='Research Workspace');
+      if(!button) throw new Error('workspace_navigation_missing');
+      button.click();
+    })()`);
+    await waitFor("document.querySelector('.notebookHomePage')", 8000, `workspace_open_${index + 1}`);
+    await window.webContents.executeJavaScript(`(() => {
+      const button=[...document.querySelectorAll('button')].find((item)=>item.textContent.includes('返回搜索'));
+      if(!button) throw new Error('workspace_return_missing');
+      button.click();
+    })()`);
+    await waitFor("document.querySelector('[data-testid=\"retrieval-results-scroll\"]')", 8000, `workspace_return_${index + 1}`);
+    const ready = await waitForPreviewReady({ chunkId: 2, pageNumber: 2, strategy: "exact", highlightCount: 2 }, 16000, `workspace_restore_${index + 1}`);
+    const geometry = await waitForHighlightGeometry(`workspace_restore_geometry_${index + 1}`);
+    const restored = await readRestoreSnapshot();
+    if (Math.abs(restored.scale - baseline.scale) > 0.001) throw new Error(`workspace_scale_not_restored:${JSON.stringify({ baseline, restored })}`);
+    if (Math.abs(restored.scrollTop - baseline.scrollTop) > 2 || Math.abs(restored.scrollLeft - baseline.scrollLeft) > 2) {
+      throw new Error(`workspace_location_not_restored:${JSON.stringify({ baseline, restored })}`);
+    }
+    if (restored.query !== baseline.query || restored.basketCount !== 1 || !geometry.allInside || !geometry.targetIntersected) {
+      throw new Error(`workspace_session_not_restored:${JSON.stringify({ baseline, restored, geometry })}`);
+    }
+    iterations.push({ ready, restored, geometry });
+    await recordProbeStage(`workspace_round_trip_${index + 1}_ready`);
+  }
+  return { baseline, iterations };
+}
+
+function readRestoreSnapshot() {
+  return window.webContents.executeJavaScript(`(() => {
+    const preview=document.querySelector('[data-testid="pdf-location-preview"]');
+    const scroller=document.querySelector('.searchPreviewPdfStage .pdfPreviewScroller');
+    return {
+      ready: preview?.dataset.previewReady === 'true',
+      restoreStatus: preview?.dataset.previewRestoreStatus || '',
+      pageNumber: Number(preview?.dataset.pageNumber || 0),
+      requestedPageNumber: Number(preview?.dataset.requestedPageNumber || 0),
+      scale: Number(preview?.dataset.renderScale || 0),
+      scrollTop: Number(scroller?.scrollTop || 0),
+      scrollLeft: Number(scroller?.scrollLeft || 0),
+      query: document.querySelector('.localRetrievalQueryField input')?.value || '',
+      basketCount: document.querySelectorAll('.localEvidenceBasketItem').length,
+      highlightCount: document.querySelectorAll('[data-testid="pdf-highlight-rect"]').length,
+    };
+  })()`);
+}
+
 async function waitFor(expression, timeout = 8000, label = "") {
   const started = Date.now();
   while (Date.now() - started < timeout) {
@@ -389,13 +458,16 @@ function json(response, value) {
 }
 
 function fixturePdf(text) {
-  const stream = `BT\n/F1 18 Tf\n72 700 Td\n(${text.replace(/[()\\]/g, "\\$&")}) Tj\nET\n`;
+  const firstPageStream = "";
+  const secondPageStream = `BT\n/F1 18 Tf\n72 200 Td\n(${text.replace(/[()\\]/g, "\\$&")}) Tj\nET\n`;
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`,
+    `<< /Length ${Buffer.byteLength(firstPageStream)} >>\nstream\n${firstPageStream}endstream`,
+    `<< /Length ${Buffer.byteLength(secondPageStream)} >>\nstream\n${secondPageStream}endstream`,
   ];
   let body = "%PDF-1.4\n";
   const offsets = [0];

@@ -8,8 +8,9 @@ import { RendererServer } from "../../electron/runtime/rendererServer.js";
 const DESKTOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PROJECT_ROOT = resolve(DESKTOP_ROOT, "..", "..");
 const FRONTEND_DIST = resolve(PROJECT_ROOT, "frontend", "dist");
-const TEST_USER_DATA = resolve(PROJECT_ROOT, ".codex_tmp", "electron-scroll-user-data");
-const TEST_CRASH_DUMPS = resolve(PROJECT_ROOT, ".codex_tmp", "electron-scroll-crashes");
+const TEST_TMP_ROOT = resolve(process.env.SEARCH_TEST_TMP_ROOT || resolve(PROJECT_ROOT, ".codex_tmp"));
+const TEST_USER_DATA = resolve(TEST_TMP_ROOT, "electron-scroll-user-data");
+const TEST_CRASH_DUMPS = resolve(TEST_TMP_ROOT, "electron-scroll-crashes");
 const CALLBACK_URL = String(process.env.SEARCH_SCROLL_CALLBACK_URL || "").trim();
 
 mkdirSync(TEST_USER_DATA, { recursive: true });

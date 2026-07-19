@@ -9,9 +9,10 @@ import test from "node:test";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ELECTRON_EXE = resolve(ROOT, "node_modules", "electron", "dist", "electron.exe");
 const PROBE = resolve(ROOT, "tests", "fixtures", "productionScrollProbe.mjs");
-const PROJECT_TMP = resolve(ROOT, "..", "..", ".codex_tmp", "electron-scroll-process");
-const USER_DATA_TMP = resolve(ROOT, "..", "..", ".codex_tmp", "electron-scroll-user-data");
-const CRASH_DUMPS_TMP = resolve(ROOT, "..", "..", ".codex_tmp", "electron-scroll-crashes");
+const TEST_TMP_ROOT = resolve(process.env.SEARCH_TEST_TMP_ROOT || resolve(ROOT, "..", "..", ".codex_tmp"));
+const PROJECT_TMP = resolve(TEST_TMP_ROOT, "electron-scroll-process");
+const USER_DATA_TMP = resolve(TEST_TMP_ROOT, "electron-scroll-user-data");
+const CRASH_DUMPS_TMP = resolve(TEST_TMP_ROOT, "electron-scroll-crashes");
 
 test("production renderer keeps window fixed while results, preview, and evidence basket scroll independently", { timeout: 30000 }, async () => {
   const { payload, stdout, stderr, code } = await runProbe();

@@ -67,6 +67,12 @@ def test_test_and_build_scripts_keep_outputs_inside_unique_project_directories()
     assert "current_formal_package_untouched = $true" in build
     assert "complete_tree_sha256" in build
     assert "resources_app_sha256" in build
+    assert "Get-SearchTreeHash" in build
+    assert "tree_hash_schema" in build
+    tree_hash = _source("scripts/lib/search_tree_hash.ps1")
+    assert "OrdinalIgnoreCase" in tree_hash
+    assert "Sort-Object" not in tree_hash
+    assert 'empty_directories = "excluded"' in tree_hash
     assert "Remove-Item" not in build
 
 

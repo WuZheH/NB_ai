@@ -31,6 +31,14 @@ test("legacy pdf-location payload remains authoritative for Search PDF props", (
     page_height: 792,
     rects: [{ x0: 72, y0: 80, x1: 300, y1: 102 }],
   };
+  const restoreState = {
+    document_id: 5,
+    chunk_id: 5561,
+    requested_page_number: 13,
+    scale: 1,
+    scroll_top: 240,
+    scroll_left: 0,
+  };
   const preview = buildSearchPdfLocationPreview({
     document_id: 5,
     chunk_id: 5561,
@@ -38,12 +46,14 @@ test("legacy pdf-location payload remains authoritative for Search PDF props", (
     text: "ordinary search result",
     open_target: { pdf_url: "/api/v1/library/documents/5/pdf#page=13" },
     pdf_location: { location: legacyLocation },
+    pdf_preview_state: restoreState,
     locator: { pdf_page: 12, locator_strategy: "page" },
   });
   assert.equal(preview.available, true);
   assert.equal(preview.props.location, legacyLocation);
   assert.equal(preview.props.page, 13);
   assert.equal(preview.props.pdfUrl, "/api/v1/library/documents/5/pdf#page=13");
+  assert.equal(preview.props.restoreState, restoreState);
   assert.equal(preview.props.fitWidthOnLoad, true);
 });
 
@@ -78,7 +88,8 @@ test("PDF preview readiness waits for the final rendered selection and committed
   ]) {
     assert.match(preview, new RegExp(contractPart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(probe, /waitForPreviewReady\(\{ chunkId: 1, pageNumber: 1, strategy: "exact", highlightCount: 1 \}/);
+  assert.match(probe, /waitForPreviewReady\(\{ chunkId: 1, pageNumber: 2, strategy: "exact", highlightCount: 1 \}/);
+  assert.match(probe, /runWorkspaceRoundTrips\(VIEWPORT_WIDTH === 1600 \? 5 : 1\)/);
   assert.match(probe, /snapshot\?\.ready/);
   assert.match(probe, /snapshot\.canvasRectWidth > 0/);
   assert.doesNotMatch(probe, /pdf_first_preview[\s\S]{0,200}document\.querySelector\('\[data-testid="pdf-highlight-layer"\]'\)/);
@@ -129,6 +140,14 @@ test("renderer-memory Search session retains query, results, selection, preview,
         fragment_id: "fixture",
         pdf_page: 13,
         preview_view: "pdf",
+        pdf_preview_state: {
+          document_id: 5,
+          chunk_id: 5561,
+          requested_page_number: 13,
+          scale: 1,
+          scroll_top: 240,
+          scroll_left: 0,
+        },
         pdf_location: {
           location: {
             pdf_page: 13,
@@ -148,5 +167,6 @@ test("renderer-memory Search session retains query, results, selection, preview,
   assert.equal(readSearchSession().previewState.data.pdf_page, 13);
   assert.equal(readSearchSession().previewState.data.preview_view, "pdf");
   assert.equal(readSearchSession().previewState.data.pdf_location.location.rects.length, 1);
+  assert.equal(readSearchSession().previewState.data.pdf_preview_state.scroll_top, 240);
   clearSearchSessionForTests();
 });

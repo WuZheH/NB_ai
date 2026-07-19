@@ -87,7 +87,12 @@ export default function LocalRetrievalPage() {
     const rememberScroll = () => {
       const scroll = captureSearchScroll(root);
       if (!scroll) return;
-      const session = { ...latestSessionRef.current, scroll };
+      const pdfPreviewState = capturePdfPreviewState(root);
+      const currentPreview = latestSessionRef.current.previewState;
+      const previewState = pdfPreviewState && currentPreview?.status === "ready" && currentPreview.data
+        ? { ...currentPreview, data: { ...currentPreview.data, pdf_preview_state: pdfPreviewState } }
+        : currentPreview;
+      const session = { ...latestSessionRef.current, scroll, previewState };
       latestSessionRef.current = session;
       writeSearchSession(session);
     };
@@ -464,6 +469,31 @@ function captureSearchScroll(root) {
     preview: root.querySelector('[data-testid="search-preview-scroll"]')?.scrollTop || 0,
     basket: root.querySelector('[data-testid="evidence-basket-scroll"]')?.scrollTop || 0,
   };
+}
+
+function capturePdfPreviewState(root) {
+  const preview = root?.querySelector('[data-testid="pdf-location-preview"]');
+  const scroller = root?.querySelector('.searchPreviewPdfStage .pdfPreviewScroller');
+  if (!preview || !scroller || preview.dataset.previewReady !== "true") return null;
+  const state = {
+    document_id: Number(preview.dataset.documentId),
+    chunk_id: Number(preview.dataset.chunkId),
+    requested_page_number: Number(preview.dataset.requestedPageNumber),
+    scale: Number(preview.dataset.renderScale),
+    scroll_top: Number(scroller.scrollTop),
+    scroll_left: Number(scroller.scrollLeft),
+  };
+  if (
+    !Number.isInteger(state.document_id)
+    || state.document_id < 1
+    || !Number.isInteger(state.requested_page_number)
+    || state.requested_page_number < 1
+    || !Number.isFinite(state.scale)
+    || state.scale <= 0
+    || !Number.isFinite(state.scroll_top)
+    || !Number.isFinite(state.scroll_left)
+  ) return null;
+  return state;
 }
 
 function restoreSearchScroll(root, scroll) {

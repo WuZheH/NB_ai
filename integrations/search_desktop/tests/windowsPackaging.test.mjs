@@ -16,7 +16,7 @@ const finalizer = await readFile(new URL("../scripts/finalize-windows-exe.mjs", 
 const packager = await readFile(new URL("../scripts/package-windows-unpacked.mjs", import.meta.url), "utf8");
 const r5Packager = await readFile(new URL("../scripts/package-r5-candidate.mjs", import.meta.url), "utf8");
 const ROOT = resolve(import.meta.dirname, "..");
-const FIXTURE_ROOT = resolve(ROOT, "../..", ".codex_tmp", "search-desktop-packaging-tests");
+const FIXTURE_ROOT = resolve(process.env.SEARCH_TEST_TMP_ROOT || resolve(ROOT, "../..", ".codex_tmp"), "search-desktop-packaging-tests");
 
 test("Windows packaging avoids privileged symlink extraction and applies Search resources", () => {
   assert.equal(packageJson.build.win.signAndEditExecutable, false);

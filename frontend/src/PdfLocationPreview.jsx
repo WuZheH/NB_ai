@@ -5,6 +5,11 @@ import {
   isRenderReadyForFocus,
   shouldApplyAutoFocus
 } from "./utils/pdfFocus.js";
+import {
+  isPdfPreviewSemanticallyReady,
+  resolvePdfPageRequest,
+  resolveScaleTransition
+} from "./utils/pdfPreviewReady.js";
 import { cleanSearchSnippet } from "./utils/snippet.js";
 
 const DEFAULT_SCALE = 1.35;
@@ -40,6 +45,7 @@ function PdfLocationPreview({
   chunkId,
   quote,
   highlightText,
+  restoreState,
   fitWidthOnLoad = false
 }) {
   const canvasRef = useRef(null);
@@ -49,9 +55,11 @@ function PdfLocationPreview({
   const pendingFocusRef = useRef(null);
   const autoFitKeyRef = useRef("");
   const renderAttemptRef = useRef(0);
-  const [scale, setScale] = useState(DEFAULT_SCALE);
+  const initialRestoreScale = readRestoreScale(restoreState, { documentId, chunkId, requestedPage: normalizePage(location?.pdf_page ?? page ?? pageNumber ?? extractPage(pdfUrl) ?? pdf_page_start ?? pdf_page_end) });
+  const [scale, setScale] = useState(initialRestoreScale || DEFAULT_SCALE);
   const [autoFitState, setAutoFitState] = useState({ pdfKey: "", scale: null });
   const [completedFocusKey, setCompletedFocusKey] = useState("");
+  const [completedRestoreKey, setCompletedRestoreKey] = useState("");
   const [renderState, setRenderState] = useState({
     attempt: 0,
     status: "idle",
@@ -59,7 +67,11 @@ function PdfLocationPreview({
     height: 0,
     baseWidth: 0,
     baseHeight: 0,
+    requestedPageNumber: null,
     pageNumber: null,
+    pageCount: 0,
+    pageFallback: false,
+    pageFallbackReason: "",
     scale: null,
     outputScale: 1,
     backingWidth: 0,
@@ -92,9 +104,16 @@ function PdfLocationPreview({
       ? "缺少 PDF 页码"
       : "";
 
-  const canFocusHighlight = shouldShowHighlights && rects.length > 0 && !isApproximateRegion;
+  const pageFallback = Boolean(renderState.pageFallback && renderState.requestedPageNumber === pdfPage);
+  const overlayAvailable = shouldShowHighlights && !pageFallback;
+  const canFocusHighlight = overlayAvailable && rects.length > 0 && !isApproximateRegion;
   const focusMode = isLayoutRegion ? "layout" : "exact";
   const pdfSelectionKey = `${resolvedPdfUrl}:${pdfPage || ""}`;
+  const restoreRequest = normalizeRestoreRequest(restoreState, { documentId, chunkId, requestedPage: pdfPage });
+  const restoreKey = restoreRequest
+    ? `${pdfSelectionKey}:${restoreRequest.documentId}:${restoreRequest.chunkId || ""}:${restoreRequest.scale}:${restoreRequest.scrollTop}:${restoreRequest.scrollLeft}`
+    : "";
+  const restoreRequestSettled = !restoreRequest || completedRestoreKey === restoreKey;
   const focusKey = useMemo(() => {
     if (!canFocusHighlight || !pdfPage) return "";
     const rectKey = rects
@@ -109,7 +128,9 @@ function PdfLocationPreview({
     ].join(":");
   }, [canFocusHighlight, chunkId, pdfPage, location?.locator_status, location?.status, location?.visual_mode, rects]);
   const renderMatchesSelection = renderState.status === "ready"
-    && renderState.pageNumber === pdfPage
+    && renderState.requestedPageNumber === pdfPage
+    && Number.isInteger(renderState.pageNumber)
+    && renderState.pageNumber > 0
     && Number.isFinite(renderState.scale)
     && Math.abs(renderState.scale - scale) < 0.001;
   const canvasDimensionsReady = renderState.width > 0
@@ -118,21 +139,27 @@ function PdfLocationPreview({
     && renderState.backingHeight > 0;
   const manualZoomSettled = Boolean(focusKey && manualZoomKeyRef.current === focusKey);
   const autoFitSettled = !fitWidthOnLoad
+    || Boolean(restoreRequest && restoreRequestSettled)
     || manualZoomSettled
     || (autoFitState.pdfKey === pdfSelectionKey
       && Number.isFinite(autoFitState.scale)
       && Math.abs(autoFitState.scale - scale) < 0.001);
   const focusSettled = !canFocusHighlight
+    || Boolean(restoreRequest && restoreRequestSettled)
     || completedFocusKey === focusKey
     || manualZoomSettled;
-  const previewReady = Boolean(
-    resolvedPdfUrl
-    && pdfPage
-    && renderMatchesSelection
+  const overlaySettled = pageFallback || !canFocusHighlight || focusSettled;
+  const previewReady = renderMatchesSelection
     && canvasDimensionsReady
-    && autoFitSettled
-    && focusSettled
-  );
+    && isPdfPreviewSemanticallyReady({
+      resolvedPdfUrl,
+      requestedPage: pdfPage,
+      renderState,
+      currentScale: scale,
+      autoFitSettled,
+      restoreSettled: focusSettled && restoreRequestSettled,
+      overlaySettled,
+    });
 
   useEffect(() => {
     if (pendingFocusRef.current && pendingFocusRef.current.key !== focusKey) {
@@ -141,8 +168,17 @@ function PdfLocationPreview({
   }, [focusKey]);
 
   useEffect(() => {
+    setCompletedRestoreKey("");
+    if (!restoreRequest) return;
+    autoFitKeyRef.current = "";
+    autoFocusKeyRef.current = "";
+    pendingFocusRef.current = null;
+    setScale(restoreRequest.scale);
+  }, [restoreKey]);
+
+  useEffect(() => {
     if (!resolvedPdfUrl || !pdfPage) {
-      setRenderState({ attempt: 0, status: "idle", width: 0, height: 0, baseWidth: 0, baseHeight: 0, pageNumber: null, scale: null, outputScale: 1, backingWidth: 0, backingHeight: 0, errorTitle: "", errorMessage: "" });
+      setRenderState({ attempt: 0, status: "idle", width: 0, height: 0, baseWidth: 0, baseHeight: 0, requestedPageNumber: null, pageNumber: null, pageCount: 0, pageFallback: false, pageFallbackReason: "", scale: null, outputScale: 1, backingWidth: 0, backingHeight: 0, errorTitle: "", errorMessage: "" });
       return undefined;
     }
 
@@ -174,7 +210,11 @@ function PdfLocationPreview({
           height: 0,
           baseWidth: 0,
           baseHeight: 0,
+          requestedPageNumber: pdfPage,
           pageNumber: pdfPage,
+          pageCount: 0,
+          pageFallback: false,
+          pageFallbackReason: "",
           scale,
           outputScale: 1,
           backingWidth: 0,
@@ -191,10 +231,14 @@ function PdfLocationPreview({
         ...current,
         attempt,
         status: "loading",
+        requestedPageNumber: pdfPage,
         pageNumber: pdfPage,
+        pageCount: 0,
+        pageFallback: false,
+        pageFallbackReason: "",
         scale,
         errorTitle: "",
-          errorMessage: ""
+        errorMessage: ""
       }));
       let pdfjsLib;
       try {
@@ -226,10 +270,23 @@ function PdfLocationPreview({
         return;
       }
 
+      const pageRequest = resolvePdfPageRequest(pdfPage, Number(pdf.numPages));
+      if (!pageRequest.pageNumber) {
+        fail("page", new Error(pageRequest.fallbackReason));
+        return;
+      }
+      if (pageRequest.fallback) {
+        reportStage("pdf_page_fallback", {
+          requestedPageNumber: pdfPage,
+          pageNumber: pageRequest.pageNumber,
+          fallbackReason: pageRequest.fallbackReason,
+        });
+      }
+
       let page;
       try {
-        page = await pdf.getPage(pdfPage);
-        reportStage("pdf_page_loaded");
+        page = await pdf.getPage(pageRequest.pageNumber);
+        reportStage("pdf_page_loaded", { pageNumber: pageRequest.pageNumber });
       } catch (error) {
         fail("page", error);
         return;
@@ -274,7 +331,11 @@ function PdfLocationPreview({
             height: viewport.height,
             baseWidth: baseViewport.width,
             baseHeight: baseViewport.height,
-            pageNumber: pdfPage,
+            requestedPageNumber: pdfPage,
+            pageNumber: pageRequest.pageNumber,
+            pageCount: Number(pdf.numPages),
+            pageFallback: pageRequest.fallback,
+            pageFallbackReason: pageRequest.fallbackReason,
             scale,
             outputScale,
             backingWidth,
@@ -343,19 +404,41 @@ function PdfLocationPreview({
   ]);
 
   useEffect(() => {
-    if (!fitWidthOnLoad || renderState.status !== "ready" || !scrollerRef.current) return;
+    if (!restoreRequest || completedRestoreKey === restoreKey || renderState.status !== "ready" || !scrollerRef.current) return;
+    if (renderState.requestedPageNumber !== pdfPage || Math.abs(Number(renderState.scale) - restoreRequest.scale) > 0.001) return;
+    const scroller = scrollerRef.current;
+    scroller.scrollTop = restoreRequest.scrollTop;
+    scroller.scrollLeft = restoreRequest.scrollLeft;
+    pendingFocusRef.current = null;
+    autoFocusKeyRef.current = focusKey;
+    if (focusKey) setCompletedFocusKey(focusKey);
+    setCompletedRestoreKey(restoreKey);
+    emitPdfPreviewStage("preview_restore_committed", {
+      attempt: renderState.attempt,
+      documentId: Number(documentId) || null,
+      chunkId: Number(chunkId) || null,
+      pageNumber: renderState.pageNumber,
+      scale: renderState.scale,
+      scrollTop: scroller.scrollTop,
+      scrollLeft: scroller.scrollLeft,
+    });
+  }, [restoreKey, completedRestoreKey, renderState.status, renderState.requestedPageNumber, renderState.pageNumber, renderState.scale, renderState.attempt, pdfPage, focusKey, documentId, chunkId]);
+
+  useEffect(() => {
+    if (restoreRequest || !fitWidthOnLoad || renderState.status !== "ready" || !scrollerRef.current) return;
     const baseWidth = pageWidth || renderState.baseWidth;
     if (!baseWidth) return;
     const fitKey = `${resolvedPdfUrl}:${pdfPage}:${Math.round(scrollerRef.current.clientWidth)}`;
     if (autoFitKeyRef.current === fitKey) return;
     autoFitKeyRef.current = fitKey;
     const fitScale = clampScale(Math.max(120, scrollerRef.current.clientWidth - 24) / baseWidth);
-    setAutoFitState({ pdfKey: pdfSelectionKey, scale: fitScale });
-    if (Math.abs(fitScale - scale) > 0.05) setZoom(fitScale, { manual: false });
-  }, [fitWidthOnLoad, renderState.status, renderState.baseWidth, pageWidth, resolvedPdfUrl, pdfPage, pdfSelectionKey, scale]);
+    const transition = resolveScaleTransition({ currentScale: scale, targetScale: fitScale });
+    setAutoFitState({ pdfKey: pdfSelectionKey, scale: transition.settledScale });
+    if (transition.shouldUpdate) setZoom(transition.settledScale, { manual: false });
+  }, [restoreKey, fitWidthOnLoad, renderState.status, renderState.baseWidth, pageWidth, resolvedPdfUrl, pdfPage, pdfSelectionKey, scale]);
 
   useEffect(() => {
-    if (renderState.status !== "ready" || !canFocusHighlight || !focusKey || !scrollerRef.current || !pageWidth || !pageHeight) return;
+    if (restoreRequest || renderState.status !== "ready" || !canFocusHighlight || !focusKey || !scrollerRef.current || !pageWidth || !pageHeight) return;
     if (!shouldApplyAutoFocus({
       focusKey,
       manualZoomKey: manualZoomKeyRef.current,
@@ -379,11 +462,12 @@ function PdfLocationPreview({
       ? clampScale(Math.max(120, scroller.clientWidth - 24) / pageWidth)
       : focus.desiredScale;
     const desiredScale = fitWidthOnLoad ? Math.min(focus.desiredScale, fitScale) : focus.desiredScale;
-    pendingFocusRef.current = { key: focusKey, focus, desiredScale };
-    if (Math.abs(desiredScale - scale) > 0.05) {
-      setScale(clampScale(desiredScale));
+    const transition = resolveScaleTransition({ currentScale: scale, targetScale: clampScale(desiredScale) });
+    pendingFocusRef.current = { key: focusKey, focus, desiredScale: transition.settledScale };
+    if (transition.shouldUpdate) {
+      setScale(transition.settledScale);
     }
-  }, [renderState.status, canFocusHighlight, focusKey, rects, pageWidth, pageHeight, focusMode, scale, fitWidthOnLoad]);
+  }, [restoreKey, renderState.status, canFocusHighlight, focusKey, rects, pageWidth, pageHeight, focusMode, scale, fitWidthOnLoad]);
 
   useEffect(() => {
     const pending = pendingFocusRef.current;
@@ -461,21 +545,25 @@ function PdfLocationPreview({
       data-preview-status={renderState.status}
       data-preview-ready={previewReady ? "true" : "false"}
       data-render-attempt={renderState.attempt}
+      data-document-id={documentId || ""}
       data-page-number={renderState.pageNumber || ""}
+      data-requested-page-number={renderState.requestedPageNumber || ""}
+      data-page-fallback={pageFallback ? "true" : "false"}
+      data-preview-restore-status={previewReady ? "restored" : renderState.status}
       data-chunk-id={chunkId || ""}
       data-render-scale={renderState.scale || ""}
       data-canvas-width={renderState.width || 0}
       data-canvas-height={renderState.height || 0}
       data-canvas-backing-width={renderState.backingWidth || 0}
       data-canvas-backing-height={renderState.backingHeight || 0}
-      data-highlight-strategy={previewReady ? pdfHighlightMode(location) : ""}
-      data-highlight-count={previewReady ? rects.length : 0}
+      data-highlight-strategy={previewReady && overlayAvailable ? pdfHighlightMode(location) : ""}
+      data-highlight-count={previewReady && overlayAvailable ? rects.length : 0}
     >
       <div className="pdfPreviewHeader">
         <div>
           <h3>PDF 定位预览</h3>
           <p>
-            {chunkId ? `chunk ${chunkId} · ` : ""}第 {pdfPage || "n/a"} 页 · {statusLabel} · {countLabel}
+            {chunkId ? `chunk ${chunkId} · ` : ""}第 {renderState.pageNumber || pdfPage || "n/a"} 页 · {statusLabel} · {countLabel}
           </p>
         </div>
         <div className="pdfZoomControls" aria-label="PDF 缩放">
@@ -498,6 +586,11 @@ function PdfLocationPreview({
           {renderState.errorMessage && <span>{renderState.errorMessage}</span>}
         </div>
       )}
+      {renderState.status === "ready" && pageFallback && (
+        <div className="pdfPreviewNotice approximate" data-testid="pdf-page-fallback-notice">
+          请求页码超出文档范围，已显示最后一页；当前页不显示原页高光。
+        </div>
+      )}
       {renderState.status === "ready" && (isApproximateRegion || !rects.length) && (
         <div className={`pdfPreviewNotice${isApproximateRegion ? " approximate" : ""}`}>
           {isApproximateRegion
@@ -511,7 +604,7 @@ function PdfLocationPreview({
       <div className="pdfPreviewScroller" ref={scrollerRef}>
         <div className="pdfPageCanvasWrap" style={canvasSizeStyle} data-testid="pdf-page-wrap">
           <canvas ref={canvasRef} data-testid="pdf-page-canvas" />
-          {renderState.status === "ready" && shouldShowHighlights && (
+          {renderState.status === "ready" && overlayAvailable && (
             <div className="pdfHighlightLayer" aria-hidden="true" data-testid="pdf-highlight-layer" data-strategy={pdfHighlightMode(location)}>
               {rects.map((rect, index) => (
                 <span
@@ -563,6 +656,40 @@ function normalizePage(value) {
   const page = Number(value);
   if (!Number.isFinite(page) || page < 1) return null;
   return Math.floor(page);
+}
+
+function readRestoreScale(restoreState, identity) {
+  return normalizeRestoreRequest(restoreState, identity)?.scale || null;
+}
+
+function normalizeRestoreRequest(restoreState, { documentId, chunkId, requestedPage } = {}) {
+  if (!restoreState || typeof restoreState !== "object") return null;
+  const expectedDocumentId = Number(documentId);
+  const expectedChunkId = Number(chunkId);
+  const expectedPage = Number(requestedPage);
+  const value = {
+    documentId: Number(restoreState.document_id),
+    chunkId: Number(restoreState.chunk_id) || null,
+    requestedPage: Number(restoreState.requested_page_number),
+    scale: Number(restoreState.scale),
+    scrollTop: Number(restoreState.scroll_top),
+    scrollLeft: Number(restoreState.scroll_left),
+  };
+  if (
+    !Number.isInteger(value.documentId)
+    || value.documentId !== expectedDocumentId
+    || (Number.isInteger(expectedChunkId) && expectedChunkId > 0 && value.chunkId !== expectedChunkId)
+    || !Number.isInteger(value.requestedPage)
+    || value.requestedPage !== expectedPage
+    || !Number.isFinite(value.scale)
+    || value.scale < MIN_SCALE
+    || value.scale > MAX_SCALE
+    || !Number.isFinite(value.scrollTop)
+    || value.scrollTop < 0
+    || !Number.isFinite(value.scrollLeft)
+    || value.scrollLeft < 0
+  ) return null;
+  return value;
 }
 
 function clampScale(value) {
