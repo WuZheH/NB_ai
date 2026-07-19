@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { IPC_CHANNELS } from "../electron/ipc/channels.js";
 import { normalizeSettingsPatch } from "../electron/ipc/settingsStore.js";
+import {
+  encodeBuildIdentityArgument,
+  loadBuildIdentityForApp,
+  validateBuildIdentity,
+} from "../electron/main/buildIdentity.js";
 import { resolveRendererPort, validateLoopbackUrl } from "../electron/main/config.js";
 import { resolveWindowMode } from "../electron/main/window.js";
 
@@ -16,10 +22,9 @@ test("product brand is Search while NOTEBOOK_AI runtime compatibility remains", 
   assert.equal(packageJson.productName, "Search");
   assert.equal(packageJson.version, "0.1.4");
   assert.deepEqual(productMetadata, {
+    schemaVersion: "search.product-metadata.v2",
     productName: "Search",
-    version: "0.1.4",
-    buildId: "20260717-search-0.1.4-github-release-convergence",
-    rendererAssetVersion: "0.1.4-github-release-convergence",
+    identityResource: "package.json#searchBuildIdentity",
   });
   assert.equal(packageJson.devDependencies.electron, "37.2.6");
   const config = await readFile(join(ROOT, "electron", "main", "config.js"), "utf8");
@@ -44,6 +49,8 @@ test("runtime launcher is a direct hidden child with controlled output pipes", a
   assert.match(launcher, /NOTEBOOK_AI_DATA_PROJECT_ROOT:\s*this\.config\.dataProjectRoot/);
   assert.match(launcher, /SEARCH_DATA_DIR:\s*this\.config\.dataDir/);
   assert.match(launcher, /SEARCH_PYTHON:\s*this\.config\.pythonExe/);
+  assert.match(launcher, /SEARCH_BUILD_MODE:\s*this\.config\.buildMode/);
+  assert.match(launcher, /SEARCH_BUILD_IDENTITY_PATH:\s*this\.config\.buildIdentityPath/);
   assert.match(launcher, /runtime_prerequisites_missing/);
   assert.match(launcher, /cwd:\s*this\.config\.runtimeRoot/);
   assert.match(launcher, /delete environment\.PYTHONPATH/);
@@ -117,10 +124,82 @@ test("preload surface is allowlisted and contains no raw process or filesystem b
   assert.doesNotMatch(preload, /require\(["'](?:node:)?(?:fs|child_process)["']\)/);
   assert.doesNotMatch(preload, /ipcRenderer\.send\(/);
   assert.match(preload, /productVersion/);
-  assert.match(preload, /rendererAssetVersion/);
-  assert.match(preload, new RegExp(productMetadata.buildId));
-  assert.match(preload, new RegExp(productMetadata.rendererAssetVersion));
+  assert.match(preload, /sourceCommit/);
+  assert.match(preload, /sourceBranch/);
+  assert.match(preload, /--search-build-identity=/);
+  assert.doesNotMatch(preload, /github-release-convergence/);
   assert.doesNotMatch(preload, /require\(["']\.\.\/product-metadata\.json["']\)/);
+});
+
+test("packaged build identity is validated once and encoded for the sandboxed preload", () => {
+  const identity = validateBuildIdentity({
+    schema_version: "search.build-identity.v1",
+    build_mode: "packaged",
+    product: "Search",
+    version: "0.1.4",
+    build_id: "test-search-candidate",
+    source_commit: "0123456789abcdef0123456789abcdef01234567",
+    source_branch: "codex/test-build-identity",
+    build_timestamp_utc: "2026-07-19T00:00:00.000Z",
+  }, { expectedVersion: "0.1.4", expectedMode: "packaged" });
+  const argument = encodeBuildIdentityArgument(identity);
+  assert.match(argument, /^--search-build-identity=/);
+  assert.deepEqual(
+    JSON.parse(decodeURIComponent(argument.split("=", 2)[1])),
+    identity,
+  );
+  assert.throws(
+    () => validateBuildIdentity({ ...identity, source_commit: "forged" }),
+    /search_packaged_build_identity_invalid/,
+  );
+
+  const preloadPath = join(ROOT, "electron", "preload", "index.cjs");
+  const probe = [
+    "const Module=require('node:module');",
+    "const original=Module._load; let exposed;",
+    "Module._load=(request,parent,isMain)=>request==='electron'",
+    "?{contextBridge:{exposeInMainWorld:(_name,value)=>{exposed=value;}},ipcRenderer:{invoke(){},on(){},removeListener(){}}}",
+    ":original(request,parent,isMain);",
+    "process.argv.push(process.env.SEARCH_TEST_BUILD_ARGUMENT);",
+    "require(process.env.SEARCH_TEST_PRELOAD);",
+    "process.stdout.write(JSON.stringify({buildId:exposed.buildId,sourceCommit:exposed.sourceCommit,sourceBranch:exposed.sourceBranch}));",
+  ].join("");
+  const child = spawnSync(process.execPath, ["-e", probe], {
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+    env: {
+      ...process.env,
+      SEARCH_TEST_BUILD_ARGUMENT: argument,
+      SEARCH_TEST_PRELOAD: preloadPath,
+    },
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), {
+    buildId: identity.build_id,
+    sourceCommit: identity.source_commit,
+    sourceBranch: identity.source_branch,
+  });
+});
+
+test("packaged mode rejects missing metadata while development mode is explicit", async () => {
+  const packageSource = JSON.stringify({ productName: "Search", version: "0.1.4" });
+  await assert.rejects(
+    loadBuildIdentityForApp({ isPackaged: true, getAppPath: () => "D:\\Search\\resources\\app" }, {
+      read: async () => packageSource,
+    }),
+    /search_packaged_build_identity_missing/,
+  );
+  const development = await loadBuildIdentityForApp({ isPackaged: false }, {
+    read: async () => packageSource,
+    runGit: async (args) => args[0] === "rev-parse"
+      ? "0123456789abcdef0123456789abcdef01234567\n"
+      : "codex/development\n",
+    now: () => new Date("2026-07-19T00:00:00.000Z"),
+  });
+  assert.equal(development.build_mode, "development");
+  assert.equal(development.build_id, "development");
+  assert.equal(development.source_commit, "0123456789abcdef0123456789abcdef01234567");
 });
 
 test("desktop startup never installs, builds, or rebuilds indexes", async () => {

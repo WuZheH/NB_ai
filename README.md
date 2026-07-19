@@ -296,11 +296,15 @@ npm --prefix .\integrations\notebook_ai_chatgpt_app run build
 构建独立 Windows 候选：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 -CheckOnly
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
+$BuildId = "local-search-0.1.4-candidate"
+$OutputRoot = Join-Path (Get-Location) "dist-candidates\Search-0.1.4-local"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 `
+  -BuildId $BuildId -OutputRoot $OutputRoot -CheckOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 `
+  -BuildId $BuildId -OutputRoot $OutputRoot
 ```
 
-构建脚本只写入 `integrations/search_desktop/dist-candidates/<唯一候选名>`，不覆盖当前正式包。manifest 会记录 source commit、文件数、总大小、`Search.exe` SHA256、`resources/app` 树 SHA256 和完整树 SHA256。
+`BuildId` 和绝对 `OutputRoot` 都必须显式提供；目标已存在时构建会拒绝覆盖。脚本要求 Git 工作树 clean，从当前 HEAD 自动读取完整 source commit 和 branch，并在 `resources/app/package.json#searchBuildIdentity` 写入唯一正式构建身份。输出目录中的 `search-build-report.json` 会记录身份、文件数、总大小、`Search.exe` SHA256、`resources/app` 树 SHA256 和完整树 SHA256。
 
 packaged smoke 必须显式传入候选：
 
@@ -368,9 +372,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 `
 ## 15. 发布信息
 
 - 版本：`0.1.4`
-- Build ID：`20260717-search-0.1.4-github-release-convergence`
-- 正式基线：`9c949e56d16c57124786fa52803ed128f53dcb3a`
-- 发布 source commit：以 Git tag `0.1.4` 的目标提交及候选目录旁的 `search-0.1.4-build-manifest.json` 为准；构建脚本从 `git rev-parse HEAD` 自动记录完整值。
+- Build ID：由每次正式构建通过 `-BuildId` 显式指定，不在源码中保留历史候选常量。
+- 发布 source commit：以 Git tag `0.1.4` 的目标提交、package 内 `searchBuildIdentity` 以及候选目录中的 `search-build-report.json` 为准；三者必须一致。
 - 可重复构建入口：`scripts/build_windows.ps1`
 - ChatGPT 状态：`PENDING_CHATGPT_TUNNEL_CONFIGURATION`
 

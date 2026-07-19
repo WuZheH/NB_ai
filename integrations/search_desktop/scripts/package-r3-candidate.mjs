@@ -3,11 +3,12 @@ import { spawn } from "node:child_process";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import {
   verifyPackagedResources,
   verifySourceResources,
 } from "./verify-packaged-resources.mjs";
+
+throw new Error("search_legacy_candidate_packager_disabled_use_build_windows_ps1");
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = resolve(SCRIPT_DIR, "..");

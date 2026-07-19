@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { encodeBuildIdentityArgument } from "./buildIdentity.js";
 
 export function resolveWindowMode({ env = process.env, argv = process.argv } = {}) {
   const testMode = env.SEARCH_ELECTRON_TEST_MODE === "1" || argv.includes("--search-test-mode");
@@ -10,7 +11,7 @@ export function resolveWindowMode({ env = process.env, argv = process.argv } = {
   return Object.freeze({ testMode, finalUserAcceptance, hidden });
 }
 
-export function createWindowController({ BrowserWindow, shell, config, rendererOrigin, settingsStore, designTokens, windowMode = { hidden: false } }) {
+export function createWindowController({ BrowserWindow, shell, config, rendererOrigin, settingsStore, designTokens, buildIdentity, windowMode = { hidden: false } }) {
   let window = null;
   let isQuitting = false;
   let minimizeToTray = true;
@@ -36,6 +37,7 @@ export function createWindowController({ BrowserWindow, shell, config, rendererO
         sandbox: true,
         webSecurity: true,
         allowRunningInsecureContent: false,
+        additionalArguments: [encodeBuildIdentityArgument(buildIdentity)],
       },
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));

@@ -54,7 +54,15 @@ def test_test_and_build_scripts_keep_outputs_inside_unique_project_directories()
     assert ".codex_tmp\\test-all" in tests
     assert "SEARCH_ELECTRON_TEST_MODE" in tests
     assert "ELECTRON_DISABLE_CRASH_REPORTING" in tests
-    assert "dist-candidates\\$CandidateName" in build
+    assert "[string]$BuildId" in build
+    assert "[string]$OutputRoot" in build
+    assert "status --porcelain --untracked-files=normal" in build
+    assert "rev-parse HEAD" in build
+    assert "symbolic-ref --short -q HEAD" in build
+    assert "--config.directories.output=$OutputRoot" in build
+    assert "searchBuildIdentity.source_commit" in build
+    assert "search-build-report.json" in build
+    assert "[string]$SourceCommit" not in build
     assert "search_candidate_output_already_exists" in build
     assert "current_formal_package_untouched = $true" in build
     assert "complete_tree_sha256" in build

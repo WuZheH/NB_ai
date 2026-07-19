@@ -1,7 +1,6 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-
-const METADATA_URL = new URL("../product-metadata.json", import.meta.url);
+import { loadBuildIdentityForApp } from "./buildIdentity.js";
 
 export const STARTUP_STAGE = Object.freeze({
   CONFIG_RESOLVED: "config_resolved",
@@ -74,14 +73,14 @@ export function createStartupLogger({
 }
 
 export async function createStartupLoggerForApp(app, {
+  buildIdentity,
   resourcesPath = process.resourcesPath,
-  metadataUrl = METADATA_URL,
 } = {}) {
-  const metadata = await readBuildMetadata(metadataUrl);
+  const identity = buildIdentity || await loadBuildIdentityForApp(app);
   return createStartupLogger({
     userDataPath: app.getPath("userData"),
-    version: app.getVersion(),
-    buildId: metadata.buildId,
+    version: identity.version,
+    buildId: identity.build_id,
     isPackaged: app.isPackaged,
     resourcesPath,
   });
@@ -99,19 +98,6 @@ export async function reportStartupFailure({ error, startupLogger, app, consoleO
     // Startup logging is best-effort and must never mask the original error.
   }
   app.exit(1);
-}
-
-async function readBuildMetadata(metadataUrl) {
-  try {
-    const value = JSON.parse(await readFile(metadataUrl, "utf8"));
-    return {
-      buildId: typeof value?.buildId === "string" && value.buildId.trim()
-        ? value.buildId.trim()
-        : "unknown",
-    };
-  } catch {
-    return { buildId: "unknown" };
-  }
 }
 
 function normalizeError(error) {

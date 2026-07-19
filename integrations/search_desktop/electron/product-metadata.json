@@ -1,6 +1,5 @@
 {
+  "schemaVersion": "search.product-metadata.v2",
   "productName": "Search",
-  "version": "0.1.4",
-  "buildId": "20260717-search-0.1.4-github-release-convergence",
-  "rendererAssetVersion": "0.1.4-github-release-convergence"
+  "identityResource": "package.json#searchBuildIdentity"
 }

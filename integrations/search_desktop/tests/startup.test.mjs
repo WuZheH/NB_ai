@@ -13,6 +13,16 @@ import {
 const ROOT = resolve(import.meta.dirname, "..");
 const PROJECT_ROOT = resolve(ROOT, "../..");
 const TEST_ROOT = join(PROJECT_ROOT, ".codex_tmp", `search-desktop-startup-${process.pid}`);
+const TEST_IDENTITY = Object.freeze({
+  schema_version: "search.build-identity.v1",
+  build_mode: "packaged",
+  product: "Search",
+  version: "0.1.4",
+  build_id: "test-search-package",
+  source_commit: "0123456789abcdef0123456789abcdef01234567",
+  source_branch: "codex/test-build-identity",
+  build_timestamp_utc: "2026-07-19T00:00:00.000Z",
+});
 
 test("desktop native colors use the formal Search brand token", async () => {
   const tokens = await loadSearchDesignTokens(
@@ -41,7 +51,7 @@ test("startup logger preserves stage and original error details", async () => {
   const logger = createStartupLogger({
     userDataPath,
     version: "0.1.4",
-    buildId: "20260717-search-0.1.4-github-release-convergence",
+    buildId: TEST_IDENTITY.build_id,
     isPackaged: true,
     resourcesPath: "D:\\Search\\resources",
     now: () => new Date("2026-07-14T10:00:00.000Z"),
@@ -63,26 +73,23 @@ test("startup logger preserves stage and original error details", async () => {
   assert.equal(entries[1].errorMessage, error.message);
   assert.match(entries[1].errorStack, /search_design_token_missing/);
   assert.equal(entries[1].version, "0.1.4");
-  assert.equal(entries[1].buildId, "20260717-search-0.1.4-github-release-convergence");
+  assert.equal(entries[1].buildId, TEST_IDENTITY.build_id);
   assert.equal(entries[1].isPackaged, true);
 });
 
 test("app startup logger reads the packaged build identity", async () => {
-  const metadataUrl = new URL("../electron/product-metadata.json", import.meta.url);
-  const metadata = JSON.parse(await readFile(metadataUrl, "utf8"));
   const userDataPath = join(TEST_ROOT, "app-identity");
   const logger = await createStartupLoggerForApp({
     isPackaged: true,
     getPath: (name) => name === "userData" ? userDataPath : "",
-    getVersion: () => "0.1.4",
   }, {
+    buildIdentity: TEST_IDENTITY,
     resourcesPath: "D:\\Search\\resources",
-    metadataUrl,
   });
   await logger.startStage(STARTUP_STAGE.CONFIG_RESOLVED);
   const entry = JSON.parse((await readFile(logger.logPath, "utf8")).trim());
   assert.equal(entry.version, "0.1.4");
-  assert.equal(entry.buildId, metadata.buildId);
+  assert.equal(entry.buildId, TEST_IDENTITY.build_id);
   assert.equal(entry.isPackaged, true);
   assert.equal(entry.resourcesPath, "D:\\Search\\resources");
   assert.match(logger.logPath, /logs[\\/]search-startup\.log$/);
@@ -92,7 +99,7 @@ test("stage completion records the last successful startup stage", async () => {
   const logger = createStartupLogger({
     userDataPath: join(TEST_ROOT, "completed-stage"),
     version: "0.1.4",
-    buildId: "20260717-search-0.1.4-github-release-convergence",
+    buildId: TEST_IDENTITY.build_id,
     isPackaged: false,
     resourcesPath: "D:\\Search\\resources",
   });
@@ -138,7 +145,7 @@ test("startup failure reaches stderr, the log, and exit code 1", async () => {
   const logger = createStartupLogger({
     userDataPath: join(TEST_ROOT, "reported-failure"),
     version: "0.1.4",
-    buildId: "20260717-search-0.1.4-github-release-convergence",
+    buildId: TEST_IDENTITY.build_id,
     isPackaged: true,
     resourcesPath: "D:\\Search\\resources",
   });

@@ -2,7 +2,8 @@
 param(
     [string]$PythonExe = $env:SEARCH_PYTHON,
     [string]$NodeExe = $env:SEARCH_NODE,
-    [string]$CandidateName,
+    [string]$BuildId,
+    [string]$OutputRoot,
     [switch]$CheckOnly
 )
 
@@ -11,11 +12,40 @@ Set-StrictMode -Version Latest
 
 $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $DesktopRoot = Join-Path $ProjectRoot "integrations\search_desktop"
-if (-not $CandidateName) {
-    $CandidateName = "search-0.1.4-{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss")
+if (-not $BuildId) { throw "search_build_id_required" }
+if ($BuildId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') {
+    throw "search_build_id_invalid"
 }
-if ($CandidateName -notmatch '^[a-z0-9][a-z0-9.-]{0,63}$') {
-    throw "search_candidate_name_invalid"
+if (-not $OutputRoot) { throw "search_output_root_required" }
+if (
+    -not [System.IO.Path]::IsPathRooted($OutputRoot) `
+    -or $OutputRoot -notmatch '^[A-Za-z]:[\\/]'
+) {
+    throw "search_output_root_must_be_absolute"
+}
+$OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot).TrimEnd('\', '/')
+$ProjectDrive = [System.IO.Path]::GetPathRoot($ProjectRoot)
+$OutputDrive = [System.IO.Path]::GetPathRoot($OutputRoot)
+if (
+    -not $OutputDrive `
+    -or -not $ProjectDrive `
+    -or -not $OutputDrive.Equals($ProjectDrive, [System.StringComparison]::OrdinalIgnoreCase)
+) {
+    throw "search_output_root_drive_not_allowed"
+}
+$NormalizedOutput = $OutputRoot.Replace('/', '\').ToLowerInvariant()
+if (
+    $NormalizedOutput -match '\\(?:notebook_ai|notebook_ai_worktrees|notebook_ai_clean_clones)(?:\\|$)' `
+    -or $NormalizedOutput.StartsWith((Join-Path $ProjectRoot "data").ToLowerInvariant() + '\') `
+    -or $NormalizedOutput.Equals((Join-Path $ProjectRoot "data").ToLowerInvariant()) `
+    -or $NormalizedOutput.StartsWith((Join-Path $ProjectRoot ".git").ToLowerInvariant() + '\') `
+    -or $NormalizedOutput.StartsWith((Join-Path $DesktopRoot "dist").ToLowerInvariant() + '\') `
+    -or $NormalizedOutput.Equals((Join-Path $DesktopRoot "dist").ToLowerInvariant())
+) {
+    throw "search_output_root_not_allowed"
+}
+if (Test-Path -LiteralPath $OutputRoot) {
+    throw "search_candidate_output_already_exists:$OutputRoot"
 }
 
 function Resolve-Executable {
@@ -40,6 +70,55 @@ $PythonExe = Resolve-Executable $PythonExe @() "search_python_executable_unavail
 $NodeExe = Resolve-Executable $NodeExe @("node.exe", "node") "search_node_executable_unavailable"
 $GitExe = Resolve-Executable "" @("git.exe", "git") "search_git_executable_unavailable"
 
+$GitStatus = @(& $GitExe -C $ProjectRoot status --porcelain --untracked-files=normal)
+if ($LASTEXITCODE -ne 0) { throw "search_git_status_unavailable" }
+if ($GitStatus.Count -ne 0) { throw "search_build_requires_clean_worktree" }
+$SourceCommit = (& $GitExe -C $ProjectRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $SourceCommit -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "search_source_commit_unavailable"
+}
+$VerifiedHead = (& $GitExe -C $ProjectRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $VerifiedHead -ne $SourceCommit) {
+    throw "search_source_commit_changed"
+}
+$SourceBranch = [string](& $GitExe -C $ProjectRoot symbolic-ref --short -q HEAD)
+$SourceBranch = $SourceBranch.Trim()
+if ($LASTEXITCODE -ne 0 -or -not $SourceBranch) { $SourceBranch = "(detached)" }
+
+$PackagePath = Join-Path $DesktopRoot "package.json"
+$Package = Get-Content -Raw -LiteralPath $PackagePath | ConvertFrom-Json
+if ([string]$Package.productName -ne "Search" -or [string]$Package.build.productName -ne "Search") {
+    throw "search_package_product_invalid"
+}
+$Version = [string]$Package.version
+if ($Version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
+    throw "search_package_version_invalid"
+}
+$BuildTimestampUtc = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
+$BuildIdentity = [ordered]@{
+    schema_version = "search.build-identity.v1"
+    build_mode = "packaged"
+    product = "Search"
+    version = $Version
+    build_id = $BuildId
+    source_commit = $SourceCommit.ToLowerInvariant()
+    source_branch = $SourceBranch
+    build_timestamp_utc = $BuildTimestampUtc
+}
+$LockFiles = @(
+    (Join-Path $ProjectRoot "frontend\package-lock.json"),
+    (Join-Path $ProjectRoot "integrations\notebook_ai_chatgpt_app\package-lock.json"),
+    (Join-Path $ProjectRoot "integrations\search_desktop\package-lock.json"),
+    (Join-Path $ProjectRoot "packages\search-design-system\package-lock.json")
+)
+$LockHashesBefore = @{}
+foreach ($LockFile in $LockFiles) {
+    if (-not (Test-Path -LiteralPath $LockFile -PathType Leaf)) {
+        throw "search_package_lock_missing:$LockFile"
+    }
+    $LockHashesBefore[$LockFile] = (Get-FileHash -LiteralPath $LockFile -Algorithm SHA256).Hash
+}
+
 $Vite = Join-Path $ProjectRoot "frontend\node_modules\vite\bin\vite.js"
 $ElectronBuilder = Join-Path $DesktopRoot "node_modules\electron-builder\cli.js"
 $Finalize = Join-Path $DesktopRoot "scripts\finalize-windows-exe.mjs"
@@ -52,16 +131,14 @@ foreach ($Required in @($Vite, $ElectronBuilder, $Finalize, $BuildWidget, $Build
     }
 }
 
-$CandidateBase = Join-Path $DesktopRoot "dist-candidates\$CandidateName"
-$PackagedRoot = Join-Path $CandidateBase "win-unpacked"
-if (Test-Path -LiteralPath $CandidateBase) {
-    throw "search_candidate_output_already_exists:$CandidateBase"
-}
+$PackagedRoot = Join-Path $OutputRoot "win-unpacked"
 
 if ($CheckOnly) {
     [ordered]@{
         status = "ready"
         mode = "check_only"
+        build_identity = $BuildIdentity
+        output_root = $OutputRoot
         candidate = $PackagedRoot
         python = $PythonExe
         node = $NodeExe
@@ -84,15 +161,22 @@ function Get-TreeInfo {
     }
     $Payload = if ($Rows.Count) { ($Rows -join "`n") + "`n" } else { "" }
     $Bytes = [System.Text.Encoding]::UTF8.GetBytes($Payload)
-    $Digest = [System.Security.Cryptography.SHA256]::HashData($Bytes)
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $Digest = $Hasher.ComputeHash($Bytes)
+    }
+    finally {
+        $Hasher.Dispose()
+    }
     [pscustomobject]@{
         file_count = $Files.Count
         total_bytes = $TotalBytes
-        sha256 = [Convert]::ToHexString($Digest)
+        sha256 = ([System.BitConverter]::ToString($Digest)).Replace("-", "")
     }
 }
 
-$BuildRunRoot = Join-Path $ProjectRoot ".codex_tmp\build\$CandidateName"
+$SafeBuildName = $BuildId -replace '[^A-Za-z0-9._-]', '-'
+$BuildRunRoot = Join-Path $ProjectRoot ".codex_tmp\build\$SafeBuildName"
 $TempDir = Join-Path $BuildRunRoot "temp"
 $ElectronCache = Join-Path $BuildRunRoot "electron-cache"
 $BuilderCache = Join-Path $BuildRunRoot "electron-builder-cache"
@@ -173,7 +257,15 @@ try {
     Push-Location $DesktopRoot
     try {
         & $NodeExe $ElectronBuilder --win --x64 --dir `
-            "--config.directories.output=$CandidateBase"
+            "--config.directories.output=$OutputRoot" `
+            "--config.extraMetadata.searchBuildIdentity.schema_version=$($BuildIdentity.schema_version)" `
+            "--config.extraMetadata.searchBuildIdentity.build_mode=$($BuildIdentity.build_mode)" `
+            "--config.extraMetadata.searchBuildIdentity.product=$($BuildIdentity.product)" `
+            "--config.extraMetadata.searchBuildIdentity.version=$($BuildIdentity.version)" `
+            "--config.extraMetadata.searchBuildIdentity.build_id=$($BuildIdentity.build_id)" `
+            "--config.extraMetadata.searchBuildIdentity.source_commit=$($BuildIdentity.source_commit)" `
+            "--config.extraMetadata.searchBuildIdentity.source_branch=$($BuildIdentity.source_branch)" `
+            "--config.extraMetadata.searchBuildIdentity.build_timestamp_utc=$($BuildIdentity.build_timestamp_utc)"
         if ($LASTEXITCODE -ne 0) { throw "search_electron_packaging_failed" }
     }
     finally { Pop-Location }
@@ -221,19 +313,41 @@ try {
         throw "search_packaged_frontend_does_not_match_latest_build"
     }
 
-    $Metadata = Get-Content -Raw -LiteralPath (Join-Path $DesktopRoot "electron\product-metadata.json") | ConvertFrom-Json
-    $SourceCommit = (& $GitExe -C $ProjectRoot rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0) { throw "search_source_commit_unavailable" }
+    $PackagedPackagePath = Join-Path $PackagedRoot "resources\app\package.json"
+    $PackagedPackage = Get-Content -Raw -LiteralPath $PackagedPackagePath | ConvertFrom-Json
+    $PackagedIdentity = $PackagedPackage.searchBuildIdentity
+    foreach ($Field in $BuildIdentity.Keys) {
+        if ([string]$PackagedIdentity.$Field -ne [string]$BuildIdentity[$Field]) {
+            throw "search_packaged_build_identity_mismatch:$Field"
+        }
+    }
+    $FinalHead = (& $GitExe -C $ProjectRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $FinalHead -ne $SourceCommit) {
+        throw "search_source_commit_changed"
+    }
+    $FinalStatus = @(& $GitExe -C $ProjectRoot status --porcelain --untracked-files=normal)
+    if ($LASTEXITCODE -ne 0 -or $FinalStatus.Count -ne 0) {
+        throw "search_build_changed_tracked_worktree"
+    }
+    foreach ($LockFile in $LockFiles) {
+        $FinalLockHash = (Get-FileHash -LiteralPath $LockFile -Algorithm SHA256).Hash
+        if ($FinalLockHash -ne $LockHashesBefore[$LockFile]) {
+            throw "search_package_lock_changed:$LockFile"
+        }
+    }
     $Executable = Join-Path $PackagedRoot "Search.exe"
     $AppInfo = Get-TreeInfo (Join-Path $PackagedRoot "resources\app")
     $TreeInfo = Get-TreeInfo $PackagedRoot
     $Manifest = [ordered]@{
         status = "ready"
-        product = "Search"
-        version = [string]$Metadata.version
-        build_id = [string]$Metadata.buildId
-        renderer_asset_version = [string]$Metadata.rendererAssetVersion
-        source_commit = $SourceCommit
+        build_identity = $BuildIdentity
+        product = $BuildIdentity.product
+        version = $BuildIdentity.version
+        build_id = $BuildIdentity.build_id
+        source_commit = $BuildIdentity.source_commit
+        source_branch = $BuildIdentity.source_branch
+        build_timestamp_utc = $BuildIdentity.build_timestamp_utc
+        output_root = $OutputRoot
         candidate_path = $PackagedRoot
         file_count = $TreeInfo.file_count
         total_bytes = $TreeInfo.total_bytes
@@ -245,7 +359,7 @@ try {
         machine_local_config_bundled = $false
         current_formal_package_untouched = $true
     }
-    $ManifestPath = Join-Path $CandidateBase "search-0.1.4-build-manifest.json"
+    $ManifestPath = Join-Path $OutputRoot "search-build-report.json"
     $Manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ManifestPath -Encoding UTF8
     $Manifest | ConvertTo-Json -Depth 5
 }

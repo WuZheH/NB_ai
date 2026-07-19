@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateBuildIdentity } from "../electron/main/buildIdentity.js";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 export const DESKTOP_ROOT = resolve(SCRIPT_DIR, "..");
@@ -30,9 +31,11 @@ export const PACKAGED_RESOURCE_CONTRACT = Object.freeze([
   "resources/search-assets/design-system/components.css",
   "resources/app/electron/main/index.js",
   "resources/app/electron/preload/index.cjs",
+  "resources/app/package.json",
   "resources/app/assets/search.ico",
   "resources/app/runtime-project/app/main.py",
   "resources/app/runtime-project/app/runtime/config.py",
+  "resources/app/runtime-project/app/runtime/build_identity.py",
   "resources/app/runtime-project/app/models/__init__.py",
   "resources/app/runtime-project/scripts/runtime/notebook_ai_launcher.py",
   "resources/app/runtime-project/scripts/index/status_zotero_note_vectors.py",
@@ -52,9 +55,11 @@ const SOURCE_RESOURCE_CONTRACT = Object.freeze(new Map([
   ["resources/search-assets/design-system/components.css", resolve(DESKTOP_ROOT, "../../packages/search-design-system/src/components.css")],
   ["resources/app/electron/main/index.js", join(DESKTOP_ROOT, "electron/main/index.js")],
   ["resources/app/electron/preload/index.cjs", join(DESKTOP_ROOT, "electron/preload/index.cjs")],
+  ["resources/app/package.json", join(DESKTOP_ROOT, "package.json")],
   ["resources/app/assets/search.ico", join(DESKTOP_ROOT, "assets/search.ico")],
   ["resources/app/runtime-project/app/main.py", resolve(DESKTOP_ROOT, "../../app/main.py")],
   ["resources/app/runtime-project/app/runtime/config.py", resolve(DESKTOP_ROOT, "../../app/runtime/config.py")],
+  ["resources/app/runtime-project/app/runtime/build_identity.py", resolve(DESKTOP_ROOT, "../../app/runtime/build_identity.py")],
   ["resources/app/runtime-project/app/models/__init__.py", resolve(DESKTOP_ROOT, "../../app/models/__init__.py")],
   ["resources/app/runtime-project/scripts/runtime/notebook_ai_launcher.py", resolve(DESKTOP_ROOT, "../../scripts/runtime/notebook_ai_launcher.py")],
   ["resources/app/runtime-project/scripts/index/status_zotero_note_vectors.py", resolve(DESKTOP_ROOT, "../../scripts/index/status_zotero_note_vectors.py")],
@@ -121,7 +126,24 @@ export async function verifyPackagedResources(packagedRoot = DEFAULT_PACKAGED_RO
     await requireMissingPath(join(root, ...forbidden.split("/")), forbidden);
   }
   await verifyForbiddenRuntimePayload(join(root, "resources", "app", "runtime-project"));
-  return Object.freeze({ status: "ready", scope: "packaged", count: PACKAGED_RESOURCE_CONTRACT.length });
+  const packagedPackage = JSON.parse(await readFile(
+    join(root, "resources", "app", "package.json"),
+    "utf8",
+  ));
+  const buildIdentity = validateBuildIdentity(packagedPackage.searchBuildIdentity, {
+    expectedVersion: packagedPackage.version,
+    expectedMode: "packaged",
+  });
+  await requireMissingPath(
+    join(root, "resources", "app", "electron", "product-metadata.json"),
+    "resources/app/electron/product-metadata.json",
+  );
+  return Object.freeze({
+    status: "ready",
+    scope: "packaged",
+    count: PACKAGED_RESOURCE_CONTRACT.length,
+    build_identity: buildIdentity,
+  });
 }
 
 async function verifySelfContainedMcp(serverPath, manifestPath) {

@@ -22,14 +22,13 @@ test("Windows packaging avoids privileged symlink extraction and applies Search 
   assert.equal(packageJson.build.win.signAndEditExecutable, false);
   assert.equal(packageJson.version, "0.1.4");
   assert.deepEqual(productMetadata, {
+    schemaVersion: "search.product-metadata.v2",
     productName: "Search",
-    version: "0.1.4",
-    buildId: "20260717-search-0.1.4-github-release-convergence",
-    rendererAssetVersion: "0.1.4-github-release-convergence",
+    identityResource: "package.json#searchBuildIdentity",
   });
   assert.equal(packageJson.build.electronDist, "node_modules/electron/dist");
-  assert.match(packageJson.scripts["package:win:unpacked"], /package-windows-unpacked\.mjs/);
-  assert.match(packageJson.scripts["package:candidate:r5"], /package-r5-candidate\.mjs/);
+  assert.equal(packageJson.scripts["package:win:unpacked"], undefined);
+  assert.equal(packageJson.scripts["package:candidate:r5"], undefined);
   const extraResources = JSON.stringify(packageJson.build.extraResources);
   assert.match(extraResources, /app\/runtime-project\/app/);
   assert.match(extraResources, /notebook_ai_chatgpt_app\/dist\/server\/index\.js/);
@@ -184,6 +183,20 @@ async function writePackagedFixture(root, {
     ["resources/search-assets/design-system/components.css", ".search-button { display: inline-flex; }"],
     ["resources/app/electron/main/index.js", "export {};"],
     ["resources/app/electron/preload/index.cjs", "module.exports = {};"],
+    ["resources/app/package.json", JSON.stringify({
+      productName: "Search",
+      version: "0.1.4",
+      searchBuildIdentity: {
+        schema_version: "search.build-identity.v1",
+        build_mode: "packaged",
+        product: "Search",
+        version: "0.1.4",
+        build_id: "test-packaged-resource",
+        source_commit: "0123456789abcdef0123456789abcdef01234567",
+        source_branch: "codex/test-packaging",
+        build_timestamp_utc: "2026-07-19T00:00:00.000Z",
+      },
+    })],
     ["resources/app/assets/search.ico", "ico"],
     ["resources/app/runtime-project/app/main.py", "app = object()"],
     ["resources/app/runtime-project/app/runtime/config.py", "RUNTIME = True"],

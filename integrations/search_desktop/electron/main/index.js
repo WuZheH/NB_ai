@@ -1,5 +1,6 @@
 import * as electron from "electron";
 import { createSearchDesktop } from "./application.js";
+import { loadBuildIdentityForApp } from "./buildIdentity.js";
 import { resolveWindowMode } from "./window.js";
 import { createStartupLoggerForApp, reportStartupFailure } from "./startupLogger.js";
 
@@ -16,8 +17,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on("activate", () => desktop?.windowController.show());
   app.whenReady()
     .then(async () => {
-      startupLogger = await createStartupLoggerForApp(app);
-      desktop = await createSearchDesktop(electron, { startupLogger, windowMode });
+      const buildIdentity = await loadBuildIdentityForApp(app);
+      startupLogger = await createStartupLoggerForApp(app, { buildIdentity });
+      desktop = await createSearchDesktop(electron, { buildIdentity, startupLogger, windowMode });
     })
     .catch(async (error) => {
       await reportStartupFailure({ error, startupLogger, app });

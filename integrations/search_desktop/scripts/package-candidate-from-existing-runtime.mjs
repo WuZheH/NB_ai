@@ -2,6 +2,8 @@ import { cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+throw new Error("search_legacy_candidate_packager_disabled_use_build_windows_ps1");
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = resolve(SCRIPT_DIR, "..");
 const PROJECT_ROOT = resolve(DESKTOP_ROOT, "../..");

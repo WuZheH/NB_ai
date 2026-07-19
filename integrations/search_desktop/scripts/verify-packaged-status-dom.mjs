@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -12,13 +12,19 @@ const electronExe = resolve(DESKTOP_ROOT, "node_modules", "electron", "dist", "e
 const probe = resolve(DESKTOP_ROOT, "tests", "fixtures", "packagedStatusProbe.mjs");
 const packagedRoot = resolve(commandArgument("--packaged-root") || "");
 if (!commandArgument("--packaged-root")) throw new Error("search_packaged_root_required");
-const manifestName = commandArgument("--manifest") || [
-  "r5-build-manifest.json",
-  "r4-build-manifest.json",
-  "r3-build-manifest.json",
-].find((candidate) => existsSync(resolve(packagedRoot, candidate)));
-if (!manifestName) throw new Error("search_packaged_manifest_not_found");
-const manifest = JSON.parse(await readFile(resolve(packagedRoot, manifestName), "utf8"));
+const manifestArgument = commandArgument("--manifest");
+const manifestPath = manifestArgument
+  ? (isAbsolute(manifestArgument) ? resolve(manifestArgument) : resolve(packagedRoot, manifestArgument))
+  : [
+    resolve(packagedRoot, "..", "search-build-report.json"),
+    resolve(packagedRoot, "r5-build-manifest.json"),
+    resolve(packagedRoot, "r4-build-manifest.json"),
+    resolve(packagedRoot, "r3-build-manifest.json"),
+  ].find((candidate) => existsSync(candidate));
+if (!manifestPath) throw new Error("search_packaged_manifest_not_found");
+const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+const buildIdentity = manifest.build_identity || manifest.buildIdentity;
+if (!buildIdentity) throw new Error("search_packaged_build_identity_missing");
 const tempRoot = resolve(
   commandArgument("--temp-root")
     || resolve(PROJECT_ROOT, ".codex_tmp", "r3", "packaged-status-dom"),
@@ -30,8 +36,8 @@ const resultLine = stdout.split(/\r?\n/).find((line) => line.startsWith("R3_STAT
 assert.ok(resultLine, `R3 packaged status DOM result missing\n${stdout}\n${stderr}`);
 const result = JSON.parse(resultLine.slice("R3_STATUS_DOM_RESULT=".length));
 assert.equal(result.status, "ok", result.error || "R3 packaged status DOM failed");
-assert.equal(result.buildId, manifest.buildId);
-assert.equal(result.rendererAssetVersion, manifest.rendererAssetVersion);
+assert.equal(result.buildId, buildIdentity.build_id);
+assert.equal(result.sourceCommit, buildIdentity.source_commit);
 assert.equal(result.settings.disabled, false);
 assert.equal(result.settings.soonVisible, false);
 assert.equal(result.settings.heading, "设置");
@@ -57,7 +63,7 @@ process.stdout.write(`${JSON.stringify({
   status: "ready",
   packagedRoot,
   buildId: result.buildId,
-  rendererAssetVersion: result.rendererAssetVersion,
+  sourceCommit: result.sourceCommit,
   statusLabels: result.statusLabels,
   settings: result.settings,
   technicalDetailsExpanded: result.technicalDetailsExpanded,

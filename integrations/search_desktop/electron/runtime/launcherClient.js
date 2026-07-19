@@ -32,6 +32,8 @@ export class LauncherClient {
       SEARCH_DATA_DIR: this.config.dataDir,
       SEARCH_PYTHON: this.config.pythonExe,
       SEARCH_NODE: this.config.nodeExe,
+      SEARCH_BUILD_MODE: this.config.buildMode,
+      SEARCH_BUILD_IDENTITY_PATH: this.config.buildIdentityPath,
       NOTEBOOK_AI_RUNTIME_ROOT: this.config.runtimeRoot,
       NOTEBOOK_AI_DATA_PROJECT_ROOT: this.config.dataProjectRoot,
       NOTEBOOK_AI_PYTHON_EXE: this.config.pythonExe,

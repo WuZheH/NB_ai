@@ -159,7 +159,7 @@ class RuntimeSupervisor:
         self.tunnel_probe = CloudflareTunnelProbe(config)
         self.control_queue = ControlRequestQueue(config.paths.control_dir)
         self._managed: dict[ComponentName, ManagedProcess] = {}
-        self.status = _empty_status(RuntimeState.STOPPED)
+        self.status = _empty_status(RuntimeState.STOPPED, config=config)
 
     def supervise_forever(self) -> int:
         self.config.paths.ensure()
@@ -233,7 +233,7 @@ class RuntimeSupervisor:
             and process_is_alive(old_supervisor.identity)
         ):
             raise RuntimeStartupError("supervisor_identity_conflict")
-        self.status = previous
+        self.status = _apply_runtime_identity(previous, self.config)
         self._adopt_previous_local_component(
             ComponentName.FASTAPI,
             self._fastapi_spec(),
@@ -974,6 +974,7 @@ class RuntimeSupervisor:
         *,
         error_code: str | None = None,
     ) -> None:
+        _apply_runtime_identity(self.status, self.config)
         self.status.state = state
         self.status.updated_at = _utc_now()
         self.status.error_code = error_code
@@ -1085,14 +1086,18 @@ class RuntimeController:
     def _read_persisted_status(self) -> RuntimeStatus:
         path = self.config.paths.status_file
         if not path.is_file():
-            return _empty_status(RuntimeState.STOPPED)
+            return _empty_status(RuntimeState.STOPPED, config=self.config)
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(value, dict):
                 raise ValueError
-            return RuntimeStatus.from_dict(value)
+            return _apply_runtime_identity(RuntimeStatus.from_dict(value), self.config)
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
-            return _empty_status(RuntimeState.FAILED, error_code="runtime_status_invalid")
+            return _empty_status(
+                RuntimeState.FAILED,
+                config=self.config,
+                error_code="runtime_status_invalid",
+            )
 
     def signal(self, action: str, *, request_id: str | None = None) -> Path:
         request = ControlRequest(
@@ -1234,6 +1239,7 @@ class RuntimeController:
         current.state = RuntimeState.FAILED if stop_failed else RuntimeState.STOPPED
         current.updated_at = _utc_now()
         current.error_code = "runtime_stop_failed" if stop_failed else None
+        _apply_runtime_identity(current, self.config)
         self.config.paths.ensure()
         atomic_write_json(self.config.paths.status_file, current.to_dict())
         return current
@@ -1242,13 +1248,29 @@ class RuntimeController:
 def _empty_status(
     state: RuntimeState,
     *,
+    config: RuntimeConfig | None = None,
     error_code: str | None = None,
 ) -> RuntimeStatus:
-    return RuntimeStatus(
+    status = RuntimeStatus(
         state=state,
         updated_at=_utc_now(),
         error_code=error_code,
     )
+    return _apply_runtime_identity(status, config) if config else status
+
+
+def _apply_runtime_identity(
+    status: RuntimeStatus,
+    config: RuntimeConfig,
+) -> RuntimeStatus:
+    identity = config.build_identity
+    status.product = identity.product
+    status.version = identity.version
+    status.build_id = identity.build_id
+    status.source_commit = identity.source_commit
+    status.source_branch = identity.source_branch
+    status.data_root = str(config.paths.data_dir)
+    return status
 
 
 def _utc_now() -> str:

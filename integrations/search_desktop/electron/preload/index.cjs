@@ -1,12 +1,5 @@
 const { contextBridge, ipcRenderer } = require("electron");
-// Sandboxed preload scripts cannot require arbitrary sibling JSON files.
-// These public build identifiers are verified against product-metadata.json
-// by the Desktop contract suite before packaging.
-const productMetadata = Object.freeze({
-  version: "0.1.4",
-  buildId: "20260717-search-0.1.4-github-release-convergence",
-  rendererAssetVersion: "0.1.4-github-release-convergence",
-});
+const buildIdentity = readBuildIdentity(process.argv);
 
 const channels = Object.freeze({
   runtimeStatus: "search:runtime-status",
@@ -22,9 +15,11 @@ const channels = Object.freeze({
 
 contextBridge.exposeInMainWorld("searchDesktop", Object.freeze({
   productName: "Search",
-  productVersion: productMetadata.version,
-  buildId: productMetadata.buildId,
-  rendererAssetVersion: productMetadata.rendererAssetVersion,
+  productVersion: buildIdentity.version,
+  buildId: buildIdentity.build_id,
+  buildMode: buildIdentity.build_mode,
+  sourceCommit: buildIdentity.source_commit,
+  sourceBranch: buildIdentity.source_branch,
   getRuntimeStatus: () => ipcRenderer.invoke(channels.runtimeStatus),
   restartRuntime: () => ipcRenderer.invoke(channels.runtimeRestart),
   openLogs: () => ipcRenderer.invoke(channels.openLogs),
@@ -40,3 +35,37 @@ contextBridge.exposeInMainWorld("searchDesktop", Object.freeze({
     return () => ipcRenderer.removeListener(channels.runtimeSubscribe, handler);
   },
 }));
+
+function readBuildIdentity(argv) {
+  const prefix = "--search-build-identity=";
+  const argument = argv.find((value) => String(value).startsWith(prefix));
+  if (!argument) throw new Error("search_build_identity_argument_missing");
+  let value;
+  try {
+    value = JSON.parse(decodeURIComponent(String(argument).slice(prefix.length)));
+  } catch {
+    throw new Error("search_build_identity_argument_invalid");
+  }
+  if (
+    value?.schema_version !== "search.build-identity.v1"
+    || value?.product !== "Search"
+    || !["development", "packaged"].includes(value?.build_mode)
+    || typeof value?.version !== "string"
+    || typeof value?.build_id !== "string"
+    || typeof value?.source_commit !== "string"
+    || typeof value?.source_branch !== "string"
+  ) {
+    throw new Error("search_build_identity_argument_invalid");
+  }
+  if (
+    value.build_mode === "packaged"
+    && (
+      value.build_id === "development"
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.build_id)
+      || !/^[0-9a-f]{40}$/.test(value.source_commit)
+    )
+  ) {
+    throw new Error("search_build_identity_argument_invalid");
+  }
+  return Object.freeze(value);
+}

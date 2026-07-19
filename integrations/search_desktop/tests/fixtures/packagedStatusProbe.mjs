@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,6 +13,8 @@ const APP_ROOT = join(PACKAGED_ROOT, "resources", "app");
 const RENDERER_ASSETS = join(APP_ROOT, "renderer");
 const PRELOAD = join(APP_ROOT, "electron", "preload", "index.cjs");
 const RENDERER_SERVER = join(APP_ROOT, "electron", "runtime", "rendererServer.js");
+const PACKAGED_IDENTITY = JSON.parse(readFileSync(join(APP_ROOT, "package.json"), "utf8"))
+  .searchBuildIdentity;
 
 for (const required of [
   join(FRONTEND_DIST, "index.html"),
@@ -63,6 +65,9 @@ async function run() {
         sandbox: true,
         offscreen: true,
         backgroundThrottling: false,
+        additionalArguments: [
+          `--search-build-identity=${encodeURIComponent(JSON.stringify(PACKAGED_IDENTITY))}`,
+        ],
       },
     });
     window.webContents.on("console-message", (_event, level, message) => {
@@ -90,7 +95,7 @@ async function run() {
       const labels = [...document.querySelectorAll('.desktopServiceRow > span')].map((node) => node.textContent.trim());
       const heading = document.querySelector('.desktopSettingsPage h1').textContent.trim();
       const buildId = window.searchDesktop.buildId;
-      const rendererAssetVersion = window.searchDesktop.rendererAssetVersion;
+      const sourceCommit = window.searchDesktop.sourceCommit;
       const loadedAssets = performance.getEntriesByType('resource')
         .map((entry) => {
           const pathname = new URL(entry.name).pathname;
@@ -104,7 +109,7 @@ async function run() {
         detailsOpen: details.open,
         refreshLabel: refresh.textContent.trim(),
         buildId,
-        rendererAssetVersion,
+        sourceCommit,
         loadedAssets,
       };
     })()`);
@@ -112,7 +117,7 @@ async function run() {
     const result = {
       status: "ok",
       buildId: statusData.buildId,
-      rendererAssetVersion: statusData.rendererAssetVersion,
+      sourceCommit: statusData.sourceCommit,
       settings: { ...settingsBefore, heading: statusData.heading },
       statusLabels: statusData.labels,
       technicalDetailsExpanded: statusData.detailsOpen,
@@ -149,6 +154,12 @@ function runtimeFixture(sequence) {
     tunnel_state: "quick_tunnel_online",
     tunnel_type: "quick",
     tunnel_url: "https://example.trycloudflare.com",
+    product: PACKAGED_IDENTITY.product,
+    version: PACKAGED_IDENTITY.version,
+    build_id: PACKAGED_IDENTITY.build_id,
+    source_commit: PACKAGED_IDENTITY.source_commit,
+    source_branch: PACKAGED_IDENTITY.source_branch,
+    data_root: "D:\\SearchData",
     components: {
       fastapi: { state: "external", port: 8000, pid: 29148, owner: "external" },
       mcp: { state: "external", port: 8787, pid: 18396, owner: "external" },

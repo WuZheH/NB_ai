@@ -36,6 +36,8 @@ def test_desktop_product_metadata_and_visible_resources_use_search() -> None:
     assert package["productName"] == "Search"
     assert package["build"]["productName"] == "Search"
     assert metadata["productName"] == "Search"
+    assert metadata["identityResource"] == "package.json#searchBuildIdentity"
+    assert "buildId" not in metadata
     for relative_path in (
         "renderer/missing-build.html",
         "renderer/desktop-shell.html",

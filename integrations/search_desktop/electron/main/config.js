@@ -77,6 +77,8 @@ export function resolveDesktopConfig({
     .map(([label]) => label);
   return Object.freeze({
     productName: "Search",
+    buildMode: isPackaged ? "packaged" : "development",
+    buildIdentityPath: join(DESKTOP_ROOT, "package.json"),
     runtimeRoot,
     dataDir,
     dataProjectRoot,

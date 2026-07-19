@@ -102,6 +102,12 @@ class ComponentStatus:
 class RuntimeStatus:
     state: RuntimeState
     updated_at: str
+    product: str = "Search"
+    version: str = "development"
+    build_id: str = "development"
+    source_commit: str = "unavailable"
+    source_branch: str = "unavailable"
+    data_root: str = ""
     components: dict[str, ComponentStatus] = field(default_factory=dict)
     tunnel_state: TunnelState = TunnelState.NOT_CONFIGURED
     tunnel_type: str = "none"
@@ -116,6 +122,12 @@ class RuntimeStatus:
             "schema_version": self.schema_version,
             "state": self.state.value,
             "updated_at": self.updated_at,
+            "product": self.product,
+            "version": self.version,
+            "build_id": self.build_id,
+            "source_commit": self.source_commit,
+            "source_branch": self.source_branch,
+            "data_root": self.data_root,
             "tunnel_state": self.tunnel_state.value,
             "tunnel_type": self.tunnel_type,
             "tunnel_url": self.tunnel_url,
@@ -135,6 +147,12 @@ class RuntimeStatus:
         return cls(
             state=RuntimeState(value["state"]),
             updated_at=str(value["updated_at"]),
+            product=str(value.get("product") or "Search"),
+            version=str(value.get("version") or "development"),
+            build_id=str(value.get("build_id") or "development"),
+            source_commit=str(value.get("source_commit") or "unavailable"),
+            source_branch=str(value.get("source_branch") or "unavailable"),
+            data_root=str(value.get("data_root") or ""),
             tunnel_state=TunnelState(
                 value.get("tunnel_state", TunnelState.NOT_CONFIGURED.value)
             ),

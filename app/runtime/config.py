@@ -9,6 +9,7 @@ import sys
 from typing import Any, Mapping
 from uuid import uuid4
 
+from app.runtime.build_identity import BuildIdentity, load_runtime_build_identity
 from app.core.paths import DATA_DIR, RUNTIME_PROJECT_ROOT
 
 
@@ -153,6 +154,7 @@ class RuntimePaths:
 @dataclass(frozen=True)
 class RuntimeConfig:
     paths: RuntimePaths
+    build_identity: BuildIdentity
     python_exe: Path
     node_exe: Path
     backend_port: int = DEFAULT_BACKEND_PORT
@@ -240,6 +242,10 @@ class RuntimeConfig:
         ).rstrip("/")
         return cls(
             paths=paths,
+            build_identity=load_runtime_build_identity(
+                runtime_root=paths.runtime_root,
+                env=environment,
+            ),
             python_exe=python_exe,
             node_exe=node_exe,
             backend_port=backend_port,

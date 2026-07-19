@@ -101,7 +101,9 @@ export default function DesktopSettingsPage({ section = "status" }) {
           <Detail label="MCP" value={componentDetail(runtime?.components?.mcp)} />
           <Detail label="ChatGPT Tunnel" value={tunnelDetail(runtime)} />
           <Detail label="Desktop" value={`${bridge.productVersion || "unknown"} · ${bridge.buildId || "unknown"}`} />
-          <Detail label="Renderer" value={bridge.rendererAssetVersion || "unknown"} />
+          <Detail label="Source commit" value={runtime?.source_commit || bridge.sourceCommit} />
+          <Detail label="Source branch" value={runtime?.source_branch || bridge.sourceBranch} />
+          <Detail label="Data root" value={runtime?.data_root} />
         </dl>
       </details>
 

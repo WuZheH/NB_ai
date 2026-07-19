@@ -10,13 +10,8 @@
     "desktop:dev": "electron .",
     "build:renderer": "npm --prefix ../../frontend run build",
     "build:mcp-runtime": "node ../notebook_ai_chatgpt_app/scripts/build-widget.mjs && node ../notebook_ai_chatgpt_app/scripts/build-server.mjs",
-    "package:win:unpacked": "node scripts/package-windows-unpacked.mjs",
-    "package:candidate:r3": "node scripts/package-r3-candidate.mjs",
-    "package:candidate:r4": "node scripts/package-r4-candidate.mjs",
-    "package:candidate:r5": "node scripts/package-r5-candidate.mjs",
-    "package:candidate:reuse-runtime": "node scripts/package-candidate-from-existing-runtime.mjs",
     "smoke:packaged": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-packaged-search.ps1",
-    "build": "npm run build:renderer && npm run build:mcp-runtime && npm run check && npm run package:win:unpacked",
+    "build": "npm run build:renderer && npm run build:mcp-runtime && npm run check",
     "test": "node --test tests/*.test.mjs",
     "check": "node --check electron/main/index.js && node --check electron/main/application.js && node --check electron/main/window.js && node --check electron/preload/index.cjs && node --test tests/*.test.mjs"
   },
@@ -36,6 +31,7 @@
     },
     "files": [
       "electron/**/*",
+      "!electron/product-metadata.json",
       "renderer/**/*",
       "scripts/**/*.ps1",
       "assets/**/*",
