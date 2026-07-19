@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.db.session import SessionLocal
 from app.models import Document
+from app.runtime.machine_config import require_runtime_machine_config
 from app.services import local_reranker_service, object_semantic_search_service
 
 
@@ -25,6 +26,7 @@ def search_high_quality(
     normalized_query = _compact_text(query)
     if not normalized_query:
         raise ValueError("query must not be empty.")
+    require_runtime_machine_config()
 
     started = time.perf_counter()
     safe_object_limit = max(1, min(int(object_limit or DEFAULT_OBJECT_LIMIT), 50))

@@ -32,6 +32,7 @@ test("product brand is Search while NOTEBOOK_AI runtime compatibility remains", 
   assert.match(config, /SEARCH_NODE/);
   assert.match(config, /SEARCH_DATA_DIR/);
   assert.match(config, /SEARCH_CLOUDFLARED/);
+  assert.match(config, /machine-config\.json/);
   assert.match(config, /NOTEBOOK_AI_PYTHON_EXE/);
   assert.match(config, /NOTEBOOK_AI_NODE_EXE/);
   assert.match(config, /notebook_ai_launcher\.py/);
@@ -51,6 +52,10 @@ test("runtime launcher is a direct hidden child with controlled output pipes", a
   assert.match(launcher, /SEARCH_PYTHON:\s*this\.config\.pythonExe/);
   assert.match(launcher, /SEARCH_BUILD_MODE:\s*this\.config\.buildMode/);
   assert.match(launcher, /SEARCH_BUILD_IDENTITY_PATH:\s*this\.config\.buildIdentityPath/);
+  assert.match(launcher, /--machine-config/);
+  assert.match(launcher, /SEARCH_MACHINE_CONFIG_PATH/);
+  assert.match(launcher, /delete environment\.SEARCH_EMBEDDING_MODEL/);
+  assert.match(launcher, /delete environment\.SEARCH_RERANKER_MODEL/);
   assert.match(launcher, /runtime_prerequisites_missing/);
   assert.match(launcher, /cwd:\s*this\.config\.runtimeRoot/);
   assert.match(launcher, /delete environment\.PYTHONPATH/);

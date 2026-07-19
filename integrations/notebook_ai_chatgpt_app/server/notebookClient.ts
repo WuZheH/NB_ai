@@ -116,16 +116,30 @@ export class NotebookClient {
       const raw = await response.text();
       if (!response.ok) {
         let detail = response.statusText || "Backend request failed";
+        let code = "NOTEBOOK_BACKEND_ERROR";
         try {
-          const parsed = JSON.parse(raw) as { detail?: unknown; message?: unknown; code?: unknown };
-          detail = String(parsed.detail ?? parsed.message ?? detail);
-          throw new NotebookBackendError(detail, response.status, String(parsed.code ?? "NOTEBOOK_BACKEND_ERROR"));
-        } catch (error) {
-          if (error instanceof NotebookBackendError) {
-            throw error;
+          const parsed = JSON.parse(raw) as {
+            detail?: unknown;
+            message?: unknown;
+            code?: unknown;
+            error_code?: unknown;
+          };
+          if (parsed.detail && typeof parsed.detail === "object" && !Array.isArray(parsed.detail)) {
+            const structured = parsed.detail as { message?: unknown; code?: unknown; error_code?: unknown; error?: unknown };
+            detail = typeof structured.message === "string" ? structured.message : detail;
+            code = String(structured.error_code ?? structured.code ?? structured.error ?? code);
+          } else {
+            detail = typeof parsed.detail === "string"
+              ? parsed.detail
+              : typeof parsed.message === "string"
+                ? parsed.message
+                : detail;
+            code = String(parsed.error_code ?? parsed.code ?? code);
           }
+        } catch {
+          // Non-JSON backend failures use the generic, privacy-safe contract.
         }
-        throw new NotebookBackendError(detail, response.status);
+        throw new NotebookBackendError(detail, response.status, code);
       }
 
       const contentType = response.headers.get("content-type") ?? "";

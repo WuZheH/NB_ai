@@ -32,6 +32,8 @@ test("Windows packaging avoids privileged symlink extraction and applies Search 
   const extraResources = JSON.stringify(packageJson.build.extraResources);
   assert.match(extraResources, /app\/runtime-project\/app/);
   assert.match(extraResources, /notebook_ai_chatgpt_app\/dist\/server\/index\.js/);
+  assert.match(extraResources, /configure_search_machine\.py/);
+  assert.match(extraResources, /configure_search_machine\.ps1/);
   assert.doesNotMatch(extraResources, /(?:^|[\\/])data(?:[\\/]|$)|model_cache|node_modules/i);
   assert.match(finalizer, /FileDescription: "Search"/);
   assert.match(finalizer, /ProductName: "Search"/);

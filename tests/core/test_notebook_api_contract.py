@@ -8,6 +8,7 @@ from app.api import retrieval_api
 from app.domains.retrieval import notebook_search_service
 from app.domains.retrieval.result_contracts import NotebookFragment, OpenTarget
 from app.main import app
+from app.runtime.machine_config import MachineConfigUnavailable
 
 
 def _fragment() -> NotebookFragment:
@@ -87,3 +88,21 @@ def test_notebook_high_quality_service_has_no_fts_or_bm25_fallback() -> None:
     assert "search_high_quality" in source
     assert "search_zotero_note_vectors" in source
     assert "_predict_scores" in source
+
+
+def test_notebook_api_reports_structured_private_configuration_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        retrieval_api,
+        "search_notebook",
+        lambda _request: (_ for _ in ()).throw(MachineConfigUnavailable("config_missing")),
+    )
+    response = TestClient(app).post(
+        "/api/v1/retrieval/notebook-search",
+        json={"query": "configuration probe", "limit": 1},
+    )
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["error"] == "high_quality_search_configuration_unavailable"
+    assert detail["error_code"] == "config_missing"
+    assert "\\" not in detail["message"]
+    assert ":/" not in detail["message"]

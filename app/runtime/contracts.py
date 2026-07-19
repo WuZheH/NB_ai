@@ -108,6 +108,10 @@ class RuntimeStatus:
     source_commit: str = "unavailable"
     source_branch: str = "unavailable"
     data_root: str = ""
+    machine_config_status: str = "config_missing"
+    machine_config_error_code: str | None = "config_missing"
+    embedding_model_ready: bool = False
+    reranker_model_ready: bool = False
     components: dict[str, ComponentStatus] = field(default_factory=dict)
     tunnel_state: TunnelState = TunnelState.NOT_CONFIGURED
     tunnel_type: str = "none"
@@ -128,6 +132,10 @@ class RuntimeStatus:
             "source_commit": self.source_commit,
             "source_branch": self.source_branch,
             "data_root": self.data_root,
+            "machine_config_status": self.machine_config_status,
+            "machine_config_error_code": self.machine_config_error_code,
+            "embedding_model_ready": self.embedding_model_ready,
+            "reranker_model_ready": self.reranker_model_ready,
             "tunnel_state": self.tunnel_state.value,
             "tunnel_type": self.tunnel_type,
             "tunnel_url": self.tunnel_url,
@@ -153,6 +161,14 @@ class RuntimeStatus:
             source_commit=str(value.get("source_commit") or "unavailable"),
             source_branch=str(value.get("source_branch") or "unavailable"),
             data_root=str(value.get("data_root") or ""),
+            machine_config_status=str(value.get("machine_config_status") or "config_missing"),
+            machine_config_error_code=(
+                str(value["machine_config_error_code"])
+                if value.get("machine_config_error_code")
+                else None
+            ),
+            embedding_model_ready=bool(value.get("embedding_model_ready")),
+            reranker_model_ready=bool(value.get("reranker_model_ready")),
             tunnel_state=TunnelState(
                 value.get("tunnel_state", TunnelState.NOT_CONFIGURED.value)
             ),

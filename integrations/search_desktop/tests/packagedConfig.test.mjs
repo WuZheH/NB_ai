@@ -36,11 +36,13 @@ test("packaged Search resolves code from resources/app and data from the stable 
 
     const config = resolveDesktopConfig({
       env: { PATH: "", NOTEBOOK_AI_PROJECT_ROOT: join(FIXTURE, "ignored-development-root") },
+      userDataPath: join(FIXTURE, "roaming", "Search"),
       executablePath,
       resourcesPath,
       isPackaged: true,
     });
     assert.equal(config.runtimeRoot, runtimeRoot);
+    assert.equal(config.machineConfigPath, join(FIXTURE, "roaming", "Search", "machine-config.json"));
     assert.equal(config.dataDir, resolve(dataDir));
     assert.equal(config.dataProjectRoot, resolve(dataDir, ".."));
     assert.equal(config.projectRoot, config.dataProjectRoot);
@@ -65,6 +67,7 @@ test("packaged Search starts with an empty LOCALAPPDATA data directory", async (
     const localAppData = join(FIXTURE, "local-app-data");
     const config = resolveDesktopConfig({
       env: { LOCALAPPDATA: localAppData, PATH: "" },
+      userDataPath: join(FIXTURE, "roaming", "Search"),
       executablePath,
       resourcesPath,
       isPackaged: true,

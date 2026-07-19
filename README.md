@@ -216,10 +216,6 @@ $env:SEARCH_RUNTIME_DIR = ""
 $env:SEARCH_LOG_DIR = ""
 $env:SEARCH_CONFIG_DIR = ""
 $env:SEARCH_ZOTERO_DATA_DIR = ""
-$env:SEARCH_MODEL_CACHE_DIR = ".\data\models"
-$env:SEARCH_EMBEDDING_MODEL = ""
-$env:SEARCH_RERANKER_MODEL = ""
-$env:SEARCH_MARKER_MODEL_CACHE = ""
 ```
 
 路径规则：
@@ -229,12 +225,29 @@ $env:SEARCH_MARKER_MODEL_CACHE = ""
 - `SEARCH_DATA_DIR` 直接表示数据目录；相对路径基于源码或打包 runtime 根解析。
 - 默认运行状态和后端日志位于 `%LOCALAPPDATA%\Search`。
 - 默认用户配置位于 `%APPDATA%\Search`。
+- 高质量检索的 embedding/reranker 路径只保存在 `%APPDATA%\Search\machine-config.json`，正式桌面入口不从系统环境变量或当前工作目录猜测模型位置。
 - `SEARCH_RUNTIME_DIR`、`SEARCH_LOG_DIR`、`SEARCH_CONFIG_DIR` 可分别覆盖上述目录。
 - 未配置 Python/Node 时只做安全 PATH 探测；找不到会显示依赖缺失，不会安装软件。
 - `SEARCH_ALLOW_UNAUTHENTICATED_MCP_DEV=1` 只允许短时本地 Developer Mode；公网长期部署必须使用认证。
 - `SEARCH_BACKEND_BEARER_TOKEN`、`SEARCH_WIDGET_DOMAIN`、`SEARCH_MCP_INSPECTOR` 和 `SEARCH_SMOKE_SOURCE_TYPES` 分别用于可选后端认证扩展、托管 widget、已有 Inspector 路径和 MCP smoke 来源；示例不包含真实值。
 - `SEARCH_TUNNEL_STATE_DIR` 只保存 Quick Tunnel 的临时日志；默认位于项目 `.codex_tmp/quick-tunnel`，不存储 Cloudflare credentials。
 - `SEARCH_RUNTIME_ROOT` 及 `SEARCH_SCROLL_*`、`SEARCH_STATUS_*`、`SEARCH_PDF_PREVIEW_*` 等名称属于桌面打包器/自动化 probe 的内部进程契约，不是用户支持的配置接口，请勿手工设置。
+
+配置本机已有模型时，使用项目提供的原子写入工具。它会先验证模型结构，已有受支持配置会备份为 `machine-config.json.bak`；工具不会下载或移动模型：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\configure_search_machine.ps1 `
+  -Action set `
+  -PythonExe "<Search 使用的 Python.exe>" `
+  -EmbeddingModelPath "<Qwen3-Embedding-0.6B 的绝对目录>" `
+  -RerankerModelPath "<Qwen3-Reranker-0.6B 的绝对目录>"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\configure_search_machine.ps1 `
+  -Action validate `
+  -PythonExe "<Search 使用的 Python.exe>"
+```
+
+配置缺失或无效不会阻止 Search、关键词搜索、PDF Preview、Workspace 或 Evidence Basket 启动；高质量搜索和 MCP `search` 会返回结构化的配置错误，而不是伪装成“无结果”。
 
 ## 10. 数据与隐私
 

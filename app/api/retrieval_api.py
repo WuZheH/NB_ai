@@ -4,6 +4,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from app.runtime.machine_config import MachineConfigUnavailable
+
 from app.domains.retrieval.fragment_locator_service import (
     FragmentLocatorNotFound,
     get_fragment_locator,
@@ -23,6 +25,7 @@ from app.schemas.retrieval_search import (
     RetrievalSearchRequest,
     RetrievalSearchResponse,
 )
+from app.services import local_embedding_service, local_reranker_service
 from app.services.retrieval import fts_search_service, fts_status_service
 
 
@@ -35,12 +38,36 @@ def search_notebook_retrieval(
 ) -> dict[str, Any]:
     try:
         return search_notebook(request)
+    except MachineConfigUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "high_quality_search_configuration_unavailable",
+                "error_code": exc.error_code,
+                "message": "高质量搜索配置不可用。",
+                **_safety_flags(),
+            },
+        ) from exc
+    except (
+        local_embedding_service.LocalEmbeddingUnavailable,
+        local_reranker_service.LocalRerankerUnavailable,
+    ) as exc:
+        error_code = str(exc) if str(exc) in {"model_load_failed"} else "model_load_failed"
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "high_quality_search_model_unavailable",
+                "error_code": error_code,
+                "message": "High-quality search model could not be loaded.",
+                **_safety_flags(),
+            },
+        ) from exc
     except NotebookSearchUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail={
                 "error": "notebook_search_unavailable",
-                "message": str(exc),
+                "message": "High-quality search is unavailable.",
                 **_safety_flags(),
             },
         ) from exc

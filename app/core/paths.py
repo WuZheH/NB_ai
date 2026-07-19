@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from app.runtime.machine_config import load_runtime_machine_config
+
 RUNTIME_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -84,26 +86,26 @@ VECTOR_STORE_DIR = DATA_DIR / "vector_store"
 LANCEDB_DIR = VECTOR_STORE_DIR / "lancedb"
 ZOTERO_NOTE_VECTOR_DIR = VECTOR_STORE_DIR / "zotero_user_notes_v1"
 
-# Optional local models are never downloaded automatically.  An unconfigured
-# checkout looks beneath its ignored data directory and reports missing models
-# through the existing service diagnostics.
-MODEL_CACHE_ROOT = _resolve_configured_path(
-    os.environ.get("SEARCH_MODEL_CACHE_DIR")
-    or os.environ.get("NOTEBOOK_AI_MODEL_CACHE_ROOT")
-    or str(DATA_DIR / "models"),
-    label="SEARCH_MODEL_CACHE_DIR",
+# The packaged runtime receives SEARCH_MACHINE_CONFIG_PATH only as an explicit
+# launcher-to-child transport.  Model locations come exclusively from the
+# validated machine config; ambient model-path variables and old project roots
+# are never consulted.  Missing configuration keeps the non-model features
+# available and points legacy import-only defaults beneath the data directory.
+MACHINE_CONFIG = load_runtime_machine_config()
+MODEL_CACHE_ROOT = (
+    MACHINE_CONFIG.embedding.path.parent
+    if MACHINE_CONFIG.ready and MACHINE_CONFIG.embedding is not None
+    else (DATA_DIR / "models").resolve(strict=False)
 )
-EMBEDDING_MODEL_PATH = _resolve_configured_path(
-    os.environ.get("SEARCH_EMBEDDING_MODEL")
-    or os.environ.get("NOTEBOOK_AI_EMBEDDING_MODEL_PATH")
-    or str(MODEL_CACHE_ROOT / "Qwen3-Embedding-0.6B"),
-    label="SEARCH_EMBEDDING_MODEL",
+EMBEDDING_MODEL_PATH = (
+    MACHINE_CONFIG.embedding.path
+    if MACHINE_CONFIG.ready and MACHINE_CONFIG.embedding is not None
+    else MODEL_CACHE_ROOT / "Qwen3-Embedding-0.6B"
 )
-RERANKER_MODEL_PATH = _resolve_configured_path(
-    os.environ.get("SEARCH_RERANKER_MODEL")
-    or os.environ.get("NOTEBOOK_AI_RERANKER_MODEL_PATH")
-    or str(MODEL_CACHE_ROOT / "Qwen3-Reranker-0.6B"),
-    label="SEARCH_RERANKER_MODEL",
+RERANKER_MODEL_PATH = (
+    MACHINE_CONFIG.reranker.path
+    if MACHINE_CONFIG.ready and MACHINE_CONFIG.reranker is not None
+    else MODEL_CACHE_ROOT / "Qwen3-Reranker-0.6B"
 )
 
 

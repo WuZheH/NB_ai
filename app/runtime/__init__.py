@@ -5,14 +5,6 @@ MCP protocol handling, and Zotero data extraction stay in their existing
 domains.
 """
 
-from app.runtime.config import RuntimeConfig, RuntimePaths
-from app.runtime.contracts import (
-    ComponentName,
-    ComponentState,
-    RuntimeState,
-    TunnelState,
-)
-
 __all__ = [
     "ComponentName",
     "ComponentState",
@@ -21,3 +13,25 @@ __all__ = [
     "RuntimeState",
     "TunnelState",
 ]
+
+
+def __getattr__(name: str):
+    if name in {"RuntimeConfig", "RuntimePaths"}:
+        from app.runtime.config import RuntimeConfig, RuntimePaths
+
+        return {"RuntimeConfig": RuntimeConfig, "RuntimePaths": RuntimePaths}[name]
+    if name in {"ComponentName", "ComponentState", "RuntimeState", "TunnelState"}:
+        from app.runtime.contracts import (
+            ComponentName,
+            ComponentState,
+            RuntimeState,
+            TunnelState,
+        )
+
+        return {
+            "ComponentName": ComponentName,
+            "ComponentState": ComponentState,
+            "RuntimeState": RuntimeState,
+            "TunnelState": TunnelState,
+        }[name]
+    raise AttributeError(name)

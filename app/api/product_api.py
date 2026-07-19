@@ -5,6 +5,8 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.routing import APIRoute
 
+from app.runtime.machine_config import load_runtime_machine_config
+
 from app.api.schemas import (
     PatchPreflightRequest,
     ResearchSessionDryRunRequest,
@@ -29,6 +31,7 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "app": "Search",
         "mode": "local_first",
+        "machine_config": load_runtime_machine_config().public_status(),
         **vector_store_worker.vector_auto_sync_boundary(),
         **safety_fields(),
     }

@@ -9,7 +9,7 @@ import type { NotebookFragment, NotebookResult, NotebookSearchInput } from "./co
 import { NotebookBackendError, NotebookClient } from "./notebookClient";
 import { requireUnauthenticatedDevelopment } from "./security";
 import { NOTEBOOK_TOOL_NAMES } from "./tools";
-import { errorCode } from "./tools/shared";
+import { errorCode, errorToolResult } from "./tools/shared";
 import { RESOURCE_MIME_TYPE } from "./widgetResource";
 
 function result(sourceType: NotebookResult["source_type"] = "pdf_chunk"): NotebookResult {
@@ -221,4 +221,16 @@ test("backend error codes are metadata-safe before logging", () => {
     errorCode(new NotebookBackendError("failure", 500, "private note body\nfragment_id=secret")),
     "MCP_ADAPTER_ERROR",
   );
+});
+
+test("machine configuration failures remain structured and path-free", () => {
+  const result = errorToolResult(
+    new NotebookBackendError("D:\\private\\model", 503, "config_missing"),
+  );
+  assert.equal(result.structuredContent.error_code, "config_missing");
+  assert.equal(
+    result.structuredContent.message,
+    "Search high-quality search configuration is unavailable.",
+  );
+  assert.doesNotMatch(JSON.stringify(result), /D:\\\\private/);
 });

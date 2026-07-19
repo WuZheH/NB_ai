@@ -5,14 +5,18 @@ from pathlib import Path
 import time
 from typing import Any
 
-from app.core.paths import MODEL_CACHE_ROOT, RERANKER_MODEL_PATH
+from app.core.paths import RERANKER_MODEL_PATH
+from app.runtime.machine_config import (
+    MachineConfigUnavailable,
+    record_model_load_failed,
+    record_model_ready,
+    require_runtime_machine_config,
+)
 from app.services import local_embedding_service
 
 
 RERANKER_MODEL_NAME = "Qwen3-Reranker-0.6B"
 DEFAULT_RERANKER_MODEL_PATH = RERANKER_MODEL_PATH
-DEFAULT_MODEL_CACHE = MODEL_CACHE_ROOT
-DEFAULT_MARKER_CACHE = DEFAULT_MODEL_CACHE
 
 _RERANKER: Any | None = None
 _RERANKER_LOAD_MS: float | None = None
@@ -105,21 +109,25 @@ def _load_reranker(timings: dict[str, float]) -> Any:
         return _RERANKER
 
     _set_local_cache_env()
-    model_path = _model_path()
-    if not model_path.exists():
-        raise LocalRerankerUnavailable(f"Local reranker model is missing: {model_path}")
+    try:
+        model_path = _model_path()
+    except MachineConfigUnavailable as exc:
+        raise LocalRerankerUnavailable(exc.error_code) from exc
 
     started = time.perf_counter()
     try:
         from sentence_transformers import CrossEncoder
     except Exception as exc:  # pragma: no cover - depends on runtime environment
-        raise LocalRerankerUnavailable(f"sentence_transformers CrossEncoder import failed: {exc}") from exc
+        record_model_load_failed("reranker")
+        raise LocalRerankerUnavailable("model_load_failed") from exc
 
     try:
         _RERANKER = CrossEncoder(str(model_path), device=_device_name())
     except Exception as exc:  # pragma: no cover - depends on local model/GPU state
-        raise LocalRerankerUnavailable(f"local reranker model load failed: {exc}") from exc
+        record_model_load_failed("reranker")
+        raise LocalRerankerUnavailable("model_load_failed") from exc
 
+    record_model_ready("reranker")
     _RERANKER_LOAD_MS = _elapsed_ms(started)
     timings["load_reranker_ms"] = _RERANKER_LOAD_MS
     return _RERANKER
@@ -151,7 +159,6 @@ def _response(
         "mode": "local_reranker_sidecar_v1",
         "embedding_model": local_embedding_service.MODEL_NAME,
         "reranker_model": RERANKER_MODEL_NAME,
-        "reranker_model_path": str(_model_path()),
         "retrieval_backend": retrieval_backend,
         "vector_store_status": vector_store_status,
         "fallback_reason": fallback_reason,
@@ -179,20 +186,18 @@ def _candidate_text(candidate: dict[str, Any]) -> str:
 
 
 def _set_local_cache_env() -> None:
-    os.environ.setdefault("HF_HOME", str(DEFAULT_MODEL_CACHE))
-    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(DEFAULT_MODEL_CACHE / "hub"))
-    os.environ.setdefault("TRANSFORMERS_CACHE", str(DEFAULT_MODEL_CACHE))
-    os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(DEFAULT_MODEL_CACHE))
-    os.environ.setdefault("TORCH_HOME", str(DEFAULT_MODEL_CACHE / "torch"))
-    os.environ.setdefault("MARKER_CACHE_DIR", str(DEFAULT_MARKER_CACHE))
+    model_cache = _model_path().parent
+    os.environ.setdefault("HF_HOME", str(model_cache))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(model_cache / "hub"))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(model_cache))
+    os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(model_cache))
+    os.environ.setdefault("TORCH_HOME", str(model_cache / "torch"))
 
 
 def _model_path() -> Path:
-    return Path(
-        os.environ.get("SEARCH_RERANKER_MODEL")
-        or os.environ.get("NOTEBOOK_AI_RERANKER_MODEL_PATH")
-        or DEFAULT_RERANKER_MODEL_PATH
-    )
+    config = require_runtime_machine_config()
+    assert config.reranker is not None
+    return config.reranker.path
 
 
 def _device_name() -> str | None:

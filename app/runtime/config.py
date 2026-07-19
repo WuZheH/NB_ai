@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from app.runtime.build_identity import BuildIdentity, load_runtime_build_identity
+from app.runtime.machine_config import MachineConfig, load_machine_config
 from app.core.paths import DATA_DIR, RUNTIME_PROJECT_ROOT
 
 
@@ -157,6 +158,7 @@ class RuntimeConfig:
     build_identity: BuildIdentity
     python_exe: Path
     node_exe: Path
+    machine_config: MachineConfig
     backend_port: int = DEFAULT_BACKEND_PORT
     mcp_port: int = DEFAULT_MCP_PORT
     backend_url: str = "http://127.0.0.1:8000"
@@ -174,6 +176,7 @@ class RuntimeConfig:
         data_project_root: str | Path | None = None,
         data_dir: str | Path | None = None,
         project_root: str | Path | None = None,
+        machine_config_path: str | Path | None = None,
         env: Mapping[str, str] | None = None,
     ) -> "RuntimeConfig":
         environment = os.environ if env is None else env
@@ -214,6 +217,15 @@ class RuntimeConfig:
             or stored.get("node_exe")
         )
         node_exe = Path(node_value or DEFAULT_NODE_EXE)
+        selected_machine_config_path = (
+            machine_config_path
+            or environment.get("SEARCH_MACHINE_CONFIG_PATH")
+            or (paths.roaming_app_data / "machine-config.json")
+        )
+        selected_machine_config_path = Path(selected_machine_config_path).expanduser()
+        if not selected_machine_config_path.is_absolute():
+            raise ValueError("machine_config_path_not_absolute")
+        machine_config = load_machine_config(selected_machine_config_path)
         backend_port = _port(
             environment.get("SEARCH_BACKEND_PORT")
             or environment.get("NOTEBOOK_AI_BACKEND_PORT")
@@ -248,6 +260,7 @@ class RuntimeConfig:
             ),
             python_exe=python_exe,
             node_exe=node_exe,
+            machine_config=machine_config,
             backend_port=backend_port,
             mcp_port=mcp_port,
             backend_url=backend_url,

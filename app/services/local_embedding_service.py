@@ -9,7 +9,13 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.core.paths import EMBEDDING_MODEL_PATH, MODEL_CACHE_ROOT
+from app.core.paths import EMBEDDING_MODEL_PATH
+from app.runtime.machine_config import (
+    MachineConfigUnavailable,
+    record_model_load_failed,
+    record_model_ready,
+    require_runtime_machine_config,
+)
 from app.db.session import SessionLocal
 from app.models import Document, KnowledgeChunk
 from app.services.library_service import READ_LIBRARY_STATUSES, is_metadata_chunk_text
@@ -17,8 +23,6 @@ from app.services.library_service import READ_LIBRARY_STATUSES, is_metadata_chun
 
 MODEL_NAME = "Qwen3-Embedding-0.6B"
 DEFAULT_MODEL_PATH = EMBEDDING_MODEL_PATH
-DEFAULT_MODEL_CACHE = MODEL_CACHE_ROOT
-DEFAULT_MARKER_CACHE = DEFAULT_MODEL_CACHE
 MAX_CANDIDATE_TEXT_CHARS = 1200
 PASSAGE_SNIPPET_CHARS = 320
 
@@ -165,21 +169,25 @@ def _load_model(timings: dict[str, float]) -> Any:
         return _MODEL
 
     _set_local_cache_env()
-    model_path = _model_path()
-    if not model_path.exists():
-        raise LocalEmbeddingUnavailable(f"Local embedding model is missing: {model_path}")
+    try:
+        model_path = _model_path()
+    except MachineConfigUnavailable as exc:
+        raise LocalEmbeddingUnavailable(exc.error_code) from exc
 
     started = time.perf_counter()
     try:
         from sentence_transformers import SentenceTransformer
     except Exception as exc:  # pragma: no cover - depends on runtime environment
-        raise LocalEmbeddingUnavailable(f"sentence_transformers import failed: {exc}") from exc
+        record_model_load_failed("embedding")
+        raise LocalEmbeddingUnavailable("model_load_failed") from exc
 
     try:
         _MODEL = SentenceTransformer(str(model_path), device=_device_name())
     except Exception as exc:  # pragma: no cover - depends on local model/GPU state
-        raise LocalEmbeddingUnavailable(f"local embedding model load failed: {exc}") from exc
+        record_model_load_failed("embedding")
+        raise LocalEmbeddingUnavailable("model_load_failed") from exc
 
+    record_model_ready("embedding")
     _MODEL_LOAD_MS = _elapsed_ms(started)
     timings["load_model_ms"] = _MODEL_LOAD_MS
     return _MODEL
@@ -277,7 +285,6 @@ def _response(
     return {
         "query": query,
         "model": MODEL_NAME,
-        "model_path": str(_model_path()),
         "mode": "local_embedding_sidecar_v1",
         "retrieval_backend": retrieval_backend,
         "vector_store_status": vector_store_status,
@@ -396,20 +403,18 @@ def _int_or_none(value: Any) -> int | None:
 
 
 def _set_local_cache_env() -> None:
-    os.environ.setdefault("HF_HOME", str(DEFAULT_MODEL_CACHE))
-    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(DEFAULT_MODEL_CACHE / "hub"))
-    os.environ.setdefault("TRANSFORMERS_CACHE", str(DEFAULT_MODEL_CACHE))
-    os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(DEFAULT_MODEL_CACHE))
-    os.environ.setdefault("TORCH_HOME", str(DEFAULT_MODEL_CACHE / "torch"))
-    os.environ.setdefault("MARKER_CACHE_DIR", str(DEFAULT_MARKER_CACHE))
+    model_cache = _model_path().parent
+    os.environ.setdefault("HF_HOME", str(model_cache))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(model_cache / "hub"))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(model_cache))
+    os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(model_cache))
+    os.environ.setdefault("TORCH_HOME", str(model_cache / "torch"))
 
 
 def _model_path() -> Path:
-    return Path(
-        os.environ.get("SEARCH_EMBEDDING_MODEL")
-        or os.environ.get("NOTEBOOK_AI_EMBEDDING_MODEL_PATH")
-        or DEFAULT_MODEL_PATH
-    )
+    config = require_runtime_machine_config()
+    assert config.embedding is not None
+    return config.embedding.path
 
 
 def _device_name() -> str | None:

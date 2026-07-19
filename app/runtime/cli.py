@@ -17,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="notebook-ai-runtime",
         description="Manage the local Search FastAPI and MCP runtime, with read-only external Tunnel diagnostics.",
     )
+    parser.add_argument("--machine-config", dest="machine_config_path")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("start", "ensure-running", "stop", "restart", "status", "doctor"):
         commands.add_parser(name)
@@ -41,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
-        config = RuntimeConfig.load()
+        config = RuntimeConfig.load(machine_config_path=arguments.machine_config_path)
         controller = RuntimeController(config)
         if arguments.command in {"start", "ensure-running"}:
             return _emit(controller.start().to_dict())

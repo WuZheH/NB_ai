@@ -104,6 +104,7 @@ export default function DesktopSettingsPage({ section = "status" }) {
           <Detail label="Source commit" value={runtime?.source_commit || bridge.sourceCommit} />
           <Detail label="Source branch" value={runtime?.source_branch || bridge.sourceBranch} />
           <Detail label="Data root" value={runtime?.data_root} />
+          <Detail label="Machine config" value={machineConfigDetail(runtime)} />
         </dl>
       </details>
 
@@ -267,6 +268,14 @@ function tunnelDetail(runtime = {}) {
     runtime?.updated_at ? `检查 ${healthCheckTime(runtime.updated_at)}` : null,
   ];
   return parts.filter(Boolean).join(" · ") || "未配置";
+}
+
+function machineConfigDetail(runtime = {}) {
+  const status = String(runtime?.machine_config_status || "config_missing");
+  const embedding = runtime?.embedding_model_ready ? "embedding ready" : "embedding unavailable";
+  const reranker = runtime?.reranker_model_ready ? "reranker ready" : "reranker unavailable";
+  const error = runtime?.machine_config_error_code ? ` · ${runtime.machine_config_error_code}` : "";
+  return `${status} · ${embedding} · ${reranker}${error}`;
 }
 
 function Detail({ label, value }) {

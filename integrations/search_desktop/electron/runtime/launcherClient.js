@@ -25,7 +25,15 @@ export class LauncherClient {
     if (!this.config.runtimeAvailable) {
       return Promise.reject(new Error("runtime_prerequisites_missing"));
     }
-    const args = ["-B", this.config.runtimeScript, command, ...extraArguments];
+    if (!this.config.machineConfigPath) throw new Error("machine_config_path_unavailable");
+    const args = [
+      "-B",
+      this.config.runtimeScript,
+      "--machine-config",
+      this.config.machineConfigPath,
+      command,
+      ...extraArguments,
+    ];
     const environment = {
       ...process.env,
       SEARCH_RUNTIME_ROOT: this.config.runtimeRoot,
@@ -45,6 +53,13 @@ export class LauncherClient {
     delete environment.PYTHONPATH;
     delete environment.NODE_PATH;
     delete environment.NOTEBOOK_AI_PROJECT_ROOT;
+    delete environment.SEARCH_MODEL_CACHE_DIR;
+    delete environment.SEARCH_EMBEDDING_MODEL;
+    delete environment.SEARCH_RERANKER_MODEL;
+    delete environment.NOTEBOOK_AI_MODEL_CACHE_ROOT;
+    delete environment.NOTEBOOK_AI_EMBEDDING_MODEL_PATH;
+    delete environment.NOTEBOOK_AI_RERANKER_MODEL_PATH;
+    environment.SEARCH_MACHINE_CONFIG_PATH = this.config.machineConfigPath;
     return new Promise((resolve, reject) => {
       const child = this.spawnProcess(this.config.pythonExe, args, {
         cwd: this.config.runtimeRoot,

@@ -67,6 +67,17 @@ export function errorToolResult(error: unknown): {
   const message =
     code === "BACKEND_TIMEOUT"
       ? "Search backend request timed out."
+      : [
+          "config_missing",
+          "config_invalid_json",
+          "schema_unsupported",
+          "required_field_missing",
+          "model_path_not_absolute",
+          "model_path_not_found",
+          "model_structure_invalid",
+          "model_load_failed",
+        ].includes(code)
+        ? "Search high-quality search configuration is unavailable."
       : "Search request failed.";
   const structuredContent = { status: "error" as const, error_code: code, message };
   return { isError: true, content: jsonContent(structuredContent), structuredContent };

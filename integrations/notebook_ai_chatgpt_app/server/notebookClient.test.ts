@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { NOTEBOOK_SOURCE_TYPES } from "./contracts";
-import { NotebookClient } from "./notebookClient";
+import { NotebookBackendError, NotebookClient } from "./notebookClient";
 
 test("NotebookClient uses the fixed backend paths and caps search at 20", async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
@@ -97,5 +97,33 @@ test("NotebookClient makes backend-relative open targets absolute without rewrit
   assert.equal(
     "fragment" in fetched ? fetched.fragment?.open_target?.pdf_url : null,
     "http://127.0.0.1:8123/api/v1/library/documents/7/pdf#page=12",
+  );
+});
+
+test("NotebookClient preserves structured machine config errors without exposing paths", async () => {
+  const client = new NotebookClient({
+    baseUrl: "http://127.0.0.1:8123",
+    fetchImpl: async () => Response.json(
+      {
+        detail: {
+          error: "high_quality_search_configuration_unavailable",
+          error_code: "config_missing",
+          message: "High-quality search configuration is unavailable.",
+        },
+      },
+      { status: 503 },
+    ),
+  });
+  await assert.rejects(
+    client.search({
+      query: "probe",
+      limit: 1,
+      source_types: ["pdf_chunk"],
+      document_ids: [],
+      include_context: false,
+    }),
+    (error: unknown) => error instanceof NotebookBackendError
+      && error.code === "config_missing"
+      && !error.message.includes("D:\\"),
   );
 });

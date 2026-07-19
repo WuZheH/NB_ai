@@ -434,6 +434,9 @@ class RuntimeSupervisor:
         )
 
     def _fastapi_spec(self) -> ProcessSpec:
+        environment = {"PYTHONDONTWRITEBYTECODE": "1"}
+        if self.config.machine_config.path is not None:
+            environment["SEARCH_MACHINE_CONFIG_PATH"] = str(self.config.machine_config.path)
         return ProcessSpec(
             name="fastapi",
             executable=self.config.python_exe,
@@ -448,7 +451,7 @@ class RuntimeSupervisor:
                 str(self.config.backend_port),
             ),
             cwd=self.config.paths.runtime_root,
-            environment={"PYTHONDONTWRITEBYTECODE": "1"},
+            environment=environment,
             port=self.config.backend_port,
         )
 
@@ -485,19 +488,22 @@ class RuntimeSupervisor:
         )
 
     def _mcp_spec(self) -> ProcessSpec:
+        environment = {
+            "SEARCH_BACKEND_URL": self.config.backend_url,
+            "SEARCH_ALLOW_UNAUTHENTICATED_MCP_DEV": "1",
+            "SEARCH_MCP_PORT": str(self.config.mcp_port),
+            "NOTEBOOK_AI_BACKEND_URL": self.config.backend_url,
+            "NOTEBOOK_AI_ALLOW_UNAUTHENTICATED_MCP_DEV": "1",
+            "NOTEBOOK_AI_MCP_PORT": str(self.config.mcp_port),
+        }
+        if self.config.machine_config.path is not None:
+            environment["SEARCH_MACHINE_CONFIG_PATH"] = str(self.config.machine_config.path)
         return ProcessSpec(
             name="mcp",
             executable=self.config.node_exe,
             arguments=(str(self.config.paths.mcp_server_entry),),
             cwd=self.config.paths.mcp_app_dir,
-            environment={
-                "SEARCH_BACKEND_URL": self.config.backend_url,
-                "SEARCH_ALLOW_UNAUTHENTICATED_MCP_DEV": "1",
-                "SEARCH_MCP_PORT": str(self.config.mcp_port),
-                "NOTEBOOK_AI_BACKEND_URL": self.config.backend_url,
-                "NOTEBOOK_AI_ALLOW_UNAUTHENTICATED_MCP_DEV": "1",
-                "NOTEBOOK_AI_MCP_PORT": str(self.config.mcp_port),
-            },
+            environment=environment,
             port=self.config.mcp_port,
         )
 
@@ -1015,14 +1021,17 @@ class RuntimeController:
             self.config.paths.supervisor_stop_file.unlink()
         except FileNotFoundError:
             pass
+        supervisor_arguments = [
+            "-B",
+            str(self.config.paths.launcher_script),
+        ]
+        if self.config.machine_config.path is not None:
+            supervisor_arguments.extend(["--machine-config", str(self.config.machine_config.path)])
+        supervisor_arguments.append("supervise")
         spec = ProcessSpec(
             name="supervisor",
             executable=self.config.python_exe,
-            arguments=(
-                "-B",
-                str(self.config.paths.launcher_script),
-                "supervise",
-            ),
+            arguments=tuple(supervisor_arguments),
             cwd=self.config.paths.runtime_root,
             environment={"PYTHONDONTWRITEBYTECODE": "1"},
         )
@@ -1270,6 +1279,10 @@ def _apply_runtime_identity(
     status.source_commit = identity.source_commit
     status.source_branch = identity.source_branch
     status.data_root = str(config.paths.data_dir)
+    status.machine_config_status = config.machine_config.status
+    status.machine_config_error_code = config.machine_config.error_code
+    status.embedding_model_ready = bool(config.machine_config.ready and config.machine_config.embedding)
+    status.reranker_model_ready = bool(config.machine_config.ready and config.machine_config.reranker)
     return status
 
 

@@ -77,6 +77,8 @@
         "to": "app/runtime-project/scripts",
         "filter": [
           "__init__.py",
+          "configure_search_machine.py",
+          "configure_search_machine.ps1",
           "import_book_ocr_layout_first.py",
           "importing/import_book_ocr_layout_first.py",
           "phase110k_p_b_alignment_writeback_plan.py",

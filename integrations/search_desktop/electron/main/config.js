@@ -64,6 +64,7 @@ export function resolveDesktopConfig({
   );
   const rendererPort = resolveRendererPort(env.SEARCH_RENDERER_PORT);
   const settingsPath = userDataPath ? join(userDataPath, "search-desktop-settings.json") : null;
+  const machineConfigPath = userDataPath ? join(resolve(userDataPath), "machine-config.json") : null;
   const requiredRuntimePaths = [
     ["python", pythonExe],
     ["node", nodeExe],
@@ -101,6 +102,7 @@ export function resolveDesktopConfig({
     rendererPort,
     defaultRoute: "/retrieval",
     settingsPath,
+    machineConfigPath,
     dataAvailable: existsSync(dataDir),
     runtimeMissing,
     runtimeAvailable: runtimeMissing.length === 0,
