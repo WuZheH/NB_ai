@@ -498,7 +498,24 @@ function PdfLocationPreview({
       scrollWidth: scroller.scrollWidth,
       scrollHeight: scroller.scrollHeight
     });
-    if (!scroll) return;
+    if (!scroll) {
+      // A rendered page with valid overlay geometry is semantically complete
+      // even when the viewport cannot be scrolled (for example during the
+      // formal-entry first mount before layout settles). Do not leave the
+      // ready contract pending forever in that bounded degradation case.
+      pendingFocusRef.current = null;
+      autoFocusKeyRef.current = focusKey;
+      setCompletedFocusKey(focusKey);
+      emitPdfPreviewStage("preview_focus_degraded", {
+        attempt: renderState.attempt,
+        documentId: Number(documentId) || null,
+        chunkId: Number(chunkId) || null,
+        pageNumber: renderState.pageNumber,
+        scale: renderState.scale,
+        reason: "highlight_scroll_unavailable",
+      });
+      return;
+    }
 
     scroller.scrollLeft = scroll.left;
     scroller.scrollTop = scroll.top;
