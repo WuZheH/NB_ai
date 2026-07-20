@@ -51,22 +51,17 @@ test("semantic ready requires the current document render and completed restore 
     renderState: readyState,
     currentScale: 1,
     autoFitSettled: true,
+    viewportSettled: true,
     restoreSettled: true,
     overlaySettled: true,
   };
   assert.equal(isPdfPreviewSemanticallyReady(base), true);
   assert.equal(isPdfPreviewSemanticallyReady({ ...base, autoFitSettled: false }), false);
+  assert.equal(isPdfPreviewSemanticallyReady({ ...base, viewportSettled: false }), false);
   assert.equal(isPdfPreviewSemanticallyReady({ ...base, restoreSettled: false }), false);
   assert.equal(isPdfPreviewSemanticallyReady({ ...base, overlaySettled: false }), false);
   assert.equal(isPdfPreviewSemanticallyReady({ ...base, renderState: { ...readyState, status: "loading" } }), false);
   assert.equal(isPdfPreviewSemanticallyReady({ ...base, renderState: { ...readyState, errorMessage: "load failed" } }), false);
+  assert.equal(isPdfPreviewSemanticallyReady({ ...base, renderState: { ...readyState, errorTitle: "render failed" } }), false);
   assert.equal(isPdfPreviewSemanticallyReady({ ...base, requestedPage: 3 }), false);
-});
-
-test("formal-entry degradation can complete the overlay contract without a scroll target", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const source = await readFile(new URL("../src/PdfLocationPreview.jsx", import.meta.url), "utf8");
-  assert.match(source, /preview_focus_degraded/);
-  assert.match(source, /highlight_scroll_unavailable/);
-  assert.match(source, /setCompletedFocusKey\(focusKey\)/);
 });

@@ -55,11 +55,13 @@ function PdfLocationPreview({
   const pendingFocusRef = useRef(null);
   const autoFitKeyRef = useRef("");
   const renderAttemptRef = useRef(0);
+  const focusEffectRunRef = useRef(0);
   const initialRestoreScale = readRestoreScale(restoreState, { documentId, chunkId, requestedPage: normalizePage(location?.pdf_page ?? page ?? pageNumber ?? extractPage(pdfUrl) ?? pdf_page_start ?? pdf_page_end) });
   const [scale, setScale] = useState(initialRestoreScale || DEFAULT_SCALE);
   const [autoFitState, setAutoFitState] = useState({ pdfKey: "", scale: null });
   const [completedFocusKey, setCompletedFocusKey] = useState("");
   const [completedRestoreKey, setCompletedRestoreKey] = useState("");
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [renderState, setRenderState] = useState({
     attempt: 0,
     status: "idle",
@@ -137,6 +139,7 @@ function PdfLocationPreview({
     && renderState.height > 0
     && renderState.backingWidth > 0
     && renderState.backingHeight > 0;
+  const viewportSettled = viewportSize.width > 0 && viewportSize.height > 0;
   const manualZoomSettled = Boolean(focusKey && manualZoomKeyRef.current === focusKey);
   const autoFitSettled = !fitWidthOnLoad
     || Boolean(restoreRequest && restoreRequestSettled)
@@ -157,14 +160,38 @@ function PdfLocationPreview({
       renderState,
       currentScale: scale,
       autoFitSettled,
+      viewportSettled,
       restoreSettled: focusSettled && restoreRequestSettled,
       overlaySettled,
     });
 
   useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return undefined;
+    const measure = () => {
+      const next = {
+        width: Math.max(0, Number(scroller.clientWidth) || 0),
+        height: Math.max(0, Number(scroller.clientHeight) || 0),
+      };
+      setViewportSize((current) => (
+        current.width === next.width && current.height === next.height ? current : next
+      ));
+    };
+    measure();
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
+    observer?.observe(scroller);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
+  useEffect(() => {
     if (pendingFocusRef.current && pendingFocusRef.current.key !== focusKey) {
       pendingFocusRef.current = null;
     }
+    setCompletedFocusKey((current) => (current && current !== focusKey ? "" : current));
   }, [focusKey]);
 
   useEffect(() => {
@@ -425,49 +452,81 @@ function PdfLocationPreview({
   }, [restoreKey, completedRestoreKey, renderState.status, renderState.requestedPageNumber, renderState.pageNumber, renderState.scale, renderState.attempt, pdfPage, focusKey, documentId, chunkId]);
 
   useEffect(() => {
-    if (restoreRequest || !fitWidthOnLoad || renderState.status !== "ready" || !scrollerRef.current) return;
+    if (restoreRequest || !fitWidthOnLoad || renderState.status !== "ready" || !scrollerRef.current || !viewportSettled) return;
     const baseWidth = pageWidth || renderState.baseWidth;
     if (!baseWidth) return;
-    const fitKey = `${resolvedPdfUrl}:${pdfPage}:${Math.round(scrollerRef.current.clientWidth)}`;
+    const fitKey = `${resolvedPdfUrl}:${pdfPage}:${Math.round(viewportSize.width)}`;
     if (autoFitKeyRef.current === fitKey) return;
     autoFitKeyRef.current = fitKey;
-    const fitScale = clampScale(Math.max(120, scrollerRef.current.clientWidth - 24) / baseWidth);
+    const fitScale = clampScale(Math.max(120, viewportSize.width - 24) / baseWidth);
     const transition = resolveScaleTransition({ currentScale: scale, targetScale: fitScale });
     setAutoFitState({ pdfKey: pdfSelectionKey, scale: transition.settledScale });
     if (transition.shouldUpdate) setZoom(transition.settledScale, { manual: false });
-  }, [restoreKey, fitWidthOnLoad, renderState.status, renderState.baseWidth, pageWidth, resolvedPdfUrl, pdfPage, pdfSelectionKey, scale]);
+  }, [restoreKey, fitWidthOnLoad, renderState.status, renderState.baseWidth, pageWidth, resolvedPdfUrl, pdfPage, pdfSelectionKey, scale, viewportSettled, viewportSize.width]);
 
   useEffect(() => {
-    if (restoreRequest || renderState.status !== "ready" || !canFocusHighlight || !focusKey || !scrollerRef.current || !pageWidth || !pageHeight) return;
+    focusEffectRunRef.current += 1;
+    const effectRun = focusEffectRunRef.current;
+    const scroller = scrollerRef.current;
+    const stageDetail = {
+      attempt: renderState.attempt,
+      effectRun,
+      documentId: Number(documentId) || null,
+      chunkId: Number(chunkId) || null,
+      pageNumber: renderState.pageNumber,
+      focusKey,
+      pendingFocusKey: pendingFocusRef.current?.key || "",
+      clientWidth: viewportSize.width,
+      clientHeight: viewportSize.height,
+      scrollWidth: Number(scroller?.scrollWidth || 0),
+      scrollHeight: Number(scroller?.scrollHeight || 0),
+      pageWidth: Number(pageWidth || 0),
+      pageHeight: Number(pageHeight || 0),
+      renderedWidth: Number(renderState.width || 0),
+      renderedHeight: Number(renderState.height || 0),
+      currentScale: Number(scale || 0),
+    };
+    if (restoreRequest || renderState.status !== "ready" || !canFocusHighlight || !focusKey || !pageWidth || !pageHeight) return;
+    if (!scroller || !viewportSettled) {
+      emitPdfPreviewStage("preview_focus_waiting", { ...stageDetail, reason: "viewport_not_ready" });
+      return;
+    }
     if (!shouldApplyAutoFocus({
       focusKey,
       manualZoomKey: manualZoomKeyRef.current,
       completedFocusKey: autoFocusKeyRef.current
     })) return;
 
-    const scroller = scrollerRef.current;
     const focus = focusToHighlightUnion({
       rects,
       pageWidth,
       pageHeight,
-      containerWidth: scroller.clientWidth,
-      containerHeight: scroller.clientHeight,
+      containerWidth: viewportSize.width,
+      containerHeight: viewportSize.height,
       mode: focusMode,
       minScale: FOCUS_MIN_SCALE,
       maxScale: MAX_SCALE
     });
-    if (!focus) return;
+    if (!focus) {
+      emitPdfPreviewStage("preview_focus_waiting", { ...stageDetail, reason: "focus_geometry_invalid" });
+      return;
+    }
 
-    const fitScale = fitWidthOnLoad && scroller.clientWidth && pageWidth
-      ? clampScale(Math.max(120, scroller.clientWidth - 24) / pageWidth)
+    const fitScale = fitWidthOnLoad && viewportSize.width && pageWidth
+      ? clampScale(Math.max(120, viewportSize.width - 24) / pageWidth)
       : focus.desiredScale;
     const desiredScale = fitWidthOnLoad ? Math.min(focus.desiredScale, fitScale) : focus.desiredScale;
     const transition = resolveScaleTransition({ currentScale: scale, targetScale: clampScale(desiredScale) });
     pendingFocusRef.current = { key: focusKey, focus, desiredScale: transition.settledScale };
+    emitPdfPreviewStage("preview_focus_pending", {
+      ...stageDetail,
+      desiredScale: transition.settledScale,
+      focus,
+    });
     if (transition.shouldUpdate) {
       setScale(transition.settledScale);
     }
-  }, [restoreKey, renderState.status, canFocusHighlight, focusKey, rects, pageWidth, pageHeight, focusMode, scale, fitWidthOnLoad]);
+  }, [restoreKey, renderState.status, renderState.attempt, renderState.pageNumber, renderState.width, renderState.height, canFocusHighlight, focusKey, rects, pageWidth, pageHeight, focusMode, scale, fitWidthOnLoad, viewportSettled, viewportSize.width, viewportSize.height, documentId, chunkId]);
 
   useEffect(() => {
     const pending = pendingFocusRef.current;
@@ -498,31 +557,34 @@ function PdfLocationPreview({
       scrollWidth: scroller.scrollWidth,
       scrollHeight: scroller.scrollHeight
     });
-    if (!scroll) {
-      // A rendered page with valid overlay geometry is semantically complete
-      // even when the viewport cannot be scrolled (for example during the
-      // formal-entry first mount before layout settles). Do not leave the
-      // ready contract pending forever in that bounded degradation case.
-      pendingFocusRef.current = null;
-      autoFocusKeyRef.current = focusKey;
-      setCompletedFocusKey(focusKey);
-      emitPdfPreviewStage("preview_focus_degraded", {
-        attempt: renderState.attempt,
-        documentId: Number(documentId) || null,
-        chunkId: Number(chunkId) || null,
-        pageNumber: renderState.pageNumber,
-        scale: renderState.scale,
-        reason: "highlight_scroll_unavailable",
-      });
-      return;
-    }
+    if (!scroll) return;
 
     scroller.scrollLeft = scroll.left;
     scroller.scrollTop = scroll.top;
     pendingFocusRef.current = null;
     autoFocusKeyRef.current = focusKey;
     setCompletedFocusKey(focusKey);
-  }, [renderState.status, renderState.width, renderState.height, renderState.pageNumber, renderState.scale, pageWidth, pageHeight, focusKey, scale, pdfPage]);
+    emitPdfPreviewStage("preview_focus_committed", {
+      attempt: renderState.attempt,
+      effectRun: focusEffectRunRef.current,
+      documentId: Number(documentId) || null,
+      chunkId: Number(chunkId) || null,
+      pageNumber: renderState.pageNumber,
+      scale: renderState.scale,
+      focusKey,
+      desiredScale: pending.desiredScale,
+      clientWidth: viewportSize.width,
+      clientHeight: viewportSize.height,
+      scrollWidth: scroller.scrollWidth,
+      scrollHeight: scroller.scrollHeight,
+      pageWidth,
+      pageHeight,
+      renderedWidth: renderState.width,
+      renderedHeight: renderState.height,
+      left: scroll.left,
+      top: scroll.top,
+    });
+  }, [renderState.status, renderState.width, renderState.height, renderState.pageNumber, renderState.scale, renderState.attempt, pageWidth, pageHeight, focusKey, scale, pdfPage, viewportSize.width, viewportSize.height, documentId, chunkId]);
 
   function setZoom(nextScale, options = {}) {
     if (options.manual !== false && focusKey) {
@@ -573,6 +635,8 @@ function PdfLocationPreview({
       data-canvas-height={renderState.height || 0}
       data-canvas-backing-width={renderState.backingWidth || 0}
       data-canvas-backing-height={renderState.backingHeight || 0}
+      data-viewport-width={viewportSize.width}
+      data-viewport-height={viewportSize.height}
       data-highlight-strategy={previewReady && overlayAvailable ? pdfHighlightMode(location) : ""}
       data-highlight-count={previewReady && overlayAvailable ? rects.length : 0}
     >

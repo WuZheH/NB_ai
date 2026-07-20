@@ -39,6 +39,7 @@ export function isPdfPreviewSemanticallyReady({
   renderState,
   currentScale,
   autoFitSettled,
+  viewportSettled,
   restoreSettled,
   overlaySettled,
   scaleEpsilon = DEFAULT_SCALE_EPSILON,
@@ -55,5 +56,5 @@ export function isPdfPreviewSemanticallyReady({
     || Number(renderState.backingWidth) <= 0
     || Number(renderState.backingHeight) <= 0
   ) return false;
-  return Boolean(autoFitSettled && restoreSettled && overlaySettled);
+  return Boolean(autoFitSettled && viewportSettled && restoreSettled && overlaySettled);
 }

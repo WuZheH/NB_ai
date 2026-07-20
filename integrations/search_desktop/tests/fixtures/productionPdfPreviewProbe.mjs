@@ -7,13 +7,14 @@ import { RendererServer } from "../../electron/runtime/rendererServer.js";
 
 const DESKTOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PROJECT_ROOT = resolve(DESKTOP_ROOT, "..", "..");
-const FRONTEND_DIST = resolve(PROJECT_ROOT, "frontend", "dist");
+const FRONTEND_DIST = resolve(process.env.SEARCH_PDF_PREVIEW_FRONTEND_DIST || resolve(PROJECT_ROOT, "frontend", "dist"));
 const TEST_TMP_ROOT = resolve(process.env.SEARCH_TEST_TMP_ROOT || resolve(PROJECT_ROOT, ".codex_tmp"));
 const TEST_USER_DATA = resolve(TEST_TMP_ROOT, "electron-pdf-preview-user-data");
 const TEST_CRASH_DUMPS = resolve(TEST_TMP_ROOT, "electron-pdf-preview-crashes");
 const CALLBACK_URL = String(process.env.SEARCH_PDF_PREVIEW_CALLBACK_URL || "").trim();
 const VIEWPORT_WIDTH = positiveInteger(process.env.SEARCH_PDF_PREVIEW_WIDTH, 1440);
 const VIEWPORT_HEIGHT = positiveInteger(process.env.SEARCH_PDF_PREVIEW_HEIGHT, 900);
+const DELAY_LAYOUT = process.env.SEARCH_PDF_PREVIEW_DELAY_LAYOUT === "1";
 
 mkdirSync(TEST_USER_DATA, { recursive: true });
 mkdirSync(TEST_CRASH_DUMPS, { recursive: true });
@@ -87,8 +88,19 @@ async function runProbe() {
     }
     const before = await window.webContents.executeJavaScript(`(() => { const pane=document.querySelector('[data-testid="retrieval-results-scroll"]'); pane.scrollTop=Math.min(300,pane.scrollHeight-pane.clientHeight); globalThis.__pdfPreviewResultsPane=pane; return pane.scrollTop; })()`);
     await recordProbeStage("first_result_selected");
+    if (DELAY_LAYOUT) await collapsePdfViewport();
     await clickPreview(1);
+    let layoutRecovery = null;
+    if (DELAY_LAYOUT) {
+      await waitFor(`document.querySelector('[data-testid="pdf-location-preview"]')?.dataset.previewStatus === 'ready' && document.querySelector('.searchPreviewPdfStage .pdfPreviewScroller')?.clientWidth === 0 && document.querySelector('.searchPreviewPdfStage .pdfPreviewScroller')?.clientHeight === 0`, 16000, "pdf_zero_viewport_rendered");
+      const before = await readFocusRecoverySnapshot();
+      await restorePdfViewport();
+      await waitFor(`Number(document.querySelector('.searchPreviewPdfStage .pdfPreviewScroller')?.clientWidth || 0) > 0 && Number(document.querySelector('.searchPreviewPdfStage .pdfPreviewScroller')?.clientHeight || 0) > 0`, 8000, "pdf_viewport_resized");
+      const afterResize = await readFocusRecoverySnapshot();
+      layoutRecovery = { before, afterResize };
+    }
     const first = await waitForPreviewReady({ chunkId: 1, pageNumber: 2, strategy: "exact", highlightCount: 1 }, 16000, "pdf_first_preview");
+    if (layoutRecovery) layoutRecovery.ready = await readFocusRecoverySnapshot();
     const textInitial = await waitForHighlightGeometry("text_initial");
     await recordProbeStage("first_snapshot_completed");
     await clickPreview(2);
@@ -120,6 +132,7 @@ async function runProbe() {
         viewport: { width: innerWidth, height: innerHeight },
         canvasPresent: Boolean(document.querySelector('[data-testid="pdf-page-canvas"]')),
         first: ${JSON.stringify(first)},
+        layoutRecovery: ${JSON.stringify(layoutRecovery)},
         textInitial: ${JSON.stringify(textInitial)},
         second: ${JSON.stringify(second)},
         zoomed: ${JSON.stringify(zoomed)},
@@ -377,6 +390,45 @@ async function submitSearch(query) {
 
 async function clickPreview(rank) {
   await window.webContents.executeJavaScript(`(() => { const card=document.querySelector('[data-result-index="${rank - 1}"]'); const button=[...card.querySelectorAll('button')].find((item)=>item.textContent.trim()==='预览'); if(!button) throw new Error('preview_button_missing'); button.click(); })()`);
+}
+
+async function collapsePdfViewport() {
+  await window.webContents.executeJavaScript(`(() => {
+    const style = document.createElement('style');
+    style.id = 'search-pdf-zero-viewport';
+    style.textContent = '.searchPreviewPdfStage .pdfPreviewScroller{position:absolute!important;display:block!important;flex:0 0 0!important;width:0!important;height:0!important;min-width:0!important;min-height:0!important;max-width:0!important;max-height:0!important;padding:0!important;border:0!important;overflow:hidden!important}';
+    document.head.appendChild(style);
+    globalThis.__searchPdfPreviewTimeline?.record('probe_stage', { stage: 'viewport_collapsed' });
+  })()`);
+}
+
+async function restorePdfViewport() {
+  await window.webContents.executeJavaScript(`(() => {
+    document.getElementById('search-pdf-zero-viewport')?.remove();
+    globalThis.__searchPdfPreviewTimeline?.record('probe_stage', { stage: 'viewport_released' });
+  })()`);
+}
+
+async function readFocusRecoverySnapshot() {
+  return window.webContents.executeJavaScript(`(() => {
+    const preview = document.querySelector('[data-testid="pdf-location-preview"]');
+    const scroller = document.querySelector('.searchPreviewPdfStage .pdfPreviewScroller');
+    const stages = globalThis.__searchPdfPreviewTimeline?.timeline?.filter((entry) => entry.kind === 'preview_stage') || [];
+    return {
+      ready: preview?.dataset.previewReady === 'true',
+      status: preview?.dataset.previewStatus || '',
+      viewportWidth: Number(preview?.dataset.viewportWidth || 0),
+      viewportHeight: Number(preview?.dataset.viewportHeight || 0),
+      clientWidth: Number(scroller?.clientWidth || 0),
+      clientHeight: Number(scroller?.clientHeight || 0),
+      scrollWidth: Number(scroller?.scrollWidth || 0),
+      scrollHeight: Number(scroller?.scrollHeight || 0),
+      lastStage: stages.at(-1) || null,
+      focusWaitingCount: stages.filter((entry) => entry.stage === 'preview_focus_waiting').length,
+      focusPendingCount: stages.filter((entry) => entry.stage === 'preview_focus_pending').length,
+      focusCommittedCount: stages.filter((entry) => entry.stage === 'preview_focus_committed').length,
+    };
+  })()`);
 }
 
 async function addSecondResultToBasket() {

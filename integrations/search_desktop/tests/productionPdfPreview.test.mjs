@@ -68,6 +68,25 @@ test("production renderer renders a readable local PDF preview at supported desk
   }
 });
 
+test("production renderer recomputes first-preview focus after a zero-sized viewport becomes visible", { timeout: 60000 }, async () => {
+  const { payload, stdout, stderr, code } = await runProbe({ width: 1600, height: 900, delayedLayout: true });
+  const diagnostic = JSON.stringify({ metrics: payload.metrics, timeline: compactTimeline(payload.timeline) }, null, 2);
+  assert.equal(code, 0, `production PDF resize probe failed\n${stdout}\n${stderr}`);
+  assert.equal(payload.status, "ok", `${payload.error || "production PDF resize metrics missing"}\n${diagnostic}`);
+  const recovery = payload.metrics.layoutRecovery;
+  assert.equal(recovery.before.status, "ready", diagnostic);
+  assert.equal(recovery.before.ready, false, diagnostic);
+  assert.equal(recovery.before.viewportWidth, 0, diagnostic);
+  assert.equal(recovery.before.viewportHeight, 0, diagnostic);
+  assert.ok(recovery.before.focusWaitingCount > 0, diagnostic);
+  assert.ok(recovery.afterResize.clientWidth > 0 && recovery.afterResize.clientHeight > 0, diagnostic);
+  assert.equal(recovery.ready.ready, true, diagnostic);
+  assert.ok(recovery.ready.viewportWidth > 0 && recovery.ready.viewportHeight > 0, diagnostic);
+  assert.ok(recovery.ready.focusPendingCount > 0, diagnostic);
+  assert.ok(recovery.ready.focusCommittedCount > 0, diagnostic);
+  assert.equal(recovery.ready.lastStage.stage, "preview_ready_committed", diagnostic);
+});
+
 function compactTimeline(timeline = []) {
   return timeline
     .filter((entry) => entry.kind !== "dom_snapshot" || entry.previewStatus || entry.strategy)
@@ -87,7 +106,7 @@ function compactTimeline(timeline = []) {
     }));
 }
 
-async function runProbe({ width, height }) {
+async function runProbe({ width, height, delayedLayout = false, frontendDist = "" }) {
   await mkdir(PROJECT_TMP, { recursive: true });
   let resolvePayload;
   let rejectPayload;
@@ -128,6 +147,8 @@ async function runProbe({ width, height }) {
         SEARCH_PDF_PREVIEW_CALLBACK_URL: `http://127.0.0.1:${address.port}/result`,
         SEARCH_PDF_PREVIEW_WIDTH: String(width),
         SEARCH_PDF_PREVIEW_HEIGHT: String(height),
+        SEARCH_PDF_PREVIEW_DELAY_LAYOUT: delayedLayout ? "1" : "0",
+        ...(frontendDist ? { SEARCH_PDF_PREVIEW_FRONTEND_DIST: frontendDist } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
