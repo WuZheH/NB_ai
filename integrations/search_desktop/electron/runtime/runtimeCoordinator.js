@@ -13,6 +13,11 @@ export class RuntimeCoordinator extends EventEmitter {
   }
 
   async ensureReady() {
+    if (typeof this.client.available === "function" && !this.client.available()) {
+      const status = this.client.unavailableStatus();
+      this.update(status);
+      throw new Error(status.error_code || "runtime_prerequisites_missing");
+    }
     let before;
     try {
       before = await this.client.status();
@@ -39,6 +44,11 @@ export class RuntimeCoordinator extends EventEmitter {
   }
 
   async refresh() {
+    if (typeof this.client.available === "function" && !this.client.available()) {
+      const status = this.client.unavailableStatus();
+      this.update(status);
+      return this.lastStatus;
+    }
     const status = await this.client.status();
     this.update(status);
     return this.lastStatus;
@@ -83,6 +93,9 @@ export class RuntimeCoordinator extends EventEmitter {
     );
     return {
       ...status,
+      runtime_available: status.runtime_available ?? Boolean(this.client.config?.runtimeAvailable),
+      data_available: status.data_available ?? Boolean(this.client.config?.dataAvailable),
+      desktop_runtime_config: status.desktop_runtime_config || this.client.config?.desktopRuntimeConfig,
       runtime_owner: this.startedByDesktop ? "managed-by-search" : "external",
       components,
     };

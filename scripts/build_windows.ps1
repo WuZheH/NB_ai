@@ -257,8 +257,10 @@ try {
     }
     finally { Pop-Location }
 
-    if (Test-Path -LiteralPath (Join-Path $PackagedRoot "search-desktop.local.json")) {
-        throw "search_candidate_contains_machine_local_config"
+    foreach ($MachineLocalName in @("search-desktop.local.json", "desktop-runtime.json")) {
+        if (Test-Path -LiteralPath (Join-Path $PackagedRoot $MachineLocalName)) {
+            throw "search_candidate_contains_machine_local_config:$MachineLocalName"
+        }
     }
 
     $RuntimeRoot = Join-Path $PackagedRoot "resources\app\runtime-project"
@@ -333,6 +335,7 @@ try {
         frontend_tree_sha256 = $FrontendInfo.sha256
         production_data_bundled = $false
         machine_local_config_bundled = $false
+        desktop_runtime_config_bundled = $false
         current_formal_package_untouched = $true
     }
     $ManifestPath = Join-Path $OutputRoot "search-build-report.json"

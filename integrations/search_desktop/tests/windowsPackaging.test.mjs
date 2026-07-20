@@ -15,6 +15,7 @@ const productMetadata = JSON.parse(await readFile(new URL("../electron/product-m
 const finalizer = await readFile(new URL("../scripts/finalize-windows-exe.mjs", import.meta.url), "utf8");
 const packager = await readFile(new URL("../scripts/package-windows-unpacked.mjs", import.meta.url), "utf8");
 const r5Packager = await readFile(new URL("../scripts/package-r5-candidate.mjs", import.meta.url), "utf8");
+const buildScript = await readFile(new URL("../../../scripts/build_windows.ps1", import.meta.url), "utf8");
 const ROOT = resolve(import.meta.dirname, "..");
 const FIXTURE_ROOT = resolve(process.env.SEARCH_TEST_TMP_ROOT || resolve(ROOT, "../..", ".codex_tmp"), "search-desktop-packaging-tests");
 
@@ -30,11 +31,15 @@ test("Windows packaging avoids privileged symlink extraction and applies Search 
   assert.equal(packageJson.scripts["package:win:unpacked"], undefined);
   assert.equal(packageJson.scripts["package:candidate:r5"], undefined);
   const extraResources = JSON.stringify(packageJson.build.extraResources);
+  const packagedFiles = JSON.stringify(packageJson.build.files);
   assert.match(extraResources, /app\/runtime-project\/app/);
   assert.match(extraResources, /notebook_ai_chatgpt_app\/dist\/server\/index\.js/);
   assert.match(extraResources, /configure_search_machine\.py/);
   assert.match(extraResources, /configure_search_machine\.ps1/);
   assert.doesNotMatch(extraResources, /(?:^|[\\/])data(?:[\\/]|$)|model_cache|node_modules/i);
+  assert.doesNotMatch(`${packagedFiles}\n${extraResources}`, /desktop-runtime\.json|search-desktop\.local\.json/i);
+  assert.match(buildScript, /@\("search-desktop\.local\.json", "desktop-runtime\.json"\)/);
+  assert.match(buildScript, /desktop_runtime_config_bundled = \$false/);
   assert.match(finalizer, /FileDescription: "Search"/);
   assert.match(finalizer, /ProductName: "Search"/);
   assert.match(finalizer, /OriginalFilename: "Search\.exe"/);

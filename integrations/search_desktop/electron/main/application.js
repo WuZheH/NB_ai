@@ -19,7 +19,7 @@ export async function createSearchDesktop(electron, { buildIdentity, startupLogg
     resourcesPath: process.resourcesPath,
     isPackaged: app.isPackaged,
   });
-  await completeStage(startupLogger, STARTUP_STAGE.CONFIG_RESOLVED);
+  await completeStage(startupLogger, STARTUP_STAGE.CONFIG_RESOLVED, config.desktopRuntimeLog);
   const settings = new SettingsStore(config.settingsPath);
   const launcherClient = new LauncherClient(config);
   const coordinator = new RuntimeCoordinator(launcherClient);
@@ -61,12 +61,35 @@ export async function createSearchDesktop(electron, { buildIdentity, startupLogg
     windowController,
     rendererOrigin,
   });
-  await startStage(startupLogger, STARTUP_STAGE.RUNTIME_CHECKED);
+  await startStage(startupLogger, STARTUP_STAGE.RUNTIME_CHECKED, {
+    result: "started",
+    ...config.desktopRuntimeLog,
+  });
+  const launcherSpawnCountBefore = launcherClient.spawnCount;
   const runtimeCheck = coordinator.ensureReady()
-    .catch((error) => {
-      coordinator.update({ status: "error", error_code: safeErrorCode(error) });
+    .then(async (status) => {
+      await completeStage(startupLogger, STARTUP_STAGE.RUNTIME_CHECKED, {
+        result: "ready",
+        error_code: null,
+        launcher_spawned: launcherClient.spawnCount > launcherSpawnCountBefore,
+        desktop_started_runtime: coordinator.startedByDesktop,
+        runtime_owner: status?.runtime_owner || (coordinator.startedByDesktop ? "managed-by-search" : "external"),
+        ...config.desktopRuntimeLog,
+      });
+      return status;
     })
-    .finally(() => completeStage(startupLogger, STARTUP_STAGE.RUNTIME_CHECKED));
+    .catch(async (error) => {
+      const errorCode = safeErrorCode(error);
+      if (!coordinator.lastStatus || coordinator.lastStatus.error_code !== errorCode) {
+        coordinator.update({ status: "error", state: "unavailable", error_code: errorCode });
+      }
+      await failStage(startupLogger, STARTUP_STAGE.RUNTIME_CHECKED, errorCode, {
+        launcher_spawned: launcherClient.spawnCount > launcherSpawnCountBefore,
+        desktop_started_runtime: coordinator.startedByDesktop,
+        ...config.desktopRuntimeLog,
+      });
+      return coordinator.lastStatus;
+    });
   await startStage(startupLogger, STARTUP_STAGE.WINDOW_CREATED);
   await windowController.create();
   await completeStage(startupLogger, STARTUP_STAGE.WINDOW_CREATED);
@@ -110,17 +133,25 @@ export async function createSearchDesktop(electron, { buildIdentity, startupLogg
   return { config, coordinator, renderer, windowController, fullyQuit };
 }
 
-async function startStage(startupLogger, stage) {
+async function startStage(startupLogger, stage, details) {
   try {
-    await startupLogger?.startStage(stage);
+    await startupLogger?.startStage(stage, details);
   } catch {
     // Startup observability must not become a startup dependency.
   }
 }
 
-async function completeStage(startupLogger, stage) {
+async function completeStage(startupLogger, stage, details) {
   try {
-    await startupLogger?.completeStage(stage);
+    await startupLogger?.completeStage(stage, details);
+  } catch {
+    // Startup observability must not become a startup dependency.
+  }
+}
+
+async function failStage(startupLogger, stage, errorCode, details) {
+  try {
+    await startupLogger?.failStage(stage, errorCode, details);
   } catch {
     // Startup observability must not become a startup dependency.
   }

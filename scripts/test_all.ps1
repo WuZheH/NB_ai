@@ -131,13 +131,16 @@ try {
 
     if ($IncludePackagedSmoke) {
         if (-not $PackagedExecutable) { throw "search_packaged_executable_required" }
-        & (Join-Path $ProjectRoot "integrations\search_desktop\scripts\smoke-packaged-search.ps1") `
-            -ExecutablePath $PackagedExecutable `
-            -ProjectRoot $ProjectRoot `
-            -PythonExe $PythonExe `
-            -NodeExe $NodeExe `
-            -TestRoot (Join-Path $RunRoot "packaged-smoke")
-        if ($LASTEXITCODE -ne 0) { throw "search_packaged_smoke_failed" }
+        foreach ($Scenario in @("missing", "invalid", "legacy-migration", "valid")) {
+            & (Join-Path $ProjectRoot "integrations\search_desktop\scripts\smoke-packaged-search.ps1") `
+                -ExecutablePath $PackagedExecutable `
+                -ProjectRoot $ProjectRoot `
+                -PythonExe $PythonExe `
+                -NodeExe $NodeExe `
+                -Scenario $Scenario `
+                -TestRoot (Join-Path $RunRoot "packaged-smoke\$Scenario")
+            if ($LASTEXITCODE -ne 0) { throw "search_packaged_smoke_failed:$Scenario" }
+        }
     }
 
     [ordered]@{

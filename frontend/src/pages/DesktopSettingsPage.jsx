@@ -104,6 +104,7 @@ export default function DesktopSettingsPage({ section = "status" }) {
           <Detail label="Source commit" value={runtime?.source_commit || bridge.sourceCommit} />
           <Detail label="Source branch" value={runtime?.source_branch || bridge.sourceBranch} />
           <Detail label="Data root" value={runtime?.data_root} />
+          <Detail label="Desktop Runtime config" value={desktopRuntimeConfigDetail(runtime)} />
           <Detail label="Machine config" value={machineConfigDetail(runtime)} />
         </dl>
       </details>
@@ -145,6 +146,7 @@ export default function DesktopSettingsPage({ section = "status" }) {
 }
 
 export function presentRuntime(runtime) {
+  const desktopRuntime = desktopRuntimeState(runtime?.desktop_runtime_config);
   const fastapi = serviceState(runtime?.components?.fastapi);
   const mcp = serviceState(runtime?.components?.mcp);
   const tunnel = tunnelState(runtime);
@@ -156,11 +158,14 @@ export function presentRuntime(runtime) {
       : tunnel.tone === "error"
         ? "本地后端正常，外部 Tunnel 不可达。"
         : "本地后端正常，外部 Tunnel 未配置。"
-    : "Search 可继续显示，但部分本地后端当前不可用。";
+    : desktopRuntime.tone === "error"
+      ? `Search 界面已启动；Desktop Runtime 配置不可用（${desktopRuntime.errorCode}）。`
+      : "Search 可继续显示，但部分本地后端当前不可用。";
   return {
     summary,
     checkedAt,
     rows: [
+      { name: "Desktop Runtime 配置", ...desktopRuntime, note: desktopRuntime.note },
       { name: "检索后端", ...fastapi, note: "127.0.0.1:8000" },
       { name: "MCP 后端", ...mcp, note: "127.0.0.1:8787/mcp" },
       { name: "Codex MCP", ...clientBackendState(mcp), note: "仅表示本地后端，不代表 Codex 已调用" },
@@ -270,12 +275,42 @@ function tunnelDetail(runtime = {}) {
   return parts.filter(Boolean).join(" · ") || "未配置";
 }
 
+function desktopRuntimeState(config = {}) {
+  if (config?.ready === true || config?.status === "desktop_runtime_ready") {
+    return {
+      label: "已就绪",
+      tone: "ready",
+      note: `${config.source || "unknown"} · schema ${config.schema_version ?? "unknown"}`,
+      errorCode: "",
+    };
+  }
+  const errorCode = String(config?.error_code || config?.status || "desktop_runtime_config_missing");
+  return {
+    label: "不可用",
+    tone: "error",
+    note: `错误 ${errorCode}`,
+    errorCode,
+  };
+}
+
 function machineConfigDetail(runtime = {}) {
   const status = String(runtime?.machine_config_status || "config_missing");
   const embedding = runtime?.embedding_model_ready ? "embedding ready" : "embedding unavailable";
   const reranker = runtime?.reranker_model_ready ? "reranker ready" : "reranker unavailable";
   const error = runtime?.machine_config_error_code ? ` · ${runtime.machine_config_error_code}` : "";
   return `${status} · ${embedding} · ${reranker}${error}`;
+}
+
+function desktopRuntimeConfigDetail(runtime = {}) {
+  const config = runtime?.desktop_runtime_config || {};
+  const parts = [
+    config.status || "desktop_runtime_config_missing",
+    config.source ? `source ${config.source}` : null,
+    config.schema_version != null ? `schema ${config.schema_version}` : null,
+    config.legacy_sidecar_used ? "legacy_sidecar_used" : null,
+    config.error_code ? `错误 ${config.error_code}` : null,
+  ];
+  return parts.filter(Boolean).join(" · ");
 }
 
 function Detail({ label, value }) {
