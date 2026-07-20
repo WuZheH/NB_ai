@@ -1,6 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  desktopRuntimeLogSummary,
+  publicDesktopRuntimeConfig,
+  resolvePackagedDesktopRuntimeConfig,
+} from "./desktopRuntimeConfig.js";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 export const DESKTOP_ROOT = resolve(MODULE_DIR, "../..");
@@ -14,26 +19,23 @@ export function resolveDesktopConfig({
   executablePath = process.execPath,
   resourcesPath = process.resourcesPath,
   isPackaged = false,
+  probeExecutable,
 } = {}) {
-  const localConfig = isPackaged ? readLocalConfig(executablePath) : {};
   const runtimeRoot = resolveRuntimeRoot({ env, resourcesPath, isPackaged });
-  const dataDir = resolveDataDir({ env, isPackaged, localConfig, userDataPath });
-  const dataProjectRoot = dirname(dataDir);
-  const pythonExe = resolveExecutable(
-    env.SEARCH_PYTHON || env.NOTEBOOK_AI_PYTHON_EXE || localConfig.pythonExe,
-    ["python.exe", "python"],
-    env,
-  );
-  const nodeExe = resolveExecutable(
-    env.SEARCH_NODE || env.NOTEBOOK_AI_NODE_EXE || localConfig.nodeExe,
-    ["node.exe", "node"],
-    env,
-  );
-  const cloudflaredExe = resolveExecutable(
-    env.SEARCH_CLOUDFLARED || localConfig.cloudflaredExe,
-    ["cloudflared.exe", "cloudflared"],
-    env,
-  );
+  const desktopRuntime = isPackaged
+    ? resolvePackagedDesktopRuntimeConfig({
+      userDataPath,
+      executablePath,
+      ...(probeExecutable ? { probeExecutable } : {}),
+    })
+    : resolveDevelopmentDesktopRuntime({ env });
+  const dataDir = desktopRuntime.dataDir;
+  const dataProjectRoot = dataDir ? dirname(dataDir) : "";
+  const pythonExe = desktopRuntime.pythonExe;
+  const nodeExe = desktopRuntime.nodeExe;
+  const cloudflaredExe = isPackaged
+    ? ""
+    : resolveExecutable(env.SEARCH_CLOUDFLARED, ["cloudflared.exe", "cloudflared"], env);
   const runtimeScript = join(runtimeRoot, "scripts", "runtime", "notebook_ai_launcher.py");
   const mcpServerEntry = join(
     runtimeRoot,
@@ -66,16 +68,28 @@ export function resolveDesktopConfig({
   const settingsPath = userDataPath ? join(userDataPath, "search-desktop-settings.json") : null;
   const machineConfigPath = userDataPath ? join(resolve(userDataPath), "machine-config.json") : null;
   const requiredRuntimePaths = [
-    ["python", pythonExe],
-    ["node", nodeExe],
     ["runtime_launcher", runtimeScript],
     ["fastapi_app", join(runtimeRoot, "app", "main.py")],
     ["mcp_server", mcpServerEntry],
     ["mcp_widget", mcpWidget],
   ];
-  const runtimeMissing = requiredRuntimePaths
+  const runtimeMissing = [
+    ...(desktopRuntime.ready ? [] : desktopRuntime.missingPrerequisites),
+    ...requiredRuntimePaths
     .filter(([, path]) => !path || !existsSync(path))
-    .map(([label]) => label);
+    .map(([label]) => label),
+  ].filter((label, index, values) => values.indexOf(label) === index);
+  if (!desktopRuntime.ready && runtimeMissing.length === 0) runtimeMissing.push("desktop_runtime_config");
+  const runtimeAvailable = desktopRuntime.ready && runtimeMissing.length === 0;
+  const runtimeErrorCode = desktopRuntime.ready
+    ? (runtimeAvailable ? null : "runtime_prerequisites_missing")
+    : desktopRuntime.errorCode;
+  const desktopRuntimeLog = Object.freeze({
+    ...desktopRuntimeLogSummary(desktopRuntime),
+    runtime_available: runtimeAvailable,
+    data_available: Boolean(dataDir && existsSync(dataDir)),
+    missing_prerequisites: Object.freeze([...runtimeMissing]),
+  });
   return Object.freeze({
     productName: "Search",
     buildMode: isPackaged ? "packaged" : "development",
@@ -103,9 +117,13 @@ export function resolveDesktopConfig({
     defaultRoute: "/retrieval",
     settingsPath,
     machineConfigPath,
-    dataAvailable: existsSync(dataDir),
+    desktopRuntimeConfigPath: desktopRuntime.configPath,
+    desktopRuntimeConfig: publicDesktopRuntimeConfig(desktopRuntime),
+    desktopRuntimeLog,
+    runtimeErrorCode,
+    dataAvailable: Boolean(dataDir && existsSync(dataDir)),
     runtimeMissing,
-    runtimeAvailable: runtimeMissing.length === 0,
+    runtimeAvailable,
   });
 }
 
@@ -122,50 +140,41 @@ function resolveRuntimeRoot({ env, resourcesPath, isPackaged }) {
   return requireRuntimeRoot(candidate);
 }
 
-function resolveDataDir({ env, isPackaged, localConfig, userDataPath }) {
-  const direct = String(env.SEARCH_DATA_DIR || localConfig.dataDir || "").trim();
-  if (direct) return resolveSafePath(direct, "SEARCH_DATA_DIR");
-
-  const legacyRoot = String(
-    env.NOTEBOOK_AI_DATA_PROJECT_ROOT
-      || (!isPackaged ? env.NOTEBOOK_AI_PROJECT_ROOT : "")
-      || localConfig.dataProjectRoot
-      || "",
-  ).trim();
-  if (legacyRoot) {
-    return join(resolveSafePath(legacyRoot, "NOTEBOOK_AI_DATA_PROJECT_ROOT"), "data");
-  }
-  if (!isPackaged) return join(SOURCE_PROJECT_ROOT, DEFAULT_DATA_DIRECTORY_NAME);
-
-  const localAppData = String(env.LOCALAPPDATA || "").trim();
-  if (localAppData) {
-    return join(resolveSafePath(localAppData, "LOCALAPPDATA"), "Search", DEFAULT_DATA_DIRECTORY_NAME);
-  }
-  if (userDataPath) return join(resolve(userDataPath), DEFAULT_DATA_DIRECTORY_NAME);
-  throw new Error("search_user_data_directory_unavailable");
-}
-
-function readLocalConfig(executablePath) {
-  const path = join(dirname(resolve(executablePath)), "search-desktop.local.json");
-  if (!existsSync(path)) return {};
-  try {
-    const value = JSON.parse(readFileSync(path, "utf8"));
-    if (
-      !value
-      || typeof value !== "object"
-      || Array.isArray(value)
-      || ![2, 3].includes(value.schemaVersion)
-    ) throw new Error();
-    return {
-      dataDir: typeof value.dataDir === "string" ? value.dataDir : "",
-      dataProjectRoot: typeof value.dataProjectRoot === "string" ? value.dataProjectRoot : "",
-      pythonExe: typeof value.pythonExe === "string" ? value.pythonExe : "",
-      nodeExe: typeof value.nodeExe === "string" ? value.nodeExe : "",
-      cloudflaredExe: typeof value.cloudflaredExe === "string" ? value.cloudflaredExe : "",
-    };
-  } catch {
-    throw new Error("search_desktop_local_config_invalid");
-  }
+function resolveDevelopmentDesktopRuntime({ env }) {
+  const direct = String(env.SEARCH_DATA_DIR || "").trim();
+  const legacyRoot = String(env.NOTEBOOK_AI_DATA_PROJECT_ROOT || env.NOTEBOOK_AI_PROJECT_ROOT || "").trim();
+  const dataDir = direct
+    ? resolveSafePath(direct, "SEARCH_DATA_DIR")
+    : legacyRoot
+      ? join(resolveSafePath(legacyRoot, "NOTEBOOK_AI_DATA_PROJECT_ROOT"), "data")
+      : join(SOURCE_PROJECT_ROOT, DEFAULT_DATA_DIRECTORY_NAME);
+  const pythonExe = resolveExecutable(
+    env.SEARCH_PYTHON || env.NOTEBOOK_AI_PYTHON_EXE,
+    ["python.exe", "python"],
+    env,
+  );
+  const nodeExe = resolveExecutable(
+    env.SEARCH_NODE || env.NOTEBOOK_AI_NODE_EXE,
+    ["node.exe", "node"],
+    env,
+  );
+  const missingPrerequisites = [];
+  if (!existsSync(dataDir)) missingPrerequisites.push("data_dir");
+  if (!pythonExe || !existsSync(pythonExe)) missingPrerequisites.push("python");
+  if (!nodeExe || !existsSync(nodeExe)) missingPrerequisites.push("node");
+  return Object.freeze({
+    ready: missingPrerequisites.length === 0,
+    status: missingPrerequisites.length === 0 ? "desktop_runtime_ready" : "runtime_prerequisites_missing",
+    errorCode: missingPrerequisites.length === 0 ? null : "runtime_prerequisites_missing",
+    source: "development_environment",
+    schemaVersion: null,
+    configPath: "",
+    dataDir,
+    pythonExe,
+    nodeExe,
+    missingPrerequisites: Object.freeze(missingPrerequisites),
+    legacySidecarUsed: false,
+  });
 }
 
 function requireRuntimeRoot(path) {

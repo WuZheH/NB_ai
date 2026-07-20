@@ -46,7 +46,7 @@ test("missing Search background token fails explicitly", async () => {
   });
 });
 
-test("startup logger preserves stage and original error details", async () => {
+test("startup logger preserves stage and a stable error code without stack path leakage", async () => {
   const userDataPath = join(TEST_ROOT, "user-data");
   const logger = createStartupLogger({
     userDataPath,
@@ -70,8 +70,9 @@ test("startup logger preserves stage and original error details", async () => {
   assert.equal(entries[1].stage, "design_tokens_loaded");
   assert.equal(entries[1].lastSuccessfulStage, null);
   assert.equal(entries[1].errorName, "Error");
-  assert.equal(entries[1].errorMessage, error.message);
-  assert.match(entries[1].errorStack, /search_design_token_missing/);
+  assert.equal(entries[1].error_code, error.message);
+  assert.equal(Object.hasOwn(entries[1], "errorMessage"), false);
+  assert.equal(Object.hasOwn(entries[1], "errorStack"), false);
   assert.equal(entries[1].version, "0.1.4");
   assert.equal(entries[1].buildId, TEST_IDENTITY.build_id);
   assert.equal(entries[1].isPackaged, true);
@@ -91,7 +92,10 @@ test("app startup logger reads the packaged build identity", async () => {
   assert.equal(entry.version, "0.1.4");
   assert.equal(entry.buildId, TEST_IDENTITY.build_id);
   assert.equal(entry.isPackaged, true);
-  assert.equal(entry.resourcesPath, "D:\\Search\\resources");
+  assert.equal(entry.resourcesDirectory, "resources");
+  assert.match(entry.resourcesPathHash, /^[0-9a-f]{64}$/);
+  assert.equal(Object.hasOwn(entry, "resourcesPath"), false);
+  assert.equal(JSON.stringify(entry).includes("D:\\Search"), false);
   assert.match(logger.logPath, /logs[\\/]search-startup\.log$/);
 });
 
@@ -110,6 +114,58 @@ test("stage completion records the last successful startup stage", async () => {
     currentStage: "design_tokens_loaded",
     lastSuccessfulStage: "config_resolved",
   });
+});
+
+test("runtime check failure is a failed stage with redacted structured prerequisites", async () => {
+  const logger = createStartupLogger({
+    userDataPath: join(TEST_ROOT, "runtime-failure"),
+    version: "0.1.4",
+    buildId: TEST_IDENTITY.build_id,
+    isPackaged: true,
+    resourcesPath: "C:\\Users\\private-user\\Candidate5\\resources",
+  });
+  await logger.startStage(STARTUP_STAGE.RUNTIME_CHECKED, {
+    result: "started",
+    config_source: "user_data",
+    config_schema: 1,
+    runtime_available: false,
+    data_available: false,
+    missing_prerequisites: ["python"],
+  });
+  await logger.failStage(
+    STARTUP_STAGE.RUNTIME_CHECKED,
+    "desktop_runtime_python_missing",
+    { launcher_spawned: false, desktop_started_runtime: false },
+  );
+  const entries = (await readFile(logger.logPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(entries[0].event, "stage_started");
+  assert.equal(entries[1].event, "stage_failed");
+  assert.equal(entries[1].stage, "runtime_checked");
+  assert.equal(entries[1].result, "failed");
+  assert.equal(entries[1].error_code, "desktop_runtime_python_missing");
+  assert.equal(entries[1].launcher_spawned, false);
+  assert.equal(entries[1].desktop_started_runtime, false);
+  assert.equal(JSON.stringify(entries).includes("private-user"), false);
+});
+
+test("startup logger drops unknown detail fields and sanitizes allowed values", async () => {
+  const logger = createStartupLogger({
+    userDataPath: join(TEST_ROOT, "detail-sanitizer"),
+    version: "0.1.4",
+    buildId: TEST_IDENTITY.build_id,
+    isPackaged: true,
+    resourcesPath: "C:\\Users\\private-user\\Candidate5\\resources",
+  });
+  await logger.completeStage(STARTUP_STAGE.CONFIG_RESOLVED, {
+    config_source: "C:\\Users\\private-user\\desktop-runtime.json",
+    python_basename: "C:\\private\\python.exe",
+    unexpected_path: "C:\\Users\\private-user\\secret",
+  });
+  const entry = JSON.parse((await readFile(logger.logPath, "utf8")).trim());
+  assert.equal(entry.config_source, "redacted");
+  assert.equal(entry.python_basename, "python.exe");
+  assert.equal(Object.hasOwn(entry, "unexpected_path"), false);
+  assert.equal(JSON.stringify(entry).includes("private-user"), false);
 });
 
 test("application records every startup stage in lifecycle order", async () => {

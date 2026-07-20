@@ -57,3 +57,28 @@ test("runtime started by desktop is stopped on fully quit", async () => {
   await coordinator.stopIfOwned();
   assert.deepEqual(calls, ["status", "start", "status", "stop"]);
 });
+
+test("missing desktop runtime config is structured, never spawns, and remains refreshable", async () => {
+  const calls = [];
+  const unavailable = {
+    status: "error",
+    state: "unavailable",
+    error_code: "desktop_runtime_config_missing",
+    components: {
+      fastapi: { state: "unavailable", error_code: "desktop_runtime_config_missing" },
+      mcp: { state: "unavailable", error_code: "desktop_runtime_config_missing" },
+    },
+  };
+  const client = {
+    available: () => false,
+    unavailableStatus: () => unavailable,
+    async status() { calls.push("status"); throw new Error("must_not_spawn"); },
+    async start() { calls.push("start"); throw new Error("must_not_spawn"); },
+  };
+  const coordinator = new RuntimeCoordinator(client);
+  await assert.rejects(coordinator.ensureReady(), /desktop_runtime_config_missing/);
+  assert.equal(coordinator.lastStatus.error_code, "desktop_runtime_config_missing");
+  assert.equal(desktopStatus(coordinator.lastStatus).code, "failed");
+  assert.equal((await coordinator.refresh()).components.fastapi.state, "unavailable");
+  assert.deepEqual(calls, []);
+});

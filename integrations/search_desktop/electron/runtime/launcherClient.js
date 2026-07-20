@@ -17,13 +17,15 @@ export class LauncherClient {
     this.config = config;
     this.spawnProcess = spawnProcess;
     this.timeoutMs = timeoutMs;
+    this.spawnCount = 0;
+    this.commands = [];
   }
 
   run(command, extraArguments = []) {
     if (!ALLOWED_COMMANDS.has(command)) throw new Error("runtime_command_not_allowed");
     if (!extraArguments.every(isSafeArgument)) throw new Error("runtime_argument_not_allowed");
     if (!this.config.runtimeAvailable) {
-      return Promise.reject(new Error("runtime_prerequisites_missing"));
+      return Promise.reject(new Error(this.config.runtimeErrorCode || "runtime_prerequisites_missing"));
     }
     if (!this.config.machineConfigPath) throw new Error("machine_config_path_unavailable");
     const args = [
@@ -61,6 +63,8 @@ export class LauncherClient {
     delete environment.NOTEBOOK_AI_RERANKER_MODEL_PATH;
     environment.SEARCH_MACHINE_CONFIG_PATH = this.config.machineConfigPath;
     return new Promise((resolve, reject) => {
+      this.spawnCount += 1;
+      this.commands.push(command);
       const child = this.spawnProcess(this.config.pythonExe, args, {
         cwd: this.config.runtimeRoot,
         windowsHide: true,
@@ -106,6 +110,28 @@ export class LauncherClient {
         }
       });
     });
+  }
+
+  available() {
+    return Boolean(this.config.runtimeAvailable);
+  }
+
+  unavailableStatus() {
+    const errorCode = this.config.runtimeErrorCode || "runtime_prerequisites_missing";
+    return {
+      status: "error",
+      state: "unavailable",
+      error_code: errorCode,
+      runtime_available: false,
+      data_available: Boolean(this.config.dataAvailable),
+      desktop_runtime_config: this.config.desktopRuntimeConfig,
+      components: {
+        supervisor: { state: "unavailable", owned: false, error_code: errorCode },
+        fastapi: { state: "unavailable", owned: false, error_code: errorCode, port: 8000 },
+        mcp: { state: "unavailable", owned: false, error_code: errorCode, port: 8787 },
+        tunnel: { state: "unavailable", owned: false, error_code: "local_runtime_unavailable" },
+      },
+    };
   }
 
   status() {

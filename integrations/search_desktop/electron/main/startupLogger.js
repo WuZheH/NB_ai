@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, normalize, resolve } from "node:path";
 import { loadBuildIdentityForApp } from "./buildIdentity.js";
 
 export const STARTUP_STAGE = Object.freeze({
@@ -32,11 +33,12 @@ export function createStartupLogger({
       version,
       buildId,
       isPackaged: Boolean(isPackaged),
-      resourcesPath,
+      resourcesDirectory: basename(resourcesPath || "resources"),
+      resourcesPathHash: hashPath(resourcesPath || "resources"),
       event,
       stage: currentStage,
       lastSuccessfulStage,
-      ...details,
+      ...sanitizeDetails(details),
     };
     try {
       await makeDirectory(dirname(logPath), { recursive: true });
@@ -49,21 +51,28 @@ export function createStartupLogger({
 
   return Object.freeze({
     logPath,
-    async startStage(stage) {
+    async startStage(stage, details = {}) {
       currentStage = stage;
-      await write("stage_started");
+      await write("stage_started", details);
     },
-    async completeStage(stage) {
+    async completeStage(stage, details = {}) {
       currentStage = stage;
       lastSuccessfulStage = stage;
-      await write("stage_completed");
+      await write("stage_completed", details);
+    },
+    async failStage(stage, errorCode, details = {}) {
+      currentStage = stage;
+      await write("stage_failed", {
+        ...details,
+        result: "failed",
+        error_code: stableErrorCode(errorCode),
+      });
     },
     async recordFailure(error) {
       const normalized = normalizeError(error);
       await write("startup_failed", {
         errorName: normalized.name,
-        errorMessage: normalized.message,
-        errorStack: normalized.stack,
+        error_code: normalized.errorCode,
       });
     },
     state() {
@@ -104,15 +113,66 @@ function normalizeError(error) {
   if (error instanceof Error) {
     return {
       name: safeString(error.name, "Error"),
-      message: safeString(error.message, "desktop_startup_failed"),
-      stack: safeString(error.stack, `${error.name}: ${error.message}`),
+      errorCode: stableErrorCode(error.message),
     };
   }
   return {
     name: "Error",
-    message: safeString(error, "desktop_startup_failed"),
-    stack: safeString(error, "desktop_startup_failed"),
+    errorCode: stableErrorCode(error),
   };
+}
+
+function stableErrorCode(value) {
+  const text = String(value || "desktop_startup_failed").trim();
+  return /^[A-Za-z0-9_.:-]{1,128}$/.test(text) ? text : "desktop_startup_failed";
+}
+
+function hashPath(path) {
+  const normalized = normalize(resolve(path)).toLowerCase();
+  return createHash("sha256").update(normalized).digest("hex");
+}
+
+const SAFE_DETAIL_KEYS = new Set([
+  "errorName",
+  "result",
+  "error_code",
+  "config_source",
+  "config_schema",
+  "desktop_runtime_status",
+  "runtime_available",
+  "data_available",
+  "missing_prerequisites",
+  "legacy_sidecar_used",
+  "data_path_hash",
+  "python_basename",
+  "node_basename",
+  "launcher_spawned",
+  "desktop_started_runtime",
+  "runtime_owner",
+]);
+
+function sanitizeDetails(details) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return {};
+  return Object.fromEntries(
+    Object.entries(details)
+      .filter(([key]) => SAFE_DETAIL_KEYS.has(key))
+      .map(([key, value]) => [key, sanitizeDetailValue(key, value)]),
+  );
+}
+
+function sanitizeDetailValue(key, value) {
+  if (key === "error_code") return stableErrorCode(value);
+  if (key === "missing_prerequisites") {
+    return Array.isArray(value)
+      ? value.map((item) => stableErrorCode(item)).slice(0, 32)
+      : [];
+  }
+  if (typeof value === "boolean" || value === null) return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const text = String(value ?? "").trim();
+  if (key.endsWith("_hash")) return /^[0-9a-f]{64}$/i.test(text) ? text.toLowerCase() : null;
+  if (key.endsWith("_basename")) return basename(text).slice(0, 255);
+  return /^[A-Za-z0-9_.:-]{0,128}$/.test(text) ? text : "redacted";
 }
 
 function safeString(value, fallback) {
