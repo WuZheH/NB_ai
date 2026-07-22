@@ -12,7 +12,7 @@ import {
   validateBuildIdentity,
 } from "../electron/main/buildIdentity.js";
 import { resolveRendererPort, validateLoopbackUrl } from "../electron/main/config.js";
-import { resolveWindowMode } from "../electron/main/window.js";
+import { resolveSecondInstanceAction, resolveWindowMode } from "../electron/main/window.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const productMetadata = JSON.parse(await readFile(join(ROOT, "electron", "product-metadata.json"), "utf8"));
@@ -71,6 +71,8 @@ test("Electron security and lifecycle contracts are explicit", async () => {
     readFile(join(ROOT, "electron", "tray", "createTray.js"), "utf8"),
   ]);
   assert.match(entry, /requestSingleInstanceLock/);
+  assert.match(entry, /resolveSecondInstanceAction/);
+  assert.match(entry, /desktop\?\.fullyQuit\(\)/);
   assert.match(windowSource, /contextIsolation:\s*true/);
   assert.match(windowSource, /nodeIntegration:\s*false/);
   assert.match(windowSource, /sandbox:\s*true/);
@@ -137,6 +139,21 @@ test("preload surface is allowlisted and contains no raw process or filesystem b
   assert.match(preload, /--search-build-identity=/);
   assert.doesNotMatch(preload, /github-release-convergence/);
   assert.doesNotMatch(preload, /require\(["']\.\.\/product-metadata\.json["']\)/);
+});
+
+test("only an automated Electron instance accepts the controlled quit argument", () => {
+  assert.equal(resolveSecondInstanceAction({
+    windowMode: { testMode: true },
+    argv: ["Search.exe", "--search-test-quit"],
+  }), "fully_quit");
+  assert.equal(resolveSecondInstanceAction({
+    windowMode: { testMode: true },
+    argv: ["Search.exe"],
+  }), "show");
+  assert.equal(resolveSecondInstanceAction({
+    windowMode: { testMode: false },
+    argv: ["Search.exe", "--search-test-quit"],
+  }), "show");
 });
 
 test("packaged build identity is validated once and encoded for the sandboxed preload", () => {

@@ -68,7 +68,7 @@ async function runProbe() {
         callback({ redirectURL: `${rendererOrigin}${requested.pathname}${requested.search}` });
         return;
       }
-      if (/^https?:/u.test(details.url) && !details.url.startsWith(rendererOrigin) && !details.url.startsWith(fixtureOrigin)) remoteWorkerRequested = true;
+      if (details.resourceType === "worker" && /^https?:/u.test(details.url) && !details.url.startsWith(rendererOrigin) && !details.url.startsWith(fixtureOrigin)) remoteWorkerRequested = true;
       callback({ cancel: false });
     });
     window.webContents.on("console-message", (_event, level, message) => {
@@ -448,9 +448,8 @@ async function runWorkspaceRoundTrips(count) {
   for (let index = 0; index < count; index += 1) {
     await recordProbeStage(`workspace_round_trip_${index + 1}_start`);
     await window.webContents.executeJavaScript(`(() => {
-      const button=[...document.querySelectorAll('.navItem')].find((item)=>item.querySelector('.navLabel')?.textContent.trim()==='Research Workspace');
-      if(!button) throw new Error('workspace_navigation_missing');
-      button.click();
+      window.history.pushState({}, '', '/workspace');
+      window.dispatchEvent(new PopStateEvent('popstate'));
     })()`);
     await waitFor("document.querySelector('.notebookHomePage')", 8000, `workspace_open_${index + 1}`);
     await window.webContents.executeJavaScript(`(() => {

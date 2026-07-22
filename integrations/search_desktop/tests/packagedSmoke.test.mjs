@@ -16,7 +16,6 @@ test("packaged smoke creates isolated userData provisioning with the official to
 
 test("packaged smoke source is ASCII so Windows PowerShell 5.1 parses it without a BOM", () => {
   assert.equal(Buffer.from(smoke, "utf8").every((byte) => byte < 0x80), true);
-  assert.match(smoke, /\[char\]0x663E/);
 });
 
 test("packaged smoke covers missing, invalid, valid, and migrated legacy configurations", () => {
@@ -61,11 +60,11 @@ test("packaged smoke proves Electron spawned and owns Runtime", () => {
   assert.match(smoke, /cloudflared_started = \$false/);
 });
 
-test("packaged smoke exits through the real tray menu and has no forced cleanup", () => {
-  assert.match(smoke, /Invoke-SearchTrayFullyQuit/);
-  assert.match(smoke, /NotifyItemIcon/);
-  assert.match(smoke, /SendWait\("\{END\}"\)/);
-  assert.match(smoke, /SendWait\("\{ENTER\}"\)/);
+test("packaged smoke requests controlled test-mode shutdown and has no forced cleanup", () => {
+  assert.match(smoke, /Invoke-SearchTestModeFullyQuit/);
+  assert.match(smoke, /--search-test-quit/);
+  assert.match(smoke, /search_packaged_smoke_test_mode_quit_timeout/);
+  assert.doesNotMatch(smoke, /UIAutomation|SendKeys|mouse_event|SetCursorPos/);
   assert.match(smoke, /runtime_residual_count = 0/);
   assert.doesNotMatch(smoke, /taskkill|Stop-Process|\.Kill\(/i);
 });

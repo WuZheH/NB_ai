@@ -11,6 +11,13 @@ export function resolveWindowMode({ env = process.env, argv = process.argv } = {
   return Object.freeze({ testMode, finalUserAcceptance, hidden });
 }
 
+export function resolveSecondInstanceAction({ windowMode = {}, argv = [] } = {}) {
+  if (windowMode.testMode === true && argv.includes("--search-test-quit")) {
+    return "fully_quit";
+  }
+  return "show";
+}
+
 export function createWindowController({ BrowserWindow, shell, config, rendererOrigin, settingsStore, designTokens, buildIdentity, windowMode = { hidden: false } }) {
   let window = null;
   let isQuitting = false;

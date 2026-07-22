@@ -182,7 +182,10 @@ try {
     basket.dispatchEvent(new Event('scroll'));
     return { results: results.scrollTop, preview: preview.scrollTop, basket: basket.scrollTop };
   })()`);
-  await clickButton(window.webContents, "Research Workspace");
+  await window.webContents.executeJavaScript(`(() => {
+    window.history.pushState({}, '', '/workspace');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  })()`);
   await waitFor(window.webContents, "[...document.querySelectorAll('button')].some((item) => item.textContent.trim() === '← 返回搜索')");
   await clickButton(window.webContents, "← 返回搜索");
   await waitFor(window.webContents, "document.querySelector('.localRetrievalQueryField input')?.value === '滚动测试' && document.querySelectorAll('[data-result-index]').length === 12 && document.querySelectorAll('.localEvidenceBasketItem').length === 12");

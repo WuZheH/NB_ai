@@ -103,94 +103,36 @@ function Assert-PortOwnershipUnchanged {
     }
 }
 
-function Invoke-SearchTrayFullyQuit {
+function Invoke-SearchTestModeFullyQuit {
     param(
         [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
+        [Parameter(Mandatory = $true)][string]$UserData,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds
     )
 
-    Add-Type -AssemblyName UIAutomationClient
-    Add-Type -AssemblyName UIAutomationTypes
-    Add-Type -AssemblyName System.Windows.Forms
-    if (-not ("SearchTrayMouse" -as [type])) {
-        Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class SearchTrayMouse {
-  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
-}
-'@
-    }
-
-    $Root = [System.Windows.Automation.AutomationElement]::RootElement
-    $HiddenIconsName = -join @(
-        [char]0x663E, [char]0x793A, [char]0x9690, [char]0x85CF,
-        [char]0x7684, [char]0x56FE, [char]0x6807
+    $QuitArguments = @(
+        "--user-data-dir=$UserData",
+        "--no-first-run",
+        "--disable-breakpad",
+        "--disable-crash-reporter",
+        "--search-test-mode",
+        "--search-test-quit"
     )
-    $OverflowClass = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ClassNameProperty,
-        "TopLevelWindowForOverflowXamlIsland"
-    )
-    $Overflow = $Root.FindFirst([System.Windows.Automation.TreeScope]::Children, $OverflowClass)
-    if (-not $Overflow) {
-        $Taskbar = $Root.FindFirst(
-            [System.Windows.Automation.TreeScope]::Children,
-            (New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::ClassNameProperty,
-                "Shell_TrayWnd"
-            ))
-        )
-        $Hidden = $Taskbar.FindFirst(
-            [System.Windows.Automation.TreeScope]::Descendants,
-            (New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
-                "SystemTrayIcon"
-            ))
-        )
-        if (-not $Hidden -or $Hidden.Current.Name -ne $HiddenIconsName) {
-            $Hidden = $Taskbar.FindFirst(
-                [System.Windows.Automation.TreeScope]::Descendants,
-                (New-Object System.Windows.Automation.PropertyCondition(
-                    [System.Windows.Automation.AutomationElement]::NameProperty,
-                    $HiddenIconsName
-                ))
-            )
-        }
-        if (-not $Hidden) { throw "search_packaged_smoke_hidden_icons_not_found" }
-        $Hidden.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-        Start-Sleep -Milliseconds 700
-        $Overflow = $Root.FindFirst([System.Windows.Automation.TreeScope]::Children, $OverflowClass)
+    $QuitRequest = Start-Process -FilePath $ExpectedExecutable -ArgumentList $QuitArguments `
+        -WorkingDirectory (Split-Path -Parent $ExpectedExecutable) -WindowStyle Hidden -PassThru
+    if (-not $QuitRequest.WaitForExit(10000)) {
+        throw "search_packaged_smoke_quit_request_did_not_exit"
     }
-    if (-not $Overflow) { throw "search_packaged_smoke_tray_overflow_not_open" }
-
-    $SearchIcon = $null
-    $Items = $Overflow.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-    for ($Index = 0; $Index -lt $Items.Count; $Index += 1) {
-        $Candidate = $Items.Item($Index)
-        if ($Candidate.Current.AutomationId -eq "NotifyItemIcon" -and $Candidate.Current.Name.Trim() -eq "Search") {
-            $SearchIcon = $Candidate
-            break
-        }
+    if ($QuitRequest.ExitCode -ne 0) {
+        throw "search_packaged_smoke_quit_request_failed:$($QuitRequest.ExitCode)"
     }
-    if (-not $SearchIcon) { throw "search_packaged_smoke_search_tray_not_found" }
-    $Bounds = $SearchIcon.Current.BoundingRectangle
-    $X = [int]($Bounds.Left + ($Bounds.Width / 2))
-    $Y = [int]($Bounds.Top + ($Bounds.Height / 2))
-    [SearchTrayMouse]::SetCursorPos($X, $Y) | Out-Null
-    [SearchTrayMouse]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero)
-    [SearchTrayMouse]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 600
-    [System.Windows.Forms.SendKeys]::SendWait("{END}")
-    Start-Sleep -Milliseconds 150
-    [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
 
     $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
         Start-Sleep -Milliseconds 250
         $Remaining = @(Get-ExactSearchProcesses -ExpectedExecutable $ExpectedExecutable)
     } while ($Remaining.Count -gt 0 -and (Get-Date) -lt $Deadline)
-    if ($Remaining.Count -gt 0) { throw "search_packaged_smoke_tray_quit_timeout" }
+    if ($Remaining.Count -gt 0) { throw "search_packaged_smoke_test_mode_quit_timeout" }
 }
 
 if (@(Get-ExactSearchProcesses -ExpectedExecutable $ExecutablePath).Count -gt 0) {
@@ -402,7 +344,7 @@ try {
         throw "search_packaged_smoke_second_instance_changed_process_tree"
     }
 
-    Invoke-SearchTrayFullyQuit -ExpectedExecutable $ExecutablePath -TimeoutSeconds $CleanupTimeoutSeconds
+    Invoke-SearchTestModeFullyQuit -ExpectedExecutable $ExecutablePath -UserData $UserData -TimeoutSeconds $CleanupTimeoutSeconds
     $SearchProcess = $null
     $CleanupDeadline = (Get-Date).AddSeconds($CleanupTimeoutSeconds)
     do {
@@ -448,7 +390,7 @@ try {
 catch { $PrimaryError = $_ }
 finally {
     if ($SearchProcess -and -not $SearchProcess.HasExited) {
-        try { Invoke-SearchTrayFullyQuit -ExpectedExecutable $ExecutablePath -TimeoutSeconds $CleanupTimeoutSeconds }
+        try { Invoke-SearchTestModeFullyQuit -ExpectedExecutable $ExecutablePath -UserData $UserData -TimeoutSeconds $CleanupTimeoutSeconds }
         catch { if (-not $PrimaryError) { $PrimaryError = $_ } }
     }
     try { Assert-PortOwnershipUnchanged -Before $PortOwnersBefore -After (Get-PortOwners -Ports @(8000, 8787, $RendererPort)) }

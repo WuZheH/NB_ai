@@ -1,7 +1,7 @@
 import * as electron from "electron";
 import { createSearchDesktop } from "./application.js";
 import { loadBuildIdentityForApp } from "./buildIdentity.js";
-import { resolveWindowMode } from "./window.js";
+import { resolveSecondInstanceAction, resolveWindowMode } from "./window.js";
 import { createStartupLoggerForApp, reportStartupFailure } from "./startupLogger.js";
 
 const { app } = electron;
@@ -13,7 +13,13 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   let desktop = null;
   let startupLogger = null;
-  app.on("second-instance", () => desktop?.windowController.show());
+  app.on("second-instance", (_event, argv = []) => {
+    if (resolveSecondInstanceAction({ windowMode, argv }) === "fully_quit") {
+      void desktop?.fullyQuit();
+      return;
+    }
+    desktop?.windowController.show();
+  });
   app.on("activate", () => desktop?.windowController.show());
   app.whenReady()
     .then(async () => {
