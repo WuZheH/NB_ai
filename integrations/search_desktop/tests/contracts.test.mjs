@@ -12,7 +12,12 @@ import {
   validateBuildIdentity,
 } from "../electron/main/buildIdentity.js";
 import { resolveRendererPort, validateLoopbackUrl } from "../electron/main/config.js";
-import { resolveSecondInstanceAction, resolveWindowMode } from "../electron/main/window.js";
+import {
+  createSingleInstanceData,
+  resolveSecondInstanceAction,
+  waitForRequesterExit,
+} from "../electron/main/singleInstance.js";
+import { resolveWindowMode } from "../electron/main/window.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const productMetadata = JSON.parse(await readFile(join(ROOT, "electron", "product-metadata.json"), "utf8"));
@@ -72,7 +77,7 @@ test("Electron security and lifecycle contracts are explicit", async () => {
   ]);
   assert.match(entry, /requestSingleInstanceLock/);
   assert.match(entry, /resolveSecondInstanceAction/);
-  assert.match(entry, /desktop\?\.fullyQuit\(\)/);
+  assert.match(entry, /desktop\.fullyQuit\(\)/);
   assert.match(windowSource, /contextIsolation:\s*true/);
   assert.match(windowSource, /nodeIntegration:\s*false/);
   assert.match(windowSource, /sandbox:\s*true/);
@@ -142,18 +147,43 @@ test("preload surface is allowlisted and contains no raw process or filesystem b
 });
 
 test("only an automated Electron instance accepts the controlled quit argument", () => {
-  assert.equal(resolveSecondInstanceAction({
+  const request = createSingleInstanceData({
     windowMode: { testMode: true },
     argv: ["Search.exe", "--search-test-quit"],
+    pid: 1234,
+  });
+  assert.deepEqual(request, { action: "fully_quit", requesterPid: 1234 });
+  assert.equal(resolveSecondInstanceAction({
+    windowMode: { testMode: true },
+    additionalData: request,
   }), "fully_quit");
   assert.equal(resolveSecondInstanceAction({
     windowMode: { testMode: true },
-    argv: ["Search.exe"],
+    additionalData: createSingleInstanceData({
+      windowMode: { testMode: true },
+      argv: ["Search.exe"],
+      pid: 1234,
+    }),
   }), "show");
   assert.equal(resolveSecondInstanceAction({
     windowMode: { testMode: false },
-    argv: ["Search.exe", "--search-test-quit"],
+    additionalData: request,
   }), "show");
+});
+
+test("controlled quit waits for the requesting process with a bounded state", async () => {
+  const states = [true, true, false];
+  await waitForRequesterExit(1234, {
+    isProcessRunning: () => states.shift(),
+    timeoutMs: 100,
+    pollIntervalMs: 1,
+  });
+  await assert.rejects(() => waitForRequesterExit(1234, {
+    isProcessRunning: () => true,
+    timeoutMs: 1,
+    pollIntervalMs: 1,
+  }), /search_test_quit_requester_exit_timeout/);
+  await assert.rejects(() => waitForRequesterExit(0), /search_test_quit_requester_pid_invalid/);
 });
 
 test("packaged build identity is validated once and encoded for the sandboxed preload", () => {
