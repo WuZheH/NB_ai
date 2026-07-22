@@ -161,7 +161,11 @@ function sanitizeDetails(details) {
 }
 
 function sanitizeDetailValue(key, value) {
-  if (key === "error_code") return stableErrorCode(value);
+  if (key === "error_code") {
+    return value === null || value === undefined || String(value).trim() === ""
+      ? null
+      : stableErrorCode(value);
+  }
   if (key === "missing_prerequisites") {
     return Array.isArray(value)
       ? value.map((item) => stableErrorCode(item)).slice(0, 32)

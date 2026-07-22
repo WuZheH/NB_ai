@@ -108,12 +108,18 @@ test("stage completion records the last successful startup stage", async () => {
     resourcesPath: "D:\\Search\\resources",
   });
   await logger.startStage(STARTUP_STAGE.CONFIG_RESOLVED);
-  await logger.completeStage(STARTUP_STAGE.CONFIG_RESOLVED);
+  await logger.completeStage(STARTUP_STAGE.CONFIG_RESOLVED, {
+    result: "ready",
+    error_code: null,
+  });
   await logger.startStage(STARTUP_STAGE.DESIGN_TOKENS_LOADED);
   assert.deepEqual(logger.state(), {
     currentStage: "design_tokens_loaded",
     lastSuccessfulStage: "config_resolved",
   });
+  const entries = (await readFile(logger.logPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(entries[1].result, "ready");
+  assert.equal(entries[1].error_code, null);
 });
 
 test("runtime check failure is a failed stage with redacted structured prerequisites", async () => {
