@@ -40,6 +40,9 @@ test("Windows packaging avoids privileged symlink extraction and applies Search 
   assert.doesNotMatch(`${packagedFiles}\n${extraResources}`, /desktop-runtime\.json|search-desktop\.local\.json/i);
   assert.match(buildScript, /@\("search-desktop\.local\.json", "desktop-runtime\.json"\)/);
   assert.match(buildScript, /desktop_runtime_config_bundled = \$false/);
+  assert.match(buildScript, /ConvertTo-SearchIdentityString/);
+  assert.match(buildScript, /ToUniversalTime\(\)\.ToString/);
+  assert.match(buildScript, /Remove-Item -LiteralPath \$InvalidExecutable/);
   assert.match(finalizer, /FileDescription: "Search"/);
   assert.match(finalizer, /ProductName: "Search"/);
   assert.match(finalizer, /OriginalFilename: "Search\.exe"/);

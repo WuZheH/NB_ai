@@ -66,6 +66,26 @@ function Resolve-Executable {
     throw $ErrorCode
 }
 
+function ConvertTo-SearchIdentityString {
+    param([string]$Field, $Value)
+
+    if ($Field -eq "build_timestamp_utc") {
+        if ($Value -is [DateTime]) {
+            return $Value.ToUniversalTime().ToString(
+                "yyyy-MM-dd'T'HH:mm:ss.fff'Z'",
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+        }
+        if ($Value -is [DateTimeOffset]) {
+            return $Value.ToUniversalTime().ToString(
+                "yyyy-MM-dd'T'HH:mm:ss.fff'Z'",
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+        }
+    }
+    return [string]$Value
+}
+
 if (-not $PythonExe) { throw "search_python_not_configured_set_SEARCH_PYTHON" }
 $PythonExe = Resolve-Executable $PythonExe @() "search_python_executable_unavailable"
 $NodeExe = Resolve-Executable $NodeExe @("node.exe", "node") "search_node_executable_unavailable"
@@ -292,7 +312,9 @@ try {
     $PackagedPackage = Get-Content -Raw -LiteralPath $PackagedPackagePath | ConvertFrom-Json
     $PackagedIdentity = $PackagedPackage.searchBuildIdentity
     foreach ($Field in $BuildIdentity.Keys) {
-        if ([string]$PackagedIdentity.$Field -ne [string]$BuildIdentity[$Field]) {
+        $PackagedValue = ConvertTo-SearchIdentityString $Field $PackagedIdentity.$Field
+        $ExpectedValue = ConvertTo-SearchIdentityString $Field $BuildIdentity[$Field]
+        if ($PackagedValue -cne $ExpectedValue) {
             throw "search_packaged_build_identity_mismatch:$Field"
         }
     }
@@ -341,6 +363,17 @@ try {
     $ManifestPath = Join-Path $OutputRoot "search-build-report.json"
     $Manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ManifestPath -Encoding UTF8
     $Manifest | ConvertTo-Json -Depth 5
+}
+catch {
+    $BuildFailure = $_
+    $InvalidExecutable = Join-Path $PackagedRoot "Search.exe"
+    if (Test-Path -LiteralPath $InvalidExecutable -PathType Leaf) {
+        Remove-Item -LiteralPath $InvalidExecutable -Force -ErrorAction Stop
+    }
+    if (Test-Path -LiteralPath $InvalidExecutable -PathType Leaf) {
+        throw "search_failed_build_executable_invalidation_failed"
+    }
+    throw $BuildFailure
 }
 finally {
     foreach ($Name in $Original.Keys) {

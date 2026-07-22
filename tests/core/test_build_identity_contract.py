@@ -104,3 +104,7 @@ def test_formal_build_entry_has_no_source_commit_override_and_no_fixed_candidate
     assert "search_candidate_output_already_exists" in source
     assert "--config.directories.output=$OutputRoot" in source
     assert "dist\\win-unpacked" not in source
+    assert "ConvertTo-SearchIdentityString" in source
+    assert "ToUniversalTime().ToString" in source
+    assert 'Join-Path $PackagedRoot "Search.exe"' in source
+    assert "Remove-Item -LiteralPath $InvalidExecutable" in source
