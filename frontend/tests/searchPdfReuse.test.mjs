@@ -95,6 +95,16 @@ test("PDF preview readiness waits for the final rendered selection and committed
   assert.doesNotMatch(probe, /pdf_first_preview[\s\S]{0,200}document\.querySelector\('\[data-testid="pdf-highlight-layer"\]'\)/);
 });
 
+test("PDF preview retries one render task that never settles", async () => {
+  const preview = await readFile(new URL("../src/PdfLocationPreview.jsx", import.meta.url), "utf8");
+  assert.match(preview, /const PDF_RENDER_TIMEOUT_MS = 15_000/);
+  assert.match(preview, /const PDF_RENDER_MAX_RETRIES = 1/);
+  assert.match(preview, /Promise\.race\(\[/);
+  assert.match(preview, /error\?\.code === "pdf_render_timeout"/);
+  assert.match(preview, /reportStage\("render_retry_scheduled"/);
+  assert.match(preview, /setRenderRetryEpoch\(\(current\) => current \+ 1\)/);
+});
+
 test("fragment annotation coordinates are only adapted into the legacy coordinate contract", () => {
   const location = adaptFragmentLocator({
     document_id: 10,

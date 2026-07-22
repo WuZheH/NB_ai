@@ -17,6 +17,8 @@ const MIN_SCALE = 0.75;
 const FOCUS_MIN_SCALE = 1;
 const MAX_SCALE = 3.5;
 const SCALE_STEP = 0.15;
+const PDF_RENDER_TIMEOUT_MS = 15_000;
+const PDF_RENDER_MAX_RETRIES = 1;
 let pdfjsLoadPromise;
 
 export function buildDocumentPdfPath(documentId) {
@@ -55,6 +57,7 @@ function PdfLocationPreview({
   const pendingFocusRef = useRef(null);
   const autoFitKeyRef = useRef("");
   const renderAttemptRef = useRef(0);
+  const renderRetryRef = useRef({ key: "", count: 0 });
   const focusEffectRunRef = useRef(0);
   const initialRestoreScale = readRestoreScale(restoreState, { documentId, chunkId, requestedPage: normalizePage(location?.pdf_page ?? page ?? pageNumber ?? extractPage(pdfUrl) ?? pdf_page_start ?? pdf_page_end) });
   const [scale, setScale] = useState(initialRestoreScale || DEFAULT_SCALE);
@@ -81,6 +84,7 @@ function PdfLocationPreview({
     errorTitle: "",
     errorMessage: ""
   });
+  const [renderRetryEpoch, setRenderRetryEpoch] = useState(0);
 
   const shouldShowHighlights = ["exact_text_location", "layout_line_location", "layout_sentence_location", "layout_block_location", "layout_bbox_location", "chunk_aligned", "partial_chunk_aligned", "fallback_term_found"].includes(location?.locator_status)
     || location?.status === "located";
@@ -211,8 +215,14 @@ function PdfLocationPreview({
 
     let cancelled = false;
     let loadingTask;
+    let renderTask;
+    let renderTimeoutId;
     const attempt = renderAttemptRef.current + 1;
     renderAttemptRef.current = attempt;
+    const renderKey = `${resolvedPdfUrl}:${pdfPage}:${scale}`;
+    if (renderRetryRef.current.key !== renderKey) {
+      renderRetryRef.current = { key: renderKey, count: 0 };
+    }
     const stageContext = {
       attempt,
       documentId: Number(documentId) || null,
@@ -347,9 +357,21 @@ function PdfLocationPreview({
           viewport,
           transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined
         };
-        await page.render(renderContext).promise;
+        renderTask = page.render(renderContext);
+        await Promise.race([
+          renderTask.promise,
+          new Promise((_, reject) => {
+            renderTimeoutId = window.setTimeout(() => {
+              const timeoutError = new Error("PDF render timed out");
+              timeoutError.code = "pdf_render_timeout";
+              reject(timeoutError);
+            }, PDF_RENDER_TIMEOUT_MS);
+          })
+        ]);
+        if (renderTimeoutId) window.clearTimeout(renderTimeoutId);
         reportStage("pdf_page_rendered");
         if (!cancelled) {
+          renderRetryRef.current = { key: renderKey, count: 0 };
           reportStage("react_ready_scheduled");
           setRenderState({
             attempt,
@@ -372,6 +394,20 @@ function PdfLocationPreview({
           });
         }
       } catch (error) {
+        if (renderTimeoutId) window.clearTimeout(renderTimeoutId);
+        const retryState = renderRetryRef.current;
+        if (
+          error?.code === "pdf_render_timeout"
+          && !cancelled
+          && retryState.key === renderKey
+          && retryState.count < PDF_RENDER_MAX_RETRIES
+        ) {
+          retryState.count += 1;
+          reportStage("render_retry_scheduled", { retryCount: retryState.count });
+          try { renderTask?.cancel(); } catch {}
+          setRenderRetryEpoch((current) => current + 1);
+          return;
+        }
         fail("render", error);
       }
     }
@@ -380,10 +416,12 @@ function PdfLocationPreview({
 
     return () => {
       cancelled = true;
+      if (renderTimeoutId) window.clearTimeout(renderTimeoutId);
       reportStage("render_cancelled");
+      try { renderTask?.cancel(); } catch {}
       if (loadingTask) loadingTask.destroy();
     };
-  }, [resolvedPdfUrl, pdfPage, scale]);
+  }, [resolvedPdfUrl, pdfPage, scale, renderRetryEpoch]);
 
   useEffect(() => {
     if (renderState.status !== "ready") return;
