@@ -1,5 +1,9 @@
 import { useState } from "react";
 import { getJson } from "../api/client.js";
+import {
+  normalizeReadShelfPayload,
+  presentReadShelfError,
+} from "../features/library/utils/readShelfContract.js";
 import { selectTrustedZoteroCandidate, zoteroCandidateMessage } from "../utils/formatters.js";
 
 const EMPTY_SIDECARS = {
@@ -19,7 +23,13 @@ export function useLibraryData({
   setReturnView,
   view,
 }) {
-  const [readShelf, setReadShelf] = useState({ status: "idle", items: [], error: "" });
+  const [readShelf, setReadShelf] = useState({
+    status: "idle",
+    items: [],
+    error: "",
+    errorCode: "",
+    errorTitle: "",
+  });
   const [searchState, setSearchState] = useState({
     query: "",
     status: "idle",
@@ -40,20 +50,26 @@ export function useLibraryData({
   const [selectedDocumentId, setSelectedDocumentId] = useState(null);
 
   async function loadReadShelf() {
-    setReadShelf({ status: "loading", items: [], error: "" });
+    setReadShelf({ status: "loading", items: [], error: "", errorCode: "", errorTitle: "" });
     try {
       const payload = await getJson("/api/v1/library/read-shelf");
+      const normalized = normalizeReadShelfPayload(payload);
       setReadShelf({
-        status: payload.status === "ok" ? "ready" : "empty",
-        items: payload.items || [],
-        error: payload.message || ""
+        status: normalized.status,
+        items: normalized.items,
+        error: normalized.message,
+        errorCode: "",
+        errorTitle: "",
       });
       updateSafety(payload);
     } catch (error) {
+      const presentation = presentReadShelfError(error);
       setReadShelf({
         status: "error",
         items: [],
-        error: "本地 API 暂不可用。需要查看数据时请先启动后端。"
+        error: presentation.message,
+        errorCode: presentation.code,
+        errorTitle: presentation.title,
       });
     }
   }

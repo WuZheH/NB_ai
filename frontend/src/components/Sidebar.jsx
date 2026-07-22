@@ -12,7 +12,6 @@ const NAV_GROUPS = [
   {
     label: "研究",
     items: [
-      { id: "workspace", label: "Research Workspace", status: "active" },
       { id: "review", label: "审阅队列", status: "soon" }
     ]
   },
@@ -34,7 +33,15 @@ const NAV_GROUPS = [
 
 export { NAV_GROUPS };
 
-export default function Sidebar({ view, onSelectNav }) {
+const API_STATUS_LABELS = {
+  starting: "正在启动",
+  connected: "API 已连接",
+  unavailable: "API 不可用",
+  checking: "重新检查中",
+};
+
+export default function Sidebar({ view, onSelectNav, apiStatus, onRecheckApi }) {
+  const apiPhase = apiStatus?.phase || "starting";
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -68,8 +75,17 @@ export default function Sidebar({ view, onSelectNav }) {
         ))}
       </nav>
       <div className="apiBase">
-        <span><i aria-hidden="true" /> API 已连接</span>
+        <span className="apiStatusLine">
+          <i className={`status-${apiPhase}`} aria-hidden="true" />
+          {API_STATUS_LABELS[apiPhase] || API_STATUS_LABELS.unavailable}
+        </span>
         <code>{API_BASE_URL}</code>
+        {apiStatus?.errorCode && <small>诊断码：{apiStatus.errorCode}</small>}
+        {apiPhase === "unavailable" && (
+          <button className="apiRecheckButton" type="button" onClick={onRecheckApi}>
+            重新检查
+          </button>
+        )}
       </div>
     </aside>
   );

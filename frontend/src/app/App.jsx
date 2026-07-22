@@ -10,6 +10,7 @@ import {
   parseAppRouteFromLocation,
 } from "./routes.js";
 import { useLibraryData } from "../hooks/useLibraryData.js";
+import { useLocalApiStatus } from "../hooks/useLocalApiStatus.js";
 import { usePdfLocator } from "../hooks/usePdfLocator.js";
 import { useSelectionInspector } from "../hooks/useSelectionInspector.js";
 import Sidebar from "../components/Sidebar.jsx";
@@ -115,7 +116,7 @@ function App() {
     importPreviewSelection,
     importPreviewState,
     setSourceTrace,
-    initialView: initialBrowserRoute?.view || "workspace",
+    initialView: initialBrowserRoute?.view || "retrieval",
   });
   const [workspaceRoute, setWorkspaceRoute] = useState(
     initialBrowserRoute?.view === "workspace" ? initialBrowserRoute.workspaceRoute : {}
@@ -130,12 +131,13 @@ function App() {
     setReturnView: navigation.setReturnView,
     view: navigation.view,
   });
+  const apiStatus = useLocalApiStatus();
 
   const { locatorState, locateEvidence } = usePdfLocator({ updateSafety, setSourceTrace });
 
   useEffect(() => {
-    library.loadReadShelf();
-  }, []);
+    if (apiStatus.phase === "connected") void library.loadReadShelf();
+  }, [apiStatus.phase]);
 
   useEffect(() => {
     applyParsedRoute(initialBrowserRoute, { push: false });
@@ -227,7 +229,12 @@ function App() {
   if (navigation.view === "retrieval") {
     return (
       <div className="localRetrievalAppShell">
-        <Sidebar view={navigation.view} onSelectNav={handleSelectNav} />
+        <Sidebar
+          view={navigation.view}
+          onSelectNav={handleSelectNav}
+          apiStatus={apiStatus}
+          onRecheckApi={apiStatus.recheck}
+        />
         <LocalRetrievalPage />
       </div>
     );
@@ -236,7 +243,12 @@ function App() {
   if (navigation.view === "systemStatus" || navigation.view === "settings") {
     return (
       <div className="localRetrievalAppShell">
-        <Sidebar view={navigation.view} onSelectNav={handleSelectNav} />
+        <Sidebar
+          view={navigation.view}
+          onSelectNav={handleSelectNav}
+          apiStatus={apiStatus}
+          onRecheckApi={apiStatus.recheck}
+        />
         <DesktopSettingsPage section={navigation.view === "settings" ? "settings" : "status"} />
       </div>
     );
@@ -244,7 +256,12 @@ function App() {
 
   return (
     <div className="workspace">
-      <Sidebar view={navigation.view} onSelectNav={handleSelectNav} />
+      <Sidebar
+        view={navigation.view}
+        onSelectNav={handleSelectNav}
+        apiStatus={apiStatus}
+        onRecheckApi={apiStatus.recheck}
+      />
 
       <main className="mainPanel">
         <header className="topbar">
@@ -261,9 +278,11 @@ function App() {
         {navigation.view === "readShelf" && (
           <ReadShelfPage
             state={library.readShelf}
+            apiStatus={apiStatus}
             selectedDocumentId={library.selectedDocumentId}
             onOpenDocument={openDocumentRoute}
             onOpenWorkspace={(documentId) => openWorkspaceRoute({ documentId })}
+            onOpenImport={() => openLegacyView("importPreview")}
             onRefresh={library.loadReadShelf}
           />
         )}

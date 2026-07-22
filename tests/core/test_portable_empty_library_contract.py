@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
+
+from fastapi import HTTPException
+import pytest
 
 from app.api.library import search as library_search_api
 from app.services.retrieval.fts_status_service import get_index_status
@@ -36,6 +40,39 @@ def test_search_reports_empty_results_without_creating_database(
     assert payload["results"] == []
     assert payload["objects"] == []
     assert not missing_database.exists()
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        (sqlite3.OperationalError("private database path"), "read_shelf_database_read_failed"),
+        (RuntimeError("private service detail"), "read_shelf_internal_error"),
+    ],
+)
+def test_read_shelf_returns_stable_sanitized_failure(
+    tmp_path: Path,
+    monkeypatch,
+    failure: Exception,
+    expected_code: str,
+) -> None:
+    database = tmp_path / "data" / "db" / "research_memory.db"
+    database.parent.mkdir(parents=True)
+    database.touch()
+    monkeypatch.setattr(library_search_api, "DEFAULT_DB_PATH", database)
+
+    def fail_read(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(library_search_api.library_service, "get_library_home", fail_read)
+
+    with pytest.raises(HTTPException) as raised:
+        library_search_api.read_shelf()
+
+    assert raised.value.status_code == 500
+    assert raised.value.detail["status"] == "error"
+    assert raised.value.detail["error_code"] == expected_code
+    assert "private" not in str(raised.value.detail)
+    assert raised.value.detail["db_write_performed"] is False
 
 
 def test_retrieval_status_distinguishes_empty_library_from_missing_index(

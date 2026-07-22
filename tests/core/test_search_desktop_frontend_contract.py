@@ -72,6 +72,24 @@ def test_search_desktop_navigation_keeps_existing_product_routes() -> None:
         assert f'"{path}"' in handlers
 
 
+def test_frontend_uses_runtime_readiness_and_keeps_workspace_deep_link_only() -> None:
+    app = _read("frontend/src/app/App.jsx")
+    routes = _read("frontend/src/app/routes.js")
+    sidebar = _read("frontend/src/components/Sidebar.jsx")
+    readiness = _read("frontend/src/hooks/useLocalApiStatus.js")
+    read_shelf = _read("frontend/src/pages/ReadShelfPage.jsx")
+
+    assert 'return { view: "retrieval", redirectPath: LOCAL_RETRIEVAL_PATH }' in routes
+    assert 'pathname === WORKSPACE_BASE_PATH' in routes
+    assert 'id: "workspace"' not in sidebar
+    assert "onRuntimeStatus" in readiness
+    assert "getRuntimeStatus" in readiness
+    assert "STARTUP_MAX_HEALTH_ATTEMPTS" in readiness
+    assert "setInterval" not in readiness
+    assert 'apiStatus.phase === "connected"' in app
+    assert "导入书籍" in read_shelf
+
+
 def test_desktop_bootstrap_status_never_opens_client_apps() -> None:
     sources = "\n".join(
         _read(path)

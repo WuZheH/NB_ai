@@ -135,6 +135,14 @@ test("legacy library search route redirects to the single retrieval page", () =>
   assert.equal(parsed.redirectPath, LOCAL_RETRIEVAL_PATH);
 });
 
+test("root route defaults to the stable retrieval page while workspace deep links remain", () => {
+  const root = parseAppRouteFromLocation({ pathname: "/", search: "" });
+  const workspace = parseAppRouteFromLocation({ pathname: "/workspace", search: "" });
+  assert.equal(root.view, "retrieval");
+  assert.equal(root.redirectPath, LOCAL_RETRIEVAL_PATH);
+  assert.equal(workspace.view, "workspace");
+});
+
 test("renderer-memory Search session retains query, results, selection, preview, and scroll", () => {
   clearSearchSessionForTests();
   const session = {

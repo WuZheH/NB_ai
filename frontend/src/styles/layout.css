@@ -31,9 +31,13 @@
 .navIconSvg { display: block; width: 18px; height: 18px; }
 .navSoon { flex: 0 0 auto; color: var(--text-subtle); font-size: 10px; font-weight: 650; }
 .apiBase { margin-top: auto; display: grid; gap: 6px; padding: 10px; border: 1px solid var(--border-soft); border-radius: 10px; background: rgba(255,255,255,0.025); }
-.apiBase span { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 11px; font-weight: 650; }
+.apiBase .apiStatusLine { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 11px; font-weight: 650; }
 .apiBase i { display: inline-block; width: 7px; height: 7px; border-radius: 999px; background: var(--success); box-shadow: 0 0 0 3px rgba(86,156,107,0.11); }
+.apiBase i.status-starting, .apiBase i.status-checking { background: var(--warning); box-shadow: 0 0 0 3px rgba(210,166,78,0.12); }
+.apiBase i.status-unavailable { background: var(--danger); box-shadow: 0 0 0 3px rgba(197,91,91,0.12); }
 .apiBase code { overflow-wrap: anywhere; color: var(--text-subtle); font-size: 10.5px; line-height: 1.35; }
+.apiBase small { overflow-wrap: anywhere; color: var(--text-subtle); font-size: 9.5px; line-height: 1.35; }
+.apiRecheckButton { min-height: 28px; padding: 0 9px; font-size: 11px; }
 
 /* ============================================================
    TOPBAR + BUTTONS

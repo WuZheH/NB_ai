@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
+
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.api.library.read_common import *  # noqa: F401,F403
 from app.core.paths import DEFAULT_DB_PATH
 
@@ -28,14 +32,16 @@ def read_shelf(
         return _empty_library_response()
     try:
         documents = library_service.get_library_home(item_type="document", limit=limit)
+    except (SQLAlchemyError, sqlite3.Error, OSError) as exc:
+        raise _read_shelf_failure(
+            "read_shelf_database_read_failed",
+            "已读书架数据库只读查询失败。",
+        ) from exc
     except Exception as exc:
-        return {
-            "status": "not_connected_yet",
-            "implementation_status": "shell_only",
-            "items": [],
-            "message": f"Read Shelf backend not connected in Phase 16B: {exc}",
-            **safety_fields(),
-        }
+        raise _read_shelf_failure(
+            "read_shelf_internal_error",
+            "已读书架服务内部错误。",
+        ) from exc
 
     items = [
         _read_shelf_item(document)
@@ -50,6 +56,18 @@ def read_shelf(
         "items": items,
         **safety_fields(),
     }
+
+
+def _read_shelf_failure(error_code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=500,
+        detail={
+            "status": "error",
+            "error_code": error_code,
+            "message": message,
+            **safety_fields(),
+        },
+    )
 
 
 @router.get("/search")

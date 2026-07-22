@@ -39,7 +39,10 @@ export function buildDocumentPath(documentId) {
 export function parseAppRouteFromLocation(location = typeof window !== "undefined" ? window.location : null) {
   if (!location) return null;
   const pathname = String(location.pathname || "").replace(/\/+$/, "") || "/";
-  if (pathname === DEFAULT_HOME_PATH || pathname === WORKSPACE_BASE_PATH) {
+  if (pathname === DEFAULT_HOME_PATH) {
+    return { view: "retrieval", redirectPath: LOCAL_RETRIEVAL_PATH };
+  }
+  if (pathname === WORKSPACE_BASE_PATH) {
     return { view: "workspace", workspaceRoute: {} };
   }
   if (pathname === READ_SHELF_PATH || pathname === LEGACY_HOME_PATH) {

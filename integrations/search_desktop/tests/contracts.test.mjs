@@ -82,7 +82,10 @@ test("Electron security and lifecycle contracts are explicit", async () => {
   assert.match(tray, /重新检查/);
   assert.doesNotMatch(tray, /重新启动后台|暂停 ChatGPT 连接|恢复 ChatGPT 连接/);
   const application = await readFile(join(ROOT, "electron", "main", "application.js"), "utf8");
-  assert.ok(application.indexOf("await coordinator.ensureReady()") < application.indexOf("await windowController.create()"));
+  assert.match(application, /const runtimeCheck = coordinator\.ensureReady\(\)/);
+  assert.ok(application.indexOf("const runtimeCheck = coordinator.ensureReady()") < application.indexOf("await windowController.create()"));
+  assert.match(application, /void runtimeCheck/);
+  assert.doesNotMatch(application, /await coordinator\.ensureReady\(\)/);
 });
 
 test("automated Electron mode stays hidden while normal and acceptance launches stay visible", () => {

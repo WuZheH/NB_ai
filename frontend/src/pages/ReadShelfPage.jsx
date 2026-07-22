@@ -2,9 +2,38 @@ import { API_BASE_URL } from "../api/client.js";
 import PdfCoverThumbnail from "../PdfCoverThumbnail.jsx";
 import StateMessage from "../components/StateMessage.jsx";
 
-export default function ReadShelfPage({ state, selectedDocumentId, onOpenDocument, onOpenWorkspace, onRefresh }) {
+export default function ReadShelfPage({
+  state,
+  apiStatus,
+  selectedDocumentId,
+  onOpenDocument,
+  onOpenWorkspace,
+  onOpenImport,
+  onRefresh,
+}) {
+  if (apiStatus?.phase === "starting") {
+    return <StateMessage title="服务正在启动" body="Search Runtime 就绪后会自动加载已读书架。" />;
+  }
+  if (apiStatus?.phase === "checking") {
+    return <StateMessage title="正在重新检查本地 API" body="检查完成后会自动刷新已读书架。" />;
+  }
+  if (apiStatus?.phase === "unavailable" && state.status === "idle") {
+    return (
+      <StateMessage
+        title="本地 API 不可用"
+        body={`无法连接本地 API。（诊断码：${apiStatus.errorCode || "api_unavailable"}）`}
+      />
+    );
+  }
   if (state.status === "loading") return <StateMessage title="正在加载已读书架" />;
-  if (state.status === "error") return <StateMessage title="已读书架暂不可用" body={state.error} />;
+  if (state.status === "error") {
+    return (
+      <StateMessage
+        title={state.errorTitle || "已读书架暂不可用"}
+        body={`${state.error}（诊断码：${state.errorCode || "api_request_failed"}）`}
+      />
+    );
+  }
   if (!state.items.length) {
     return (
       <StateMessage
@@ -21,6 +50,9 @@ export default function ReadShelfPage({ state, selectedDocumentId, onOpenDocumen
           <p>仅显示本地已有的简短元数据与摘要。</p>
         </div>
         <div className="pageHeaderActions">
+          <button className="primaryButton" type="button" onClick={onOpenImport}>
+            导入书籍
+          </button>
           <button className="quietButton" type="button" onClick={() => onOpenWorkspace?.()}>
             打开 Research Workspace
           </button>
