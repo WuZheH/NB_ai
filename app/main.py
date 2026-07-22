@@ -12,6 +12,7 @@ from app.api.product_api import router as product_router
 from app.api.retrieval_api import router as retrieval_router
 from app.api.zotero_api import configure_production_connection_factories, router as zotero_router
 from app.core.config import settings
+from app.db.init_db import initialize_database_if_empty
 from app.services.vector_store_worker import start_vector_store_worker, stop_vector_store_worker
 
 
@@ -27,6 +28,7 @@ API_ROUTERS = (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    initialize_database_if_empty()
     start_vector_store_worker(
         enabled=settings.vector_store_worker_enabled,
         auto_sync_enabled=settings.vector_store_auto_sync_enabled,

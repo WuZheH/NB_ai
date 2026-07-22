@@ -32,6 +32,15 @@ def init_db() -> None:
     _upgrade_personal_notes_columns()
 
 
+def initialize_database_if_empty() -> bool:
+    """Create the application schema only for a database with no tables."""
+    ensure_db_dir()
+    if inspect(engine).get_table_names():
+        return False
+    Base.metadata.create_all(bind=engine)
+    return True
+
+
 def _upgrade_personal_notes_columns() -> None:
     inspector = inspect(engine)
     if "personal_notes" not in inspector.get_table_names():
