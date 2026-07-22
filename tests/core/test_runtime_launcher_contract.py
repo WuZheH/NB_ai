@@ -98,6 +98,7 @@ def test_fastapi_readiness_accepts_only_a_safe_empty_library(monkeypatch) -> Non
             "ready": False,
             "data_state": "empty_library",
             "library_database_exists": False,
+            "library_has_documents": False,
             "index_exists": False,
             "manifest_exists": False,
             "reasons": ["index_and_manifest_missing"],
@@ -108,6 +109,8 @@ def test_fastapi_readiness_accepts_only_a_safe_empty_library(monkeypatch) -> Non
                 validator(safe_empty),
                 validator({**safe_empty, "data_state": "configured"}),
                 validator({**safe_empty, "library_database_exists": True}),
+                validator({**safe_empty, "library_has_documents": True}),
+                validator({**safe_empty, "library_has_documents": None}),
                 validator({**safe_empty, "status": "corrupt"}),
                 validator({**safe_empty, "production_db_write_performed": True}),
             )
@@ -116,7 +119,7 @@ def test_fastapi_readiness_accepts_only_a_safe_empty_library(monkeypatch) -> Non
 
     monkeypatch.setattr(runtime_health, "check_json_health", fake_check)
     assert runtime_health.check_fastapi_health("http://127.0.0.1:8000").ready
-    assert observed == [True, False, False, False, False]
+    assert observed == [True, False, True, False, False, False, False]
 
 
 def test_mcp_contract_requires_three_read_only_tools_and_widget_mime(monkeypatch) -> None:

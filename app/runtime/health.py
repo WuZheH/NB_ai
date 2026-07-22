@@ -70,7 +70,8 @@ def check_fastapi_health(url: str, *, timeout_seconds: float = 5.0) -> HealthRes
                 value.get("status") == "missing"
                 and value.get("ready") is False
                 and value.get("data_state") == "empty_library"
-                and value.get("library_database_exists") is False
+                and isinstance(value.get("library_database_exists"), bool)
+                and value.get("library_has_documents") is False
                 and value.get("index_exists") is False
                 and value.get("manifest_exists") is False
                 and value.get("reasons") == ["index_and_manifest_missing"]

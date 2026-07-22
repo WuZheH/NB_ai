@@ -61,6 +61,22 @@ EXPECTED_ADAPTER_VERSIONS = {
 }
 
 
+def _inspect_library_database(path: Path) -> tuple[bool, bool | None]:
+    if not path.is_file():
+        return False, False
+    try:
+        with closing(connect_immutable_readonly_sqlite(path)) as connection:
+            documents_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents' LIMIT 1"
+            ).fetchone()
+            if documents_table is None:
+                return True, False
+            has_documents = connection.execute("SELECT 1 FROM documents LIMIT 1").fetchone() is not None
+            return True, has_documents
+    except sqlite3.Error:
+        return True, None
+
+
 def get_index_status(
     *,
     index_path: str | Path | None = None,
@@ -74,14 +90,17 @@ def get_index_status(
     manifest_file = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
     index_exists = index.is_file()
     manifest_exists = manifest_file.is_file()
-    library_database_exists = Path(production_db_path).is_file()
+    library_database_exists, library_has_documents = _inspect_library_database(
+        Path(production_db_path)
+    )
     base = {
         "index_path": str(index),
         "manifest_path": str(manifest_file),
         "index_exists": index_exists,
         "manifest_exists": manifest_exists,
         "library_database_exists": library_database_exists,
-        "data_state": "configured" if library_database_exists else "empty_library",
+        "library_has_documents": library_has_documents,
+        "data_state": "configured" if library_has_documents is not False else "empty_library",
         "db_write_performed": False,
         "production_db_write_performed": False,
         "zotero_db_write_performed": False,
