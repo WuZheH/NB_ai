@@ -73,7 +73,9 @@ def test_test_and_build_scripts_keep_outputs_inside_unique_project_directories()
     assert "OrdinalIgnoreCase" in tree_hash
     assert "Sort-Object" not in tree_hash
     assert 'empty_directories = "excluded"' in tree_hash
-    assert "Remove-Item" not in build
+    assert build.count("Remove-Item") == 1
+    assert '$InvalidExecutable = Join-Path $PackagedRoot "Search.exe"' in build
+    assert "Remove-Item -LiteralPath $InvalidExecutable -Force -ErrorAction Stop" in build
 
 
 def test_environment_examples_contain_no_credentials_or_machine_paths() -> None:
