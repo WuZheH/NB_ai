@@ -47,7 +47,7 @@ class ObjectCandidate(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     document_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chapter_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True, deferred=True)
-    import_job_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    import_job_id: Mapped[str] = mapped_column(String(255), nullable=False)
     object_key: Mapped[str] = mapped_column(String(255), nullable=False)
     object_name: Mapped[str] = mapped_column(String(512), nullable=False)
     object_type: Mapped[str] = mapped_column(String(64), nullable=False)
