@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
+from uuid import uuid5
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.schemas.retrieval_fragment import (
+    RETRIEVAL_FRAGMENT_NAMESPACE,
+    RetrievalFragment,
+)
 from app.schemas.library_deletion import DeletionOptions
 from app.services import vector_store_service
 from app.services.library import book_archive_service, document_deletion_service
 from app.services.library.local_mutation_security import reset_security_state_for_tests
+from app.services.retrieval import fts_index_service
+from app.services.retrieval.fts_status_service import connect_readonly_index
 
 
 def _create_database(root: Path) -> tuple[Path, Path, Path]:
@@ -181,13 +191,13 @@ class _VectorHarness:
         }
 
 
-def _runtime(root: Path, *, vector: _VectorHarness | None = None, rebuild_fts=None, cleanup_vectors=None):
+def _runtime(root: Path, *, vector: _VectorHarness | None = None, cleanup_fts=None, cleanup_vectors=None):
     db_path, fts_path, data_dir = _create_database(root)
     harness = vector or _VectorHarness()
 
-    def rebuild(*, index_path, manifest_path):
+    def cleanup(*, document_id, index_path, manifest_path, production_db_path):
         connection = sqlite3.connect(index_path)
-        connection.execute("DELETE FROM retrieval_fragments WHERE document_id = 1")
+        connection.execute("DELETE FROM retrieval_fragments WHERE document_id = ?", (document_id,))
         count = connection.execute("SELECT COUNT(*) FROM retrieval_fragments").fetchone()[0]
         connection.commit()
         connection.close()
@@ -202,10 +212,60 @@ def _runtime(root: Path, *, vector: _VectorHarness | None = None, rebuild_fts=No
         vector_store_path=data_dir / "vector_store" / "lancedb",
         vector_manifest_path=data_dir / "vector_store" / "manifest.json",
         archive_root=root / "archives",
-        rebuild_fts=rebuild_fts or rebuild,
+        cleanup_fts=cleanup_fts or cleanup,
         inspect_vectors=harness.inspect,
         cleanup_vectors=cleanup_vectors or harness.cleanup,
     ), harness
+
+
+def _retrieval_fragment(document_id: int) -> RetrievalFragment:
+    locator = f"test://document/{document_id}/fragment/1"
+    text = f"isolated book {document_id}"
+    return RetrievalFragment(
+        fragment_id=str(uuid5(RETRIEVAL_FRAGMENT_NAMESPACE, locator)),
+        display_id=f"test-{document_id}",
+        source_type="pdf_chunk",
+        origin_kind="manual_import",
+        source_record_id=f"chunk:{document_id}",
+        canonical_source_locator=locator,
+        document_id=document_id,
+        title=f"Book {document_id}",
+        text=text,
+        context_status="not_requested",
+        index_text=text,
+        content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        adapter_version="test.v1",
+    )
+
+
+def _sequential_runtime(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[document_deletion_service.DeletionRuntime, _VectorHarness]:
+    runtime, harness = _runtime(root)
+    now = "2026-07-24T00:00:00+00:00"
+    connection = sqlite3.connect(runtime.db_path)
+    for document_id in range(3, 6):
+        connection.execute(
+            "INSERT INTO documents VALUES (?, ?, 'book', 'source', NULL, NULL, NULL, 'read', NULL, ?, ?, NULL, NULL)",
+            (document_id, f"Book {document_id}", now, now),
+        )
+    connection.execute("UPDATE documents SET title='Book 1' WHERE id=1")
+    connection.execute("UPDATE documents SET title='Book 2' WHERE id=2")
+    connection.commit()
+    connection.close()
+
+    runtime.fts_path.unlink()
+    fts_index_service._build_database(
+        runtime.fts_path,
+        [_retrieval_fragment(document_id) for document_id in range(1, 6)],
+    )
+    runtime.fts_manifest_path.write_text(
+        json.dumps({"fragment_count": 5}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fts_index_service, "DATA_DIR", runtime.data_dir)
+    return replace(runtime, cleanup_fts=None), harness
 
 
 @pytest.fixture(autouse=True)
@@ -315,6 +375,101 @@ def test_delete_transaction_preserves_notes_pdf_and_creates_recovery_package(tmp
     assert result["orphan_scan"]["ok"] is True
     assert "chunk:1:101" not in harness.passages
     assert "object:exclusive-key" not in harness.objects
+
+
+def test_five_sequential_deletions_complete_with_scoped_fts_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _harness = _sequential_runtime(tmp_path, monkeypatch)
+
+    results = []
+    for document_id in range(1, 6):
+        preview = document_deletion_service.create_deletion_preview(
+            document_id,
+            runtime=runtime,
+        )
+        result = document_deletion_service.delete_document(
+            document_id=document_id,
+            preview_token=preview["preview_token"],
+            expected_document_revision=preview["document_revision"],
+            confirmation_text="删除",
+            runtime=runtime,
+        )
+        results.append(result)
+
+    assert [result["status"] for result in results] == ["completed"] * 5
+    assert [result["fts"]["removed_fragment_rows"] for result in results] == [1] * 5
+    assert all(result["orphan_scan"]["ok"] is True for result in results)
+    connection = sqlite3.connect(runtime.db_path)
+    assert connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+    assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    connection.close()
+    with sqlite3.connect(runtime.fts_path) as fts:
+        assert fts.execute("SELECT COUNT(*) FROM retrieval_fragments").fetchone()[0] == 0
+        assert fts.execute("SELECT COUNT(*) FROM retrieval_fts_unicode").fetchone()[0] == 0
+        assert fts.execute("SELECT COUNT(*) FROM retrieval_fts_trigram").fetchone()[0] == 0
+        assert fts.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert len(list(runtime.resolved_archive_root().glob("delete-*"))) == 5
+
+
+def test_scoped_fts_cleanup_is_idempotent_and_keeps_unrelated_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _harness = _sequential_runtime(tmp_path, monkeypatch)
+    first = fts_index_service.cleanup_document_retrieval_fts(
+        document_id=1,
+        index_path=runtime.fts_path,
+        manifest_path=runtime.fts_manifest_path,
+        production_db_path=runtime.db_path,
+    )
+    second = fts_index_service.cleanup_document_retrieval_fts(
+        document_id=1,
+        index_path=runtime.fts_path,
+        manifest_path=runtime.fts_manifest_path,
+        production_db_path=runtime.db_path,
+    )
+    assert first["removed_fragment_rows"] == 1
+    assert first["already_absent"] is False
+    assert second["removed_fragment_rows"] == 0
+    assert second["already_absent"] is True
+    with sqlite3.connect(runtime.fts_path) as connection:
+        assert connection.execute(
+            "SELECT document_id FROM retrieval_fragments ORDER BY document_id"
+        ).fetchall() == [(2,), (3,), (4,), (5,)]
+
+
+def test_scoped_fts_cleanup_waits_for_coordinated_readers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _harness = _sequential_runtime(tmp_path, monkeypatch)
+    reader = connect_readonly_index(runtime.fts_path)
+    reader.execute("BEGIN")
+    assert reader.execute("SELECT COUNT(*) FROM retrieval_fragments").fetchone()[0] == 5
+    outcome: dict[str, object] = {}
+
+    def cleanup() -> None:
+        try:
+            outcome["result"] = fts_index_service.cleanup_document_retrieval_fts(
+                document_id=1,
+                index_path=runtime.fts_path,
+                manifest_path=runtime.fts_manifest_path,
+                production_db_path=runtime.db_path,
+            )
+        except Exception as exc:  # pragma: no cover - asserted through outcome
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=cleanup)
+    worker.start()
+    time.sleep(0.1)
+    assert worker.is_alive()
+    reader.close()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert "error" not in outcome
+    assert outcome["result"]["status"] == "ready"
 
 
 def test_zotero_note_linked_only_by_object_id_is_preserved_and_detached(tmp_path: Path) -> None:

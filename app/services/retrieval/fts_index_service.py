@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
 import unicodedata
 from contextlib import closing
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.core.database import connect_existing_readwrite_sqlite
 from app.core.paths import DATA_DIR
 from app.schemas.retrieval_fragment import RetrievalFragment
 from app.services.retrieval.fts_schema import (
@@ -89,6 +91,8 @@ INSERT INTO {{table_name}} (
     rowid, title, section, tags, text, note_comment, context
 ) VALUES (?, ?, ?, ?, ?, ?, ?)
 """
+
+_FTS_MAINTENANCE_LOCK = threading.RLock()
 
 
 def build_retrieval_fts(
@@ -203,6 +207,189 @@ def build_retrieval_fts(
         "vector_write_performed": False,
         "llm_called": False,
     }
+
+
+def cleanup_document_retrieval_fts(
+    *,
+    document_id: int,
+    index_path: str | Path | None = None,
+    manifest_path: str | Path | None = None,
+    production_db_path: str | Path,
+) -> dict[str, Any]:
+    """Remove one document from the existing FTS index without replacing its file.
+
+    Search processes can keep short-lived read-only SQLite connections open on
+    Windows.  Mutating the existing database lets SQLite coordinate those
+    readers; replacing the database file cannot do that reliably.
+    """
+    if isinstance(document_id, bool) or not isinstance(document_id, int) or document_id <= 0:
+        raise ValueError("document_id must be a positive integer")
+
+    target_index = Path(index_path) if index_path is not None else DEFAULT_INDEX_PATH
+    target_manifest = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
+    source_database = Path(production_db_path)
+    _assert_project_local(target_index)
+    _assert_project_local(target_manifest)
+    _assert_project_local(source_database)
+    if not target_index.is_file():
+        raise FileNotFoundError(f"retrieval index does not exist: {target_index.name}")
+    if not target_manifest.is_file():
+        raise FileNotFoundError(f"retrieval manifest does not exist: {target_manifest.name}")
+
+    with _FTS_MAINTENANCE_LOCK:
+        started = time.perf_counter()
+        connection = connect_existing_readwrite_sqlite(
+            target_index,
+            resolve_strict=True,
+            timeout=30.0,
+            row_factory=sqlite3.Row,
+            temp_store="MEMORY",
+            isolation_level=None,
+        )
+        try:
+            connection.execute("PRAGMA busy_timeout = 30000")
+            connection.execute("BEGIN IMMEDIATE")
+            row_ids = [
+                int(row[0])
+                for row in connection.execute(
+                    f"SELECT row_id FROM {ORDINARY_TABLE} WHERE document_id = ? ORDER BY row_id",
+                    (document_id,),
+                )
+            ]
+            if row_ids:
+                connection.execute(
+                    f"DELETE FROM {UNICODE_FTS_TABLE} WHERE rowid IN "
+                    f"(SELECT row_id FROM {ORDINARY_TABLE} WHERE document_id = ?)",
+                    (document_id,),
+                )
+                connection.execute(
+                    f"DELETE FROM {TRIGRAM_FTS_TABLE} WHERE rowid IN "
+                    f"(SELECT row_id FROM {ORDINARY_TABLE} WHERE document_id = ?)",
+                    (document_id,),
+                )
+                connection.execute(
+                    f"DELETE FROM {ORDINARY_TABLE} WHERE document_id = ?",
+                    (document_id,),
+                )
+
+            fragment_count = int(
+                connection.execute(f"SELECT COUNT(*) FROM {ORDINARY_TABLE}").fetchone()[0]
+            )
+            connection.execute(
+                """
+                INSERT INTO index_metadata (key, value) VALUES ('fragment_count', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (str(fragment_count),),
+            )
+            validation = validate_index_database(
+                connection,
+                expected_fragment_count=fragment_count,
+            )
+            if not validation["valid"]:
+                raise RuntimeError(f"retrieval index cleanup validation failed: {validation}")
+            manifest_counts = _manifest_counts(connection)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+        manifest = _refresh_manifest_after_cleanup(
+            manifest_path=target_manifest,
+            index_path=target_index,
+            production_db_path=source_database,
+            fragment_count=fragment_count,
+            manifest_counts=manifest_counts,
+            duration_ms=round((time.perf_counter() - started) * 1000, 3),
+        )
+
+    return {
+        "status": "ready",
+        "document_id": document_id,
+        "removed_fragment_rows": len(row_ids),
+        "already_absent": not row_ids,
+        "fragment_count": fragment_count,
+        "index_content_hash": manifest["index_content_hash"],
+        "manifest_sha256": sha256_file(target_manifest),
+        "validation": validation,
+        "derived_index_write_performed": True,
+        "production_db_write_performed": False,
+        "vector_write_performed": False,
+        "llm_called": False,
+    }
+
+
+def _manifest_counts(connection: sqlite3.Connection) -> dict[str, Any]:
+    source_type_counts = {
+        str(row[0]): int(row[1])
+        for row in connection.execute(
+            f"SELECT source_type, COUNT(*) FROM {ORDINARY_TABLE} GROUP BY source_type"
+        )
+    }
+    origin_kind_counts = {
+        str(row[0]): int(row[1])
+        for row in connection.execute(
+            f"SELECT origin_kind, COUNT(*) FROM {ORDINARY_TABLE} GROUP BY origin_kind"
+        )
+    }
+    duplicate_group_count = int(
+        connection.execute(
+            f"""
+            SELECT COUNT(DISTINCT duplicate_group_id)
+            FROM {ORDINARY_TABLE}
+            WHERE duplicate_candidate = 1 AND duplicate_group_id IS NOT NULL
+            """
+        ).fetchone()[0]
+    )
+    return {
+        "source_type_counts": {
+            source_type: int(source_type_counts.get(source_type, 0))
+            for source_type in ALL_SOURCE_TYPES
+        },
+        "origin_kind_counts": origin_kind_counts,
+        "duplicate_group_count": duplicate_group_count,
+    }
+
+
+def _refresh_manifest_after_cleanup(
+    *,
+    manifest_path: Path,
+    index_path: Path,
+    production_db_path: Path,
+    fragment_count: int,
+    manifest_counts: dict[str, Any],
+    duration_ms: float,
+) -> dict[str, Any]:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise TypeError("retrieval manifest must contain a JSON object")
+    manifest.update(
+        {
+            "production_db_sha256": sha256_file(production_db_path),
+            "fragment_count": fragment_count,
+            "source_type_counts": manifest_counts["source_type_counts"],
+            "origin_kind_counts": manifest_counts["origin_kind_counts"],
+            "duplicate_group_count": manifest_counts["duplicate_group_count"],
+            "index_content_hash": sha256_file(index_path),
+            "index_file_bytes": index_path.stat().st_size,
+            "last_document_cleanup_at": datetime.now(timezone.utc).isoformat(),
+            "last_document_cleanup_duration_ms": duration_ms,
+        }
+    )
+    temporary_manifest = manifest_path.with_name(
+        f".{manifest_path.name}.{uuid4().hex}.tmp"
+    )
+    try:
+        temporary_manifest.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_manifest, manifest_path)
+    finally:
+        temporary_manifest.unlink(missing_ok=True)
+    return manifest
 
 
 def _build_database(path: Path, fragments: list[RetrievalFragment]) -> None:

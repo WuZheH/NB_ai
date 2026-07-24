@@ -25,7 +25,7 @@ from app.core.paths import (
 )
 from app.schemas.library_deletion import DeletionOptions
 from app.services import vector_store_service
-from app.services.retrieval.fts_index_service import build_retrieval_fts
+from app.services.retrieval.fts_index_service import cleanup_document_retrieval_fts
 
 
 PREVIEW_TTL_SECONDS = 5 * 60
@@ -117,7 +117,7 @@ class DeletionRuntime:
     vector_store_path: Path = LANCEDB_DIR
     vector_manifest_path: Path = vector_store_service.MANIFEST_PATH
     archive_root: Path | None = None
-    rebuild_fts: Callable[..., dict[str, Any]] | None = None
+    cleanup_fts: Callable[..., dict[str, Any]] | None = None
     inspect_vectors: Callable[..., dict[str, Any]] | None = None
     cleanup_vectors: Callable[..., dict[str, Any]] | None = None
 
@@ -925,10 +925,12 @@ def _run_post_commit_cleanup(plan: InternalDeletionPlan, *, runtime: DeletionRun
     state = CleanupState()
     try:
         if Path(runtime.fts_path).is_file():
-            builder = runtime.rebuild_fts or build_retrieval_fts
-            state.fts = builder(
+            cleaner = runtime.cleanup_fts or cleanup_document_retrieval_fts
+            state.fts = cleaner(
+                document_id=plan.document_id,
                 index_path=runtime.fts_path,
                 manifest_path=runtime.fts_manifest_path,
+                production_db_path=runtime.db_path,
             )
         else:
             state.fts = {"status": "not_present", "fragment_count": 0}

@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from app.core.database import connect_immutable_readonly_sqlite
+from app.core.database import connect_immutable_readonly_sqlite, connect_readonly_sqlite
 from app.core.paths import (
     DEFAULT_DB_PATH,
     FTS_DB_PATH,
@@ -253,7 +253,14 @@ def sha256_file(path: Path) -> str:
 
 
 def connect_readonly_index(path: Path) -> sqlite3.Connection:
-    return connect_immutable_readonly_sqlite(path)
+    return connect_readonly_sqlite(
+        path,
+        resolve_strict=True,
+        timeout=30.0,
+        row_factory=sqlite3.Row,
+        query_only=True,
+        temp_store="MEMORY",
+    )
 
 
 def _stale_reasons(
