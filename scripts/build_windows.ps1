@@ -2,6 +2,7 @@
 param(
     [string]$PythonExe = $env:SEARCH_PYTHON,
     [string]$NodeExe = $env:SEARCH_NODE,
+    [string]$GitExe = $env:SEARCH_GIT,
     [string]$BuildId,
     [string]$OutputRoot,
     [switch]$CheckOnly
@@ -89,7 +90,7 @@ function ConvertTo-SearchIdentityString {
 if (-not $PythonExe) { throw "search_python_not_configured_set_SEARCH_PYTHON" }
 $PythonExe = Resolve-Executable $PythonExe @() "search_python_executable_unavailable"
 $NodeExe = Resolve-Executable $NodeExe @("node.exe", "node") "search_node_executable_unavailable"
-$GitExe = Resolve-Executable "" @("git.exe", "git") "search_git_executable_unavailable"
+$GitExe = Resolve-Executable $GitExe @("git.exe", "git") "search_git_executable_unavailable"
 
 $GitStatus = @(& $GitExe -C $ProjectRoot status --porcelain --untracked-files=normal)
 if ($LASTEXITCODE -ne 0) { throw "search_git_status_unavailable" }
