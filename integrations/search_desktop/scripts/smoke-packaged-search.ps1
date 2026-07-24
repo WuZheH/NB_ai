@@ -39,15 +39,16 @@ $ConfigureTool = Join-Path $ProjectRoot "scripts\configure_search_desktop_runtim
 $ProjectDrive = [System.IO.Path]::GetPathRoot($ProjectRoot)
 $TestDrive = [System.IO.Path]::GetPathRoot($TestRoot)
 $TestPrefix = $TestRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
-if (
-    -not $ProjectDrive
-    -or -not $TestDrive
-    -or -not $ProjectDrive.Equals($TestDrive, [System.StringComparison]::OrdinalIgnoreCase)
-    -or -not (
-        $DataDir.Equals($TestRoot, [System.StringComparison]::OrdinalIgnoreCase)
-        -or $DataDir.StartsWith($TestPrefix, [System.StringComparison]::OrdinalIgnoreCase)
-    )
-) {
+$SameDrive = (
+    $ProjectDrive -and
+    $TestDrive -and
+    $ProjectDrive.Equals($TestDrive, [System.StringComparison]::OrdinalIgnoreCase)
+)
+$DataIsIsolated = (
+    $DataDir.Equals($TestRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+    $DataDir.StartsWith($TestPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+)
+if (-not $SameDrive -or -not $DataIsIsolated) {
     throw "search_packaged_smoke_writable_root_not_isolated"
 }
 

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const smoke = await readFile(new URL("../scripts/smoke-packaged-search.ps1", import.meta.url), "utf8");
+const smokeUrl = new URL("../scripts/smoke-packaged-search.ps1", import.meta.url);
+const smokePath = fileURLToPath(smokeUrl);
+const smoke = await readFile(smokeUrl, "utf8");
 const configureWrapper = await readFile(new URL("../../../scripts/configure_search_desktop_runtime.ps1", import.meta.url), "utf8");
 const configureTool = await readFile(new URL("../../../scripts/configure_search_desktop_runtime.mjs", import.meta.url), "utf8");
 
@@ -16,6 +20,18 @@ test("packaged smoke creates isolated userData provisioning with the official to
 
 test("packaged smoke source is ASCII so Windows PowerShell 5.1 parses it without a BOM", () => {
   assert.equal(Buffer.from(smoke, "utf8").every((byte) => byte < 0x80), true);
+  const parsed = spawnSync(
+    "powershell.exe",
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-Command",
+      "& { param($Path) [void][scriptblock]::Create([IO.File]::ReadAllText($Path)) }",
+      smokePath,
+    ],
+    { encoding: "utf8", windowsHide: true },
+  );
+  assert.equal(parsed.status, 0, parsed.stderr || parsed.stdout);
 });
 
 test("packaged smoke covers missing, invalid, valid, and migrated legacy configurations", () => {
