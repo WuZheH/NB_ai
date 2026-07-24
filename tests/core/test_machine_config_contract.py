@@ -157,6 +157,9 @@ def test_runtime_passes_one_explicit_machine_config_to_all_children(tmp_path: Pa
     expected = str(config_path.resolve())
     assert supervisor._fastapi_spec().environment["SEARCH_MACHINE_CONFIG_PATH"] == expected
     assert supervisor._mcp_spec().environment["SEARCH_MACHINE_CONFIG_PATH"] == expected
+    expected_log_dir = str(config.paths.logs_dir)
+    assert supervisor._fastapi_spec().environment["SEARCH_LOG_DIR"] == expected_log_dir
+    assert supervisor._mcp_spec().environment["SEARCH_LOG_DIR"] == expected_log_dir
     captured = []
     controller = RuntimeController(config)
     def capture_and_fail(spec):

@@ -436,7 +436,10 @@ class RuntimeSupervisor:
         )
 
     def _fastapi_spec(self) -> ProcessSpec:
-        environment = {"PYTHONDONTWRITEBYTECODE": "1"}
+        environment = {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "SEARCH_LOG_DIR": str(self.config.paths.logs_dir),
+        }
         if self.config.machine_config.path is not None:
             environment["SEARCH_MACHINE_CONFIG_PATH"] = str(self.config.machine_config.path)
         return ProcessSpec(
@@ -496,6 +499,7 @@ class RuntimeSupervisor:
         environment = {
             "SEARCH_BACKEND_URL": self.config.backend_url,
             "SEARCH_ALLOW_UNAUTHENTICATED_MCP_DEV": "1",
+            "SEARCH_LOG_DIR": str(self.config.paths.logs_dir),
             "SEARCH_MCP_PORT": str(self.config.mcp_port),
             "NOTEBOOK_AI_BACKEND_URL": self.config.backend_url,
             "NOTEBOOK_AI_ALLOW_UNAUTHENTICATED_MCP_DEV": "1",

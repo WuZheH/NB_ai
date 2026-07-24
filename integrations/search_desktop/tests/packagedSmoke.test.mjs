@@ -32,6 +32,7 @@ test("packaged smoke covers missing, invalid, valid, and migrated legacy configu
 test("packaged smoke clears ambient prerequisites and never prestarts Runtime", () => {
   for (const name of [
     "SEARCH_DATA_DIR",
+    "SEARCH_LOG_DIR",
     "SEARCH_PYTHON",
     "SEARCH_NODE",
     "NOTEBOOK_AI_DATA_PROJECT_ROOT",
@@ -43,6 +44,17 @@ test("packaged smoke clears ambient prerequisites and never prestarts Runtime", 
   assert.doesNotMatch(smoke, /\$env:SEARCH_[A-Z0-9_]+\s*=/);
   assert.match(smoke, /"SEARCH_ELECTRON_TEST_MODE", "SEARCH_RENDERER_PORT", "SEARCH_RUNTIME_ROOT"/);
   assert.doesNotMatch(smoke, /Start-IsolatedRuntimeFixture|Invoke-IsolatedRuntimeCommand[^\n]+start/);
+});
+
+test("packaged smoke confines every writable root to its explicit isolated D-drive scope", () => {
+  assert.match(smoke, /search_packaged_smoke_writable_root_not_isolated/);
+  assert.match(smoke, /GetPathRoot\(\$ProjectRoot\)/);
+  assert.match(smoke, /\$DataDir\.StartsWith\(\$TestPrefix/);
+  assert.match(smoke, /\$env:LOCALAPPDATA = \$LocalAppData/);
+  assert.match(smoke, /\$env:APPDATA = \$RoamingAppData/);
+  assert.match(smoke, /\$env:TEMP = \$TempDirectory/);
+  assert.match(smoke, /\$env:TMP = \$TempDirectory/);
+  assert.match(smoke, /--user-data-dir=\$UserData/);
 });
 
 test("packaged smoke proves Electron spawned and owns Runtime", () => {

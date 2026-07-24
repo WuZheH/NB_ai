@@ -196,13 +196,9 @@ def _write_transition_log(event: dict[str, Any]) -> None:
 
     try:
         configured_dir = os.environ.get("SEARCH_LOG_DIR")
-        if configured_dir:
-            log_dir = Path(configured_dir).expanduser().resolve(strict=False)
-        else:
-            local_app_data = os.environ.get("LOCALAPPDATA")
-            if not local_app_data:
-                return
-            log_dir = Path(local_app_data).expanduser().resolve(strict=False) / "Search" / "logs"
+        if not configured_dir or not configured_dir.strip():
+            return
+        log_dir = Path(configured_dir.strip()).expanduser().resolve(strict=False)
         log_dir.mkdir(parents=True, exist_ok=True)
         payload = {"schema": "search.model-readiness.v1", **event}
         with (log_dir / "model-readiness.jsonl").open("a", encoding="utf-8", newline="\n") as handle:

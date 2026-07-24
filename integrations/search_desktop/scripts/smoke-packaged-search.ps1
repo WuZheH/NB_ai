@@ -36,6 +36,20 @@ $NodeExe = [System.IO.Path]::GetFullPath($NodeExe)
 $TestRoot = [System.IO.Path]::GetFullPath($TestRoot)
 $RuntimeRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $ExecutablePath) "resources\app\runtime-project"))
 $ConfigureTool = Join-Path $ProjectRoot "scripts\configure_search_desktop_runtime.ps1"
+$ProjectDrive = [System.IO.Path]::GetPathRoot($ProjectRoot)
+$TestDrive = [System.IO.Path]::GetPathRoot($TestRoot)
+$TestPrefix = $TestRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+if (
+    -not $ProjectDrive
+    -or -not $TestDrive
+    -or -not $ProjectDrive.Equals($TestDrive, [System.StringComparison]::OrdinalIgnoreCase)
+    -or -not (
+        $DataDir.Equals($TestRoot, [System.StringComparison]::OrdinalIgnoreCase)
+        -or $DataDir.StartsWith($TestPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+    )
+) {
+    throw "search_packaged_smoke_writable_root_not_isolated"
+}
 
 foreach ($RequiredFile in @($ExecutablePath, $PythonExe, $NodeExe, $ConfigureTool)) {
     if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
@@ -237,7 +251,7 @@ if ($MachineConfigPath) {
 $EnvironmentNames = @(
     "LOCALAPPDATA", "APPDATA", "TEMP", "TMP", "ELECTRON_DISABLE_CRASH_REPORTING",
     "SEARCH_ELECTRON_TEST_MODE", "SEARCH_RENDERER_PORT", "SEARCH_RUNTIME_ROOT",
-    "SEARCH_DATA_DIR", "SEARCH_PYTHON", "SEARCH_NODE", "SEARCH_MACHINE_CONFIG_PATH",
+    "SEARCH_DATA_DIR", "SEARCH_LOG_DIR", "SEARCH_PYTHON", "SEARCH_NODE", "SEARCH_MACHINE_CONFIG_PATH",
     "NOTEBOOK_AI_RUNTIME_ROOT", "NOTEBOOK_AI_DATA_PROJECT_ROOT", "NOTEBOOK_AI_PROJECT_ROOT",
     "NOTEBOOK_AI_PYTHON_EXE", "NOTEBOOK_AI_NODE_EXE", "PYTHONPATH", "NODE_PATH"
 )
@@ -259,7 +273,7 @@ try {
     $env:TMP = $TempDirectory
     $env:ELECTRON_DISABLE_CRASH_REPORTING = "1"
     foreach ($Name in @(
-        "SEARCH_ELECTRON_TEST_MODE", "SEARCH_RENDERER_PORT", "SEARCH_RUNTIME_ROOT", "SEARCH_DATA_DIR", "SEARCH_PYTHON", "SEARCH_NODE", "SEARCH_MACHINE_CONFIG_PATH",
+        "SEARCH_ELECTRON_TEST_MODE", "SEARCH_RENDERER_PORT", "SEARCH_RUNTIME_ROOT", "SEARCH_DATA_DIR", "SEARCH_LOG_DIR", "SEARCH_PYTHON", "SEARCH_NODE", "SEARCH_MACHINE_CONFIG_PATH",
         "NOTEBOOK_AI_RUNTIME_ROOT", "NOTEBOOK_AI_DATA_PROJECT_ROOT", "NOTEBOOK_AI_PROJECT_ROOT",
         "NOTEBOOK_AI_PYTHON_EXE", "NOTEBOOK_AI_NODE_EXE", "PYTHONPATH", "NODE_PATH"
     )) { Set-Item "Env:$Name" $null }
