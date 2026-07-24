@@ -57,7 +57,9 @@ test("packaged smoke clears ambient prerequisites and never prestarts Runtime", 
     assert.match(smoke, new RegExp(`Set-Item "Env:\\$Name" \\$null`));
     assert.doesNotMatch(smoke, new RegExp(`\\$env:${name}\\s*=\\s*\\$`));
   }
-  assert.doesNotMatch(smoke, /\$env:SEARCH_[A-Z0-9_]+\s*=/);
+  assert.doesNotMatch(smoke, /\$env:SEARCH_(?:DATA_DIR|LOG_DIR|PYTHON|NODE|MACHINE_CONFIG_PATH)\s*=/);
+  assert.match(smoke, /\$env:SEARCH_BOOK_DELETION_ARCHIVE_ROOT = \$DeletionArchiveRoot/);
+  assert.match(smoke, /"SEARCH_BOOK_DELETION_ARCHIVE_ROOT"/);
   assert.match(smoke, /"SEARCH_ELECTRON_TEST_MODE", "SEARCH_RENDERER_PORT", "SEARCH_RUNTIME_ROOT"/);
   assert.doesNotMatch(smoke, /Start-IsolatedRuntimeFixture|Invoke-IsolatedRuntimeCommand[^\n]+start/);
 });
