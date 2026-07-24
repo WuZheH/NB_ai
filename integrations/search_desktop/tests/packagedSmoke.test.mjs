@@ -71,6 +71,8 @@ test("packaged smoke confines every writable root to its explicit isolated D-dri
   assert.match(smoke, /\$env:TEMP = \$TempDirectory/);
   assert.match(smoke, /\$env:TMP = \$TempDirectory/);
   assert.match(smoke, /--user-data-dir=\$UserData/);
+  assert.match(smoke, /\$DeletionArchiveRoot = Join-Path \$RunRoot "recovery-archive"/);
+  assert.doesNotMatch(smoke, /Split-Path -Parent[\s\S]+Archives\\SearchBookDeletion/);
 });
 
 test("packaged smoke proves Electron spawned and owns Runtime", () => {

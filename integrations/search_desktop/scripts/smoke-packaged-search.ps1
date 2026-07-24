@@ -162,13 +162,7 @@ $RoamingAppData = Join-Path $RunRoot "roaming-app-data"
 $TempDirectory = Join-Path $RunRoot "temp"
 $StdoutPath = Join-Path $RunRoot "search.stdout.log"
 $StderrPath = Join-Path $RunRoot "search.stderr.log"
-$DeletionArchiveRoot = Join-Path (
-    Split-Path -Parent (
-        Split-Path -Parent (
-            Split-Path -Parent $DataDir
-        )
-    )
-) "Archives\SearchBookDeletion"
+$DeletionArchiveRoot = Join-Path $RunRoot "recovery-archive"
 $StartupLog = Join-Path $UserData "logs\search-startup.log"
 $DesktopRuntimePath = Join-Path $UserData "desktop-runtime.json"
 foreach ($Directory in @($UserData, $LocalAppData, $RoamingAppData, $TempDirectory)) {
