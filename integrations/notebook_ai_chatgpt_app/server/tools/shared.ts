@@ -51,6 +51,7 @@ export function toolMetadata(
     "openai/toolInvocation/invoking": invoking,
     "openai/toolInvocation/invoked": invoked,
     "openai/widgetAccessible": true,
+    "notebookAi/errorContract": "isError-content-v1",
   };
 }
 
@@ -61,7 +62,6 @@ export function jsonContent(value: unknown): Array<{ type: "text"; text: string 
 export function errorToolResult(error: unknown): {
   isError: true;
   content: Array<{ type: "text"; text: string }>;
-  structuredContent: { status: "error"; error_code: string; message: string };
 } {
   const code = errorCode(error);
   const message =
@@ -75,17 +75,31 @@ export function errorToolResult(error: unknown): {
           "model_path_not_absolute",
           "model_path_not_found",
           "model_structure_invalid",
-          "model_load_failed",
         ].includes(code)
         ? "Search high-quality search configuration is unavailable."
+      : [
+          "model_load_failed",
+          "embedding_model_load_failed",
+          "embedding_model_self_check_failed",
+          "embedding_model_inference_failed",
+          "reranker_model_load_failed",
+          "reranker_model_self_check_failed",
+          "reranker_model_inference_failed",
+        ].includes(code)
+        ? "Search high-quality retrieval model is unavailable."
       : "Search request failed.";
   const structuredContent = { status: "error" as const, error_code: code, message };
-  return { isError: true, content: jsonContent(structuredContent), structuredContent };
+  return { isError: true, content: jsonContent(structuredContent) };
 }
 
 export function errorCode(error: unknown): string {
+  if (error instanceof z.ZodError) {
+    return "MCP_INVALID_ARGUMENT";
+  }
   if (!(error instanceof NotebookBackendError)) {
-    return "MCP_ADAPTER_ERROR";
+    return error instanceof TypeError || error instanceof SyntaxError
+      ? "BACKEND_RESPONSE_INVALID"
+      : "BACKEND_UNAVAILABLE";
   }
   return /^[A-Za-z0-9_.-]{1,96}$/.test(error.code) ? error.code : "MCP_ADAPTER_ERROR";
 }

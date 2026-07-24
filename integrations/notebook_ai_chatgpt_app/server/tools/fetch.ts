@@ -30,7 +30,7 @@ export async function runFetchTool(client: NotebookClient, rawInput: unknown) {
   try {
     const input = fetchInputSchema.parse(rawInput);
     const fragment = unwrapFragment(await client.fetchFragment(input.fragment_id));
-    const structuredContent = { status: "ok", fragment };
+    const structuredContent = { status: "ok" as const, fragment };
     logToolInvocation({ tool: "fetch", duration_ms: elapsedMilliseconds(startedAt), result_count: 1 });
     return {
       content: jsonContent(structuredContent),

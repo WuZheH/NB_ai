@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import math
+from threading import Lock
 import time
 from typing import Any
 
 from app.core.paths import RERANKER_MODEL_PATH
 from app.runtime.machine_config import (
     MachineConfigUnavailable,
-    record_model_load_failed,
-    record_model_ready,
     require_runtime_machine_config,
+)
+from app.runtime.model_readiness import (
+    mark_model_failed,
+    mark_model_loading,
+    mark_model_ready,
+    model_error_code,
+    model_state,
 )
 from app.services import local_embedding_service
 
@@ -20,6 +27,7 @@ DEFAULT_RERANKER_MODEL_PATH = RERANKER_MODEL_PATH
 
 _RERANKER: Any | None = None
 _RERANKER_LOAD_MS: float | None = None
+_RERANKER_LOAD_LOCK = Lock()
 
 
 class LocalRerankerUnavailable(RuntimeError):
@@ -104,36 +112,74 @@ def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10)
 
 def _load_reranker(timings: dict[str, float]) -> Any:
     global _RERANKER, _RERANKER_LOAD_MS
-    if _RERANKER is not None:
+    if _RERANKER is not None and model_state("reranker") == "ready":
         timings["load_reranker_ms"] = 0.0
         return _RERANKER
+    if model_state("reranker") == "failed":
+        raise LocalRerankerUnavailable(model_error_code("reranker") or "model_load_failed")
 
-    _set_local_cache_env()
-    try:
-        model_path = _model_path()
-    except MachineConfigUnavailable as exc:
-        raise LocalRerankerUnavailable(exc.error_code) from exc
+    with _RERANKER_LOAD_LOCK:
+        if _RERANKER is not None and model_state("reranker") == "ready":
+            timings["load_reranker_ms"] = 0.0
+            return _RERANKER
+        if model_state("reranker") == "failed":
+            raise LocalRerankerUnavailable(model_error_code("reranker") or "model_load_failed")
 
-    started = time.perf_counter()
-    try:
-        from sentence_transformers import CrossEncoder
-    except Exception as exc:  # pragma: no cover - depends on runtime environment
-        record_model_load_failed("reranker")
-        raise LocalRerankerUnavailable("model_load_failed") from exc
+        _set_local_cache_env()
+        try:
+            model_path = _model_path()
+        except MachineConfigUnavailable as exc:
+            raise LocalRerankerUnavailable(exc.error_code) from exc
 
-    try:
-        _RERANKER = CrossEncoder(str(model_path), device=_device_name())
-    except Exception as exc:  # pragma: no cover - depends on local model/GPU state
-        record_model_load_failed("reranker")
-        raise LocalRerankerUnavailable("model_load_failed") from exc
+        mark_model_loading("reranker")
+        started = time.perf_counter()
+        try:
+            from sentence_transformers import CrossEncoder
 
-    record_model_ready("reranker")
-    _RERANKER_LOAD_MS = _elapsed_ms(started)
-    timings["load_reranker_ms"] = _RERANKER_LOAD_MS
-    return _RERANKER
+            candidate = CrossEncoder(str(model_path), device=_device_name())
+        except Exception as exc:  # pragma: no cover - depends on runtime environment
+            mark_model_failed("reranker", "reranker_model_load_failed")
+            raise LocalRerankerUnavailable("reranker_model_load_failed") from exc
+
+        try:
+            scores = _raw_predict_scores(candidate, [("readiness", "readiness document")])
+            if len(scores) != 1 or not math.isfinite(scores[0]):
+                raise ValueError("reranker_self_check_invalid")
+        except Exception as exc:
+            mark_model_failed("reranker", "reranker_model_self_check_failed")
+            raise LocalRerankerUnavailable("reranker_model_self_check_failed") from exc
+
+        _RERANKER = candidate
+        mark_model_ready("reranker")
+        _RERANKER_LOAD_MS = _elapsed_ms(started)
+        timings["load_reranker_ms"] = _RERANKER_LOAD_MS
+        return _RERANKER
+
+
+def initialize_reranker_model() -> None:
+    _load_reranker({})
+
+
+def shutdown_reranker_model() -> None:
+    global _RERANKER, _RERANKER_LOAD_MS
+    _RERANKER = None
+    _RERANKER_LOAD_MS = None
 
 
 def _predict_scores(reranker: Any, pairs: list[tuple[str, str]]) -> list[float]:
+    try:
+        scores = _raw_predict_scores(reranker, pairs)
+        if len(scores) != len(pairs) or not all(math.isfinite(score) for score in scores):
+            raise ValueError("reranker_scores_invalid")
+        return scores
+    except LocalRerankerUnavailable:
+        raise
+    except Exception as exc:
+        mark_model_failed("reranker", "reranker_model_inference_failed")
+        raise LocalRerankerUnavailable("reranker_model_inference_failed") from exc
+
+
+def _raw_predict_scores(reranker: Any, pairs: list[tuple[str, str]]) -> list[float]:
     raw_scores = reranker.predict(pairs, batch_size=1, show_progress_bar=False)
     if hasattr(raw_scores, "tolist"):
         raw_scores = raw_scores.tolist()

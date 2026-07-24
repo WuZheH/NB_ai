@@ -99,7 +99,11 @@ test("tools/list exposes the three read-only tools and widget resource", async (
       });
       assert.equal(tool.outputSchema?.type, "object", `${tool.name} declares an object outputSchema`);
       assert.ok(tool.outputSchema?.properties?.status, `${tool.name} outputSchema declares status`);
-      const meta = tool._meta as { ui?: { resourceUri?: string; visibility?: string[] } } | undefined;
+      const meta = tool._meta as {
+        ui?: { resourceUri?: string; visibility?: string[] };
+        "notebookAi/errorContract"?: string;
+      } | undefined;
+      assert.equal(meta?.["notebookAi/errorContract"], "isError-content-v1");
       assert.deepEqual(meta?.ui?.visibility, ["model", "app"]);
       assert.equal(
         meta?.ui?.resourceUri,
@@ -227,10 +231,71 @@ test("machine configuration failures remain structured and path-free", () => {
   const result = errorToolResult(
     new NotebookBackendError("D:\\private\\model", 503, "config_missing"),
   );
-  assert.equal(result.structuredContent.error_code, "config_missing");
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.error_code, "config_missing");
   assert.equal(
-    result.structuredContent.message,
+    payload.message,
     "Search high-quality search configuration is unavailable.",
   );
   assert.doesNotMatch(JSON.stringify(result), /D:\\\\private/);
+});
+
+test("all tool failures use isError content without output-schema mismatch", async () => {
+  const scenarios = [
+    ["BACKEND_UNAVAILABLE", 503],
+    ["model_load_failed", 503],
+    ["BACKEND_TIMEOUT", 504],
+    ["BACKEND_RESPONSE_INVALID", 502],
+    ["index_unavailable", 503],
+    ["notebook_fragment_not_found", 404],
+    ["invalid_fragment_id", 400],
+  ] as const;
+  const toolCalls = [
+    { name: "search", arguments: { query: "probe" } },
+    { name: "fetch", arguments: { fragment_id: "missing" } },
+    { name: "export_evidence", arguments: { fragment_ids: ["missing"], format: "markdown" } },
+  ] as const;
+
+  for (const [code, status] of scenarios) {
+    class FailingClient extends MockNotebookClient {
+      private fail(): never {
+        throw new NotebookBackendError("private backend detail", status, code);
+      }
+      override async search(_input: NotebookSearchInput): Promise<never> {
+        return this.fail();
+      }
+      override async fetchFragment(_fragmentId: string): Promise<never> {
+        return this.fail();
+      }
+      override async exportEvidence(
+        _input: { fragment_ids: string[]; format: "markdown" | "jsonl" | "json"; query?: string },
+      ): Promise<never> {
+        return this.fail();
+      }
+    }
+    const server = createNotebookMcpServer({
+      client: new FailingClient(),
+      widget: { html: "<html></html>" },
+    });
+    const client = new Client({ name: "notebook-ai-error-contract-test", version: "0.1.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      for (const call of toolCalls) {
+        const response = await client.callTool(call);
+        assert.equal(response.isError, true);
+        assert.equal(response.structuredContent, undefined);
+        const content = response.content as Array<{ type: string; text?: string }>;
+        assert.equal(content[0]?.type, "text");
+        const payload = JSON.parse(content[0]?.text ?? "{}");
+        assert.equal(payload.status, "error");
+        assert.equal(payload.error_code, code);
+        assert.doesNotMatch(JSON.stringify(response), /structured_content_output_schema_mismatch|-32602|private backend detail/);
+      }
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  }
 });

@@ -23,7 +23,7 @@ export const exportEvidenceInputShape = {
 export const exportEvidenceInputSchema = z.object(exportEvidenceInputShape);
 
 export const exportEvidenceOutputShape = {
-  status: z.string(),
+  status: z.literal("ok"),
   format: z.enum(["markdown", "jsonl", "json"]),
   item_count: z.number().int().nonnegative(),
   content_length: z.number().int().nonnegative(),
@@ -37,7 +37,7 @@ export async function runExportEvidenceTool(client: NotebookClient, rawInput: un
     const response = await client.exportEvidence(input);
     const content = exportContent(response);
     const structuredContent = {
-      status: typeof response === "object" && response.status ? response.status : "ok",
+      status: "ok" as const,
       format: input.format,
       item_count: input.fragment_ids.length,
       content_length: content.length,

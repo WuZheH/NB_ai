@@ -4,14 +4,54 @@ import test from "node:test";
 import { NOTEBOOK_SOURCE_TYPES } from "./contracts";
 import { NotebookBackendError, NotebookClient } from "./notebookClient";
 
+function validFragment(overrides: Record<string, unknown> = {}) {
+  return {
+    fragment_id: "fragment/one",
+    source_type: "pdf_chunk",
+    document_id: 1,
+    document_title: "Paper",
+    document_type: "pdf",
+    chunk_id: 1,
+    pdf_page: 1,
+    page_label: "1",
+    text: "Evidence",
+    selected_text: null,
+    note_text: null,
+    context_before: null,
+    context_after: null,
+    tags: [],
+    provenance: [],
+    open_target: null,
+    ...overrides,
+  };
+}
+
+function validSearch(results: unknown[] = []) {
+  return {
+    status: "ok",
+    query: "EDSR",
+    mode: "high_quality_notebook_search_v1",
+    embedding_model: "Qwen3-Embedding-0.6B",
+    reranker_model: "Qwen3-Reranker-0.6B",
+    backend: "local",
+    result_count: results.length,
+    results,
+    warnings: [],
+    latency: null,
+  };
+}
+
 test("NotebookClient uses the fixed backend paths and caps search at 20", async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const fetchImpl: typeof fetch = async (input, init = {}) => {
     requests.push({ url: String(input), init });
     if (String(input).includes("/fragments/")) {
-      return Response.json({ fragment_id: "fragment/one" });
+      return Response.json(validFragment());
     }
-    return Response.json({ status: "ok", results: [] });
+    if (String(input).includes("/evidence/export")) {
+      return Response.json({ status: "ok", content: "# Evidence" });
+    }
+    return Response.json(validSearch());
   };
   const client = new NotebookClient({ baseUrl: "http://127.0.0.1:8000", fetchImpl });
 
@@ -54,7 +94,7 @@ test("NotebookClient prefers the public Search backend URL", async () => {
     },
     fetchImpl: async (input) => {
       requestedUrl = String(input);
-      return Response.json({ status: "ok", results: [] });
+      return Response.json(validSearch());
     },
   });
   await client.search({
@@ -68,16 +108,16 @@ test("NotebookClient prefers the public Search backend URL", async () => {
 });
 
 test("NotebookClient makes backend-relative open targets absolute without rewriting Zotero URIs", async () => {
-  const fragment = {
+  const fragment = validFragment({
     fragment_id: "fragment-1",
     open_target: {
       pdf_url: "/api/v1/library/documents/7/pdf#page=12",
       zotero_url: "zotero://select/library/items/ABC123",
     },
-  };
+  });
   const fetchImpl: typeof fetch = async (input) => {
     if (String(input).includes("/notebook-search")) {
-      return Response.json({ status: "ok", results: [fragment] });
+      return Response.json(validSearch([fragment]));
     }
     return Response.json({ status: "ok", fragment });
   };
@@ -125,5 +165,24 @@ test("NotebookClient preserves structured machine config errors without exposing
     (error: unknown) => error instanceof NotebookBackendError
       && error.code === "config_missing"
       && !error.message.includes("D:\\"),
+  );
+});
+
+test("NotebookClient classifies malformed success responses without leaking content", async () => {
+  const client = new NotebookClient({
+    baseUrl: "http://127.0.0.1:8123",
+    fetchImpl: async () => Response.json({ status: "ok", private_note: "do not leak" }),
+  });
+  await assert.rejects(
+    client.search({
+      query: "probe",
+      limit: 1,
+      source_types: ["pdf_chunk"],
+      document_ids: [],
+      include_context: false,
+    }),
+    (error: unknown) => error instanceof NotebookBackendError
+      && error.code === "BACKEND_RESPONSE_INVALID"
+      && !error.message.includes("do not leak"),
   );
 });

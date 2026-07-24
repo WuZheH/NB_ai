@@ -1,4 +1,5 @@
 import {
+  NOTEBOOK_SOURCE_TYPES,
   type EvidenceExportInput,
   type EvidenceExportResponse,
   type FragmentResponse,
@@ -65,6 +66,23 @@ export class NotebookClient {
       method: "POST",
       body: JSON.stringify({ ...input, limit: Math.min(20, input.limit) }),
     });
+    if (
+      !isRecord(response)
+      || response.status !== "ok"
+      || !Array.isArray(response.results)
+      || !Array.isArray(response.warnings)
+      || typeof response.query !== "string"
+      || typeof response.mode !== "string"
+      || typeof response.embedding_model !== "string"
+      || typeof response.reranker_model !== "string"
+      || response.results.some((result) => !isNotebookFragment(result))
+    ) {
+      throw new NotebookBackendError(
+        "Search backend returned an invalid response.",
+        502,
+        "BACKEND_RESPONSE_INVALID",
+      );
+    }
     return {
       ...response,
       results: response.results.map((result) => this.resolveOpenTarget(result)),
@@ -76,11 +94,23 @@ export class NotebookClient {
       `/api/v1/retrieval/fragments/${encodeURIComponent(fragmentId)}`,
       { method: "GET" },
     );
+    if (!isRecord(response)) {
+      throw invalidBackendResponse();
+    }
     if ("fragment" in response && response.fragment) {
+      if (!isNotebookFragment(response.fragment)) {
+        throw invalidBackendResponse();
+      }
       return { ...response, fragment: this.resolveOpenTarget(response.fragment) };
     }
     if ("result" in response && response.result) {
+      if (!isNotebookFragment(response.result)) {
+        throw invalidBackendResponse();
+      }
       return { ...response, result: this.resolveOpenTarget(response.result) };
+    }
+    if (!isNotebookFragment(response)) {
+      throw invalidBackendResponse();
     }
     return this.resolveOpenTarget(response as NotebookFragment);
   }
@@ -89,10 +119,20 @@ export class NotebookClient {
     if (input.fragment_ids.length > 50) {
       throw new Error("Evidence export is limited to 50 fragments.");
     }
-    return this.requestJson<EvidenceExportResponse | string>("/api/v1/retrieval/evidence/export", {
+    const response = await this.requestJson<EvidenceExportResponse | string>("/api/v1/retrieval/evidence/export", {
       method: "POST",
       body: JSON.stringify(input),
     });
+    if (
+      typeof response !== "string"
+      && (
+        !isRecord(response)
+        || !["content", "text", "output"].some((key) => typeof response[key] === "string")
+      )
+    ) {
+      throw invalidBackendResponse();
+    }
+    return response;
   }
 
   private async requestJson<T>(path: string, init: RequestInit): Promise<T> {
@@ -180,4 +220,26 @@ export class NotebookClient {
     }
     return { ...result, open_target: openTarget };
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNotebookFragment(value: unknown): value is NotebookFragment {
+  return isRecord(value)
+    && typeof value.fragment_id === "string"
+    && typeof value.source_type === "string"
+    && (NOTEBOOK_SOURCE_TYPES as readonly string[]).includes(value.source_type)
+    && Array.isArray(value.tags)
+    && value.tags.every((tag) => typeof tag === "string")
+    && Array.isArray(value.provenance);
+}
+
+function invalidBackendResponse(): NotebookBackendError {
+  return new NotebookBackendError(
+    "Search backend returned an invalid response.",
+    502,
+    "BACKEND_RESPONSE_INVALID",
+  );
 }

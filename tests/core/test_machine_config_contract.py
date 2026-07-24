@@ -12,9 +12,17 @@ from app.runtime.machine_config import (
 )
 from app.runtime.config import RuntimeConfig
 from app.runtime.process_manager import ProcessStartError
+from app.runtime.model_readiness import reset_model_readiness_for_tests
 from app.runtime.supervisor import RuntimeController, RuntimeSupervisor
 from app.api.product_api import health
 from app.services import high_quality_search_service
+
+
+@pytest.fixture(autouse=True)
+def _reset_model_state() -> None:
+    reset_model_readiness_for_tests()
+    yield
+    reset_model_readiness_for_tests()
 
 
 def _write_model(path: Path, *, reranker: bool) -> Path:
@@ -143,8 +151,9 @@ def test_runtime_passes_one_explicit_machine_config_to_all_children(tmp_path: Pa
     )
     supervisor = RuntimeSupervisor(config)
     assert supervisor.status.machine_config_status == "model_ready"
-    assert supervisor.status.embedding_model_ready is True
-    assert supervisor.status.reranker_model_ready is True
+    assert supervisor.status.embedding_model_ready is False
+    assert supervisor.status.reranker_model_ready is False
+    assert supervisor.status.model_state == "unconfigured"
     expected = str(config_path.resolve())
     assert supervisor._fastapi_spec().environment["SEARCH_MACHINE_CONFIG_PATH"] == expected
     assert supervisor._mcp_spec().environment["SEARCH_MACHINE_CONFIG_PATH"] == expected
@@ -181,6 +190,7 @@ def test_health_machine_config_status_never_exposes_absolute_path(
     monkeypatch.setenv("SEARCH_MACHINE_CONFIG_PATH", str(config_path))
     payload = health()
     serialized = json.dumps(payload, ensure_ascii=False)
-    assert payload["machine_config"]["status"] == "model_ready"
+    assert payload["machine_config"]["status"] == "model_loading"
+    assert payload["retrieval_ready"] is False
     assert str(tmp_path) not in serialized
     assert "machine-config.json" not in serialized

@@ -13,6 +13,18 @@ from app.api.retrieval_api import router as retrieval_router
 from app.api.zotero_api import configure_production_connection_factories, router as zotero_router
 from app.core.config import settings
 from app.db.init_db import initialize_database_if_empty
+from app.runtime.machine_config import load_runtime_machine_config
+from app.runtime.model_readiness import set_api_ready
+from app.services.local_embedding_service import (
+    LocalEmbeddingUnavailable,
+    initialize_embedding_model,
+    shutdown_embedding_model,
+)
+from app.services.local_reranker_service import (
+    LocalRerankerUnavailable,
+    initialize_reranker_model,
+    shutdown_reranker_model,
+)
 from app.services.vector_store_worker import start_vector_store_worker, stop_vector_store_worker
 
 
@@ -29,14 +41,27 @@ API_ROUTERS = (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialize_database_if_empty()
+    machine_config = load_runtime_machine_config()
+    if machine_config.ready:
+        try:
+            initialize_embedding_model()
+            initialize_reranker_model()
+        except (LocalEmbeddingUnavailable, LocalRerankerUnavailable):
+            # The authoritative readiness registry retains the stable failure code.
+            # Keep the API available for diagnostics; strict Runtime readiness remains false.
+            pass
     start_vector_store_worker(
         enabled=settings.vector_store_worker_enabled,
         auto_sync_enabled=settings.vector_store_auto_sync_enabled,
     )
+    set_api_ready(True)
     try:
         yield
     finally:
+        set_api_ready(False)
         await stop_vector_store_worker()
+        shutdown_reranker_model()
+        shutdown_embedding_model()
 
 
 def create_app() -> FastAPI:

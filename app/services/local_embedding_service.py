@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
+from threading import Lock
 import time
 from typing import Any
 
@@ -12,9 +13,14 @@ from sqlalchemy import select
 from app.core.paths import EMBEDDING_MODEL_PATH
 from app.runtime.machine_config import (
     MachineConfigUnavailable,
-    record_model_load_failed,
-    record_model_ready,
     require_runtime_machine_config,
+)
+from app.runtime.model_readiness import (
+    mark_model_failed,
+    mark_model_loading,
+    mark_model_ready,
+    model_error_code,
+    model_state,
 )
 from app.db.session import SessionLocal
 from app.models import Document, KnowledgeChunk
@@ -29,6 +35,7 @@ PASSAGE_SNIPPET_CHARS = 320
 _MODEL: Any | None = None
 _MODEL_LOAD_MS: float | None = None
 _EMBEDDING_CACHE: dict[tuple[int, str], list[float]] = {}
+_MODEL_LOAD_LOCK = Lock()
 
 
 class LocalEmbeddingUnavailable(RuntimeError):
@@ -162,35 +169,59 @@ def reset_runtime_cache() -> None:
     _EMBEDDING_CACHE.clear()
 
 
+def initialize_embedding_model() -> None:
+    _load_model({})
+
+
+def shutdown_embedding_model() -> None:
+    global _MODEL, _MODEL_LOAD_MS
+    _MODEL = None
+    _MODEL_LOAD_MS = None
+    reset_runtime_cache()
+
+
 def _load_model(timings: dict[str, float]) -> Any:
     global _MODEL, _MODEL_LOAD_MS
-    if _MODEL is not None:
+    if _MODEL is not None and model_state("embedding") == "ready":
         timings["load_model_ms"] = 0.0
         return _MODEL
+    if model_state("embedding") == "failed":
+        raise LocalEmbeddingUnavailable(model_error_code("embedding") or "model_load_failed")
 
-    _set_local_cache_env()
-    try:
-        model_path = _model_path()
-    except MachineConfigUnavailable as exc:
-        raise LocalEmbeddingUnavailable(exc.error_code) from exc
+    with _MODEL_LOAD_LOCK:
+        if _MODEL is not None and model_state("embedding") == "ready":
+            timings["load_model_ms"] = 0.0
+            return _MODEL
+        if model_state("embedding") == "failed":
+            raise LocalEmbeddingUnavailable(model_error_code("embedding") or "model_load_failed")
 
-    started = time.perf_counter()
-    try:
-        from sentence_transformers import SentenceTransformer
-    except Exception as exc:  # pragma: no cover - depends on runtime environment
-        record_model_load_failed("embedding")
-        raise LocalEmbeddingUnavailable("model_load_failed") from exc
+        _set_local_cache_env()
+        try:
+            model_path = _model_path()
+        except MachineConfigUnavailable as exc:
+            raise LocalEmbeddingUnavailable(exc.error_code) from exc
 
-    try:
-        _MODEL = SentenceTransformer(str(model_path), device=_device_name())
-    except Exception as exc:  # pragma: no cover - depends on local model/GPU state
-        record_model_load_failed("embedding")
-        raise LocalEmbeddingUnavailable("model_load_failed") from exc
+        mark_model_loading("embedding")
+        started = time.perf_counter()
+        try:
+            from sentence_transformers import SentenceTransformer
 
-    record_model_ready("embedding")
-    _MODEL_LOAD_MS = _elapsed_ms(started)
-    timings["load_model_ms"] = _MODEL_LOAD_MS
-    return _MODEL
+            candidate = SentenceTransformer(str(model_path), device=_device_name())
+        except Exception as exc:  # pragma: no cover - depends on runtime environment
+            mark_model_failed("embedding", "embedding_model_load_failed")
+            raise LocalEmbeddingUnavailable("embedding_model_load_failed") from exc
+
+        try:
+            _validate_embedding(_raw_encode(candidate, "Search readiness check."))
+        except Exception as exc:
+            mark_model_failed("embedding", "embedding_model_self_check_failed")
+            raise LocalEmbeddingUnavailable("embedding_model_self_check_failed") from exc
+
+        _MODEL = candidate
+        mark_model_ready("embedding")
+        _MODEL_LOAD_MS = _elapsed_ms(started)
+        timings["load_model_ms"] = _MODEL_LOAD_MS
+        return _MODEL
 
 
 def _load_candidates() -> list[EmbeddingCandidate]:
@@ -230,6 +261,16 @@ def _candidate_embedding(model: Any, candidate: EmbeddingCandidate) -> list[floa
 
 
 def _encode_text(model: Any, text: str) -> list[float]:
+    try:
+        values = _raw_encode(model, text)
+        _validate_embedding(values)
+        return values
+    except Exception as exc:
+        mark_model_failed("embedding", "embedding_model_inference_failed")
+        raise LocalEmbeddingUnavailable("embedding_model_inference_failed") from exc
+
+
+def _raw_encode(model: Any, text: str) -> list[float]:
     embedding = model.encode(
         [text],
         batch_size=1,
@@ -238,6 +279,11 @@ def _encode_text(model: Any, text: str) -> list[float]:
         show_progress_bar=False,
     )[0]
     return [float(value) for value in embedding.tolist()]
+
+
+def _validate_embedding(values: list[float]) -> None:
+    if len(values) != 1024 or not all(math.isfinite(value) for value in values):
+        raise LocalEmbeddingUnavailable("embedding_model_self_check_failed")
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:

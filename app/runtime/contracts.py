@@ -110,6 +110,14 @@ class RuntimeStatus:
     data_root: str = ""
     machine_config_status: str = "config_missing"
     machine_config_error_code: str | None = "config_missing"
+    api_ready: bool = False
+    retrieval_ready: bool = False
+    mcp_ready: bool = False
+    model_state: str = "unconfigured"
+    embedding_state: str = "unconfigured"
+    reranker_state: str = "unconfigured"
+    last_model_error_code: str | None = None
+    last_state_change: str | None = None
     embedding_model_ready: bool = False
     reranker_model_ready: bool = False
     components: dict[str, ComponentStatus] = field(default_factory=dict)
@@ -134,6 +142,14 @@ class RuntimeStatus:
             "data_root": self.data_root,
             "machine_config_status": self.machine_config_status,
             "machine_config_error_code": self.machine_config_error_code,
+            "api_ready": self.api_ready,
+            "retrieval_ready": self.retrieval_ready,
+            "mcp_ready": self.mcp_ready,
+            "model_state": self.model_state,
+            "embedding_state": self.embedding_state,
+            "reranker_state": self.reranker_state,
+            "last_model_error_code": self.last_model_error_code,
+            "last_state_change": self.last_state_change,
             "embedding_model_ready": self.embedding_model_ready,
             "reranker_model_ready": self.reranker_model_ready,
             "tunnel_state": self.tunnel_state.value,
@@ -165,6 +181,22 @@ class RuntimeStatus:
             machine_config_error_code=(
                 str(value["machine_config_error_code"])
                 if value.get("machine_config_error_code")
+                else None
+            ),
+            api_ready=bool(value.get("api_ready")),
+            retrieval_ready=bool(value.get("retrieval_ready")),
+            mcp_ready=bool(value.get("mcp_ready")),
+            model_state=str(value.get("model_state") or "unconfigured"),
+            embedding_state=str(value.get("embedding_state") or "unconfigured"),
+            reranker_state=str(value.get("reranker_state") or "unconfigured"),
+            last_model_error_code=(
+                str(value["last_model_error_code"])
+                if value.get("last_model_error_code")
+                else None
+            ),
+            last_state_change=(
+                str(value["last_state_change"])
+                if value.get("last_state_change")
                 else None
             ),
             embedding_model_ready=bool(value.get("embedding_model_ready")),

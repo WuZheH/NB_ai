@@ -19,6 +19,7 @@ class HealthResult:
     ready: bool
     error_code: str | None = None
     duration_seconds: float = 0.0
+    details: dict[str, Any] | None = None
 
 
 def check_json_health(
@@ -35,8 +36,17 @@ def check_json_health(
                 return HealthResult(False, f"http_{response.status}", time.monotonic() - started)
             value = json.loads(response.read(1_048_576))
             if not isinstance(value, dict) or not validator(value):
-                return HealthResult(False, "unexpected_health_payload", time.monotonic() - started)
-            return HealthResult(True, duration_seconds=time.monotonic() - started)
+                return HealthResult(
+                    False,
+                    "unexpected_health_payload",
+                    time.monotonic() - started,
+                    value if isinstance(value, dict) else None,
+                )
+            return HealthResult(
+                True,
+                duration_seconds=time.monotonic() - started,
+                details=value,
+            )
     except HTTPError as exc:
         return HealthResult(False, f"http_{exc.code}", time.monotonic() - started)
     except (URLError, TimeoutError, OSError, json.JSONDecodeError):
@@ -54,7 +64,7 @@ def check_fastapi_liveness(url: str) -> HealthResult:
 
 
 def check_fastapi_health(url: str, *, timeout_seconds: float = 5.0) -> HealthResult:
-    """Verify retrieval readiness or a safe, genuinely empty library."""
+    """Verify executable model readiness plus a valid read-only index state."""
 
     write_flags = (
         "db_write_performed",
@@ -62,6 +72,27 @@ def check_fastapi_health(url: str, *, timeout_seconds: float = 5.0) -> HealthRes
         "zotero_db_write_performed",
         "vector_write_performed",
     )
+    readiness = check_json_health(
+        f"{url.rstrip('/')}/health",
+        validator=lambda value: value.get("status") == "ok"
+        and value.get("app") == "Search"
+        and value.get("api_ready") is True
+        and value.get("retrieval_ready") is True
+        and value.get("model_state") == "ready"
+        and value.get("embedding_state") == "ready"
+        and value.get("reranker_state") == "ready"
+        and all(value.get(flag) in {None, False} for flag in write_flags),
+        timeout_seconds=timeout_seconds,
+    )
+    if not readiness.ready:
+        return HealthResult(
+            False,
+            "backend_retrieval_not_ready"
+            if readiness.error_code == "unexpected_health_payload"
+            else readiness.error_code,
+            readiness.duration_seconds,
+            readiness.details,
+        )
     result = check_json_health(
         f"{url.rstrip('/')}/api/v1/retrieval/index/status",
         validator=lambda value: (
@@ -81,8 +112,18 @@ def check_fastapi_health(url: str, *, timeout_seconds: float = 5.0) -> HealthRes
         timeout_seconds=timeout_seconds,
     )
     if result.error_code == "unexpected_health_payload":
-        return HealthResult(False, "backend_index_not_ready", result.duration_seconds)
-    return result
+        return HealthResult(
+            False,
+            "backend_index_not_ready",
+            result.duration_seconds,
+            readiness.details,
+        )
+    return HealthResult(
+        result.ready,
+        result.error_code,
+        result.duration_seconds,
+        readiness.details,
+    )
 
 
 def check_mcp_health(port: int) -> HealthResult:
@@ -114,6 +155,8 @@ def check_mcp_contract(port: int, *, timeout_seconds: float = 2.0) -> HealthResu
             return HealthResult(False, "mcp_tool_metadata_invalid", time.monotonic() - started)
         if any(
             not isinstance(tool.get("inputSchema"), dict)
+            or not isinstance(tool.get("outputSchema"), dict)
+            or tool.get("_meta", {}).get("notebookAi/errorContract") != "isError-content-v1"
             or tool.get("annotations", {}).get("readOnlyHint") is not True
             for tool in by_name.values()
         ):

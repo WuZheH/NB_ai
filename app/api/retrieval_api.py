@@ -52,7 +52,20 @@ def search_notebook_retrieval(
         local_embedding_service.LocalEmbeddingUnavailable,
         local_reranker_service.LocalRerankerUnavailable,
     ) as exc:
-        error_code = str(exc) if str(exc) in {"model_load_failed"} else "model_load_failed"
+        error_code = (
+            str(exc)
+            if str(exc)
+            in {
+                "model_load_failed",
+                "embedding_model_load_failed",
+                "embedding_model_self_check_failed",
+                "embedding_model_inference_failed",
+                "reranker_model_load_failed",
+                "reranker_model_self_check_failed",
+                "reranker_model_inference_failed",
+            }
+            else "model_load_failed"
+        )
         raise HTTPException(
             status_code=503,
             detail={

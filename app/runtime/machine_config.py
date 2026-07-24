@@ -8,12 +8,18 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.runtime.model_readiness import (
+    configure_model_readiness,
+    mark_model_failed,
+    mark_model_ready,
+    public_model_readiness,
+)
+
 
 MACHINE_CONFIG_SCHEMA_VERSION = 1
 MACHINE_CONFIG_ENV = "SEARCH_MACHINE_CONFIG_PATH"
 EMBEDDING_MODEL_NAME = "Qwen3-Embedding-0.6B"
 RERANKER_MODEL_NAME = "Qwen3-Reranker-0.6B"
-_MODEL_LOAD_FAILURES: set[str] = set()
 
 
 class MachineConfigUnavailable(RuntimeError):
@@ -56,18 +62,27 @@ class MachineConfig:
         return self
 
     def public_status(self) -> dict[str, Any]:
-        load_failed = bool(_MODEL_LOAD_FAILURES) and self.ready
+        readiness = public_model_readiness()
+        if not self.ready:
+            status = self.status
+            error_code = self.error_code
+        elif readiness["model_state"] == "failed":
+            status = "model_load_failed"
+            error_code = readiness["last_model_error_code"] or "model_load_failed"
+        elif readiness["model_state"] in {"loading", "recovering", "unconfigured"}:
+            status = "model_loading"
+            error_code = None
+        else:
+            status = "model_ready"
+            error_code = None
         return {
-            "status": "model_load_failed" if load_failed else self.status,
-            "error_code": "model_load_failed" if load_failed else self.error_code,
+            "status": status,
+            "error_code": error_code,
             "configured": self.path is not None and self.path.is_file(),
             "schema_version": self.schema_version,
-            "embedding_model": _public_model_status(
-                self.embedding, load_failed="embedding" in _MODEL_LOAD_FAILURES
-            ),
-            "reranker_model": _public_model_status(
-                self.reranker, load_failed="reranker" in _MODEL_LOAD_FAILURES
-            ),
+            "embedding_model": _public_model_status(self.embedding, state=readiness["embedding_state"]),
+            "reranker_model": _public_model_status(self.reranker, state=readiness["reranker_state"]),
+            **readiness,
         }
 
 
@@ -163,7 +178,9 @@ def load_machine_config(path: str | Path | None) -> MachineConfig:
 
 
 def load_runtime_machine_config() -> MachineConfig:
-    return load_machine_config(os.environ.get(MACHINE_CONFIG_ENV))
+    config = load_machine_config(os.environ.get(MACHINE_CONFIG_ENV))
+    configure_model_readiness(configured=config.ready, error_code=config.error_code)
+    return config
 
 
 def require_runtime_machine_config() -> MachineConfig:
@@ -172,11 +189,12 @@ def require_runtime_machine_config() -> MachineConfig:
 
 def record_model_load_failed(role: str) -> None:
     if role in {"embedding", "reranker"}:
-        _MODEL_LOAD_FAILURES.add(role)
+        mark_model_failed(role, "model_load_failed")
 
 
 def record_model_ready(role: str) -> None:
-    _MODEL_LOAD_FAILURES.discard(role)
+    if role in {"embedding", "reranker"}:
+        mark_model_ready(role)
 
 
 def write_machine_config(
@@ -269,14 +287,14 @@ def _read_json(path: Path) -> Any:
 def _public_model_status(
     model: MachineModelConfig | None,
     *,
-    load_failed: bool = False,
+    state: str = "unconfigured",
 ) -> dict[str, Any]:
     if model is None:
-        return {"configured": False, "ready": False}
+        return {"configured": False, "ready": False, "state": "unconfigured"}
     return {
         "configured": True,
-        "ready": not load_failed,
-        "state": "model_load_failed" if load_failed else "model_ready",
+        "ready": state == "ready",
+        "state": state,
         "name": model.name,
         "directory_name": model.basename,
         "path_hash": model.path_hash,

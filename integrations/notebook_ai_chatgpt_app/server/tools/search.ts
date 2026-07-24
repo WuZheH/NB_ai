@@ -26,7 +26,7 @@ export const searchInputShape = {
 export const searchInputSchema = z.object(searchInputShape);
 
 export const searchOutputShape = {
-  status: z.string(),
+  status: z.literal("ok"),
   query: z.string(),
   mode: z.string(),
   embedding_model: z.string(),
@@ -65,7 +65,7 @@ export async function runSearchTool(client: NotebookClient, rawInput: unknown) {
     const response = await client.search(input);
     const results = response.results.slice(0, 20);
     const structuredContent = {
-      status: response.status,
+      status: "ok" as const,
       query: response.query,
       mode: response.mode,
       embedding_model: response.embedding_model,

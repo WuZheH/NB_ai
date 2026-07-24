@@ -42,24 +42,30 @@ from app.runtime.supervisor import (
 from app.runtime.tunnel import ChatGptTunnelStatus
 
 
-def test_fastapi_startup_uses_index_readiness_and_monitor_uses_search_liveness(
+def test_fastapi_startup_requires_model_and_index_readiness(
     monkeypatch,
 ) -> None:
     observed: list[tuple[str, bool, bool, bool]] = []
 
     def fake_check(url: str, *, validator, timeout_seconds: float = 2.0):
-        observed.append((
-            url,
-            validator({"status": "ok", "app": "Search"}),
-            validator({"status": "ok", "app": "NOTEBOOK_AI"}),
-            validator({"status": "ready", "ready": True}),
-        ))
-        return HealthResult(True)
+        model_ready = {
+            "status": "ok",
+            "app": "Search",
+            "api_ready": True,
+            "retrieval_ready": True,
+            "model_state": "ready",
+            "embedding_state": "ready",
+            "reranker_state": "ready",
+        }
+        index_ready = {"status": "ready", "ready": True}
+        observed.append((url, validator(model_ready), False, validator(index_ready)))
+        return HealthResult(True, details=model_ready)
 
     monkeypatch.setattr(runtime_health, "check_json_health", fake_check)
     assert runtime_health.check_fastapi_health("http://127.0.0.1:8000").ready
     assert runtime_health.check_fastapi_liveness("http://127.0.0.1:8000").ready
     assert observed == [
+        ("http://127.0.0.1:8000/health", True, False, False),
         (
             "http://127.0.0.1:8000/api/v1/retrieval/index/status",
             False,
@@ -72,7 +78,20 @@ def test_fastapi_startup_uses_index_readiness_and_monitor_uses_search_liveness(
 
 def test_fastapi_readiness_rejects_write_flags(monkeypatch) -> None:
     def fake_check(url: str, *, validator, timeout_seconds: float = 2.0):
-        del url, timeout_seconds
+        del timeout_seconds
+        if url.endswith("/health"):
+            return HealthResult(
+                True,
+                details={
+                    "status": "ok",
+                    "app": "Search",
+                    "api_ready": True,
+                    "retrieval_ready": True,
+                    "model_state": "ready",
+                    "embedding_state": "ready",
+                    "reranker_state": "ready",
+                },
+            )
         assert not validator(
             {
                 "status": "ready",
@@ -92,7 +111,20 @@ def test_fastapi_readiness_accepts_only_a_safe_empty_library(monkeypatch) -> Non
     observed: list[bool] = []
 
     def fake_check(url: str, *, validator, timeout_seconds: float = 2.0):
-        del url, timeout_seconds
+        del timeout_seconds
+        if url.endswith("/health"):
+            return HealthResult(
+                True,
+                details={
+                    "status": "ok",
+                    "app": "Search",
+                    "api_ready": True,
+                    "retrieval_ready": True,
+                    "model_state": "ready",
+                    "embedding_state": "ready",
+                    "reranker_state": "ready",
+                },
+            )
         safe_empty = {
             "status": "missing",
             "ready": False,
@@ -130,7 +162,13 @@ def test_mcp_contract_requires_three_read_only_tools_and_widget_mime(monkeypatch
         if method == "tools/list":
             return {
                 "tools": [
-                    {"name": name, "inputSchema": {}, "annotations": {"readOnlyHint": True}}
+                    {
+                        "name": name,
+                        "inputSchema": {},
+                        "outputSchema": {"type": "object"},
+                        "annotations": {"readOnlyHint": True},
+                        "_meta": {"notebookAi/errorContract": "isError-content-v1"},
+                    }
                     for name in ("search", "fetch", "export_evidence")
                 ]
             }
@@ -828,7 +866,7 @@ def test_external_service_health_loss_recovers_without_killing_external_process(
         owned=False,
     )
     monkeypatch.setattr(
-        "app.runtime.supervisor.check_fastapi_liveness", lambda url: HealthResult(False)
+        "app.runtime.supervisor.check_fastapi_health", lambda url: HealthResult(False)
     )
     monkeypatch.setattr(
         "app.runtime.supervisor.check_mcp_health", lambda port: HealthResult(True)
@@ -864,7 +902,7 @@ def test_external_port_conflict_does_not_consume_restart_budget(
     )
     supervisor.status.components["fastapi"] = current
     monkeypatch.setattr(
-        "app.runtime.supervisor.check_fastapi_liveness", lambda url: HealthResult(False)
+        "app.runtime.supervisor.check_fastapi_health", lambda url: HealthResult(False)
     )
     monkeypatch.setattr("app.runtime.supervisor.port_is_listening", lambda port: True)
     supervisor._monitor_external_components()

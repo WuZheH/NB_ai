@@ -26,7 +26,6 @@ from app.runtime.contracts import (
 from app.runtime.health import (
     HealthResult,
     check_fastapi_health,
-    check_fastapi_liveness,
     check_mcp_contract,
     check_mcp_health,
     port_is_listening,
@@ -408,10 +407,12 @@ class RuntimeSupervisor:
         if adopted is not None and self.process_manager.is_alive(adopted):
             health = check_fastapi_health(self.config.backend_url)
             if health.ready:
+                _apply_backend_readiness(self.status, health)
                 self._set_owned(ComponentName.FASTAPI, adopted, ComponentState.READY)
                 return
         existing = check_fastapi_health(self.config.backend_url)
         if existing.ready:
+            _apply_backend_readiness(self.status, existing)
             self._set_external(ComponentName.FASTAPI, self.config.backend_port)
             return
         if port_is_listening(self.config.backend_port):
@@ -421,6 +422,7 @@ class RuntimeSupervisor:
                 poll_seconds=0.5,
             )
             if existing.ready:
+                _apply_backend_readiness(self.status, existing)
                 self._set_external(ComponentName.FASTAPI, self.config.backend_port)
                 return
             raise RuntimeStartupError(
@@ -462,10 +464,12 @@ class RuntimeSupervisor:
         if adopted is not None and self.process_manager.is_alive(adopted):
             health = check_mcp_contract(self.config.mcp_port)
             if health.ready:
+                self.status.mcp_ready = self.status.retrieval_ready
                 self._set_owned(ComponentName.MCP, adopted, ComponentState.READY)
                 return
         existing = check_mcp_contract(self.config.mcp_port)
         if existing.ready:
+            self.status.mcp_ready = self.status.retrieval_ready
             self._set_external(ComponentName.MCP, self.config.mcp_port)
             return
         if port_is_listening(self.config.mcp_port):
@@ -475,6 +479,7 @@ class RuntimeSupervisor:
                 poll_seconds=0.5,
             )
             if existing.ready:
+                self.status.mcp_ready = self.status.retrieval_ready
                 self._set_external(ComponentName.MCP, self.config.mcp_port)
                 return
             raise RuntimeStartupError(
@@ -545,6 +550,10 @@ class RuntimeSupervisor:
                 )
             )
         self._set_owned(component, process, ComponentState.READY)
+        if component is ComponentName.FASTAPI:
+            _apply_backend_readiness(self.status, result)
+        elif component is ComponentName.MCP:
+            self.status.mcp_ready = self.status.retrieval_ready
         self.logger.log(
             component=component.value,
             state=ComponentState.READY.value,
@@ -558,16 +567,27 @@ class RuntimeSupervisor:
             alive = self.process_manager.is_alive(process)
             health_error: str | None = None
             if alive and component is ComponentName.FASTAPI:
-                # Startup already proved the HTTP contract.  During live
-                # searches, extra concurrent HTTP probes can race lazy native
-                # model/LanceDB initialization on Windows.  PID identity plus
-                # the owned listening port gives a side-effect-free liveness
-                # signal and still detects crashes immediately.
-                alive = port_is_listening(self.config.backend_port)
-                health_error = None if alive else "port_not_listening"
+                health = check_fastapi_health(self.config.backend_url)
+                _apply_backend_readiness(self.status, health)
+                if not health.ready and port_is_listening(self.config.backend_port):
+                    current = self.status.components.get(component.value)
+                    if current:
+                        current.state = ComponentState.DEGRADED
+                        current.error_code = health.error_code or "backend_health_failed"
+                    continue
+                alive = health.ready
+                health_error = health.error_code
             elif alive and component is ComponentName.MCP:
-                alive = port_is_listening(self.config.mcp_port)
-                health_error = None if alive else "port_not_listening"
+                health = check_mcp_contract(self.config.mcp_port)
+                self.status.mcp_ready = health.ready and self.status.retrieval_ready
+                if not health.ready and port_is_listening(self.config.mcp_port):
+                    current = self.status.components.get(component.value)
+                    if current:
+                        current.state = ComponentState.DEGRADED
+                        current.error_code = health.error_code or "mcp_contract_failed"
+                    continue
+                alive = health.ready
+                health_error = health.error_code
             if alive:
                 continue
             current = self.status.components.get(component.value)
@@ -664,7 +684,7 @@ class RuntimeSupervisor:
             (
                 ComponentName.FASTAPI,
                 self.config.backend_port,
-                lambda: check_fastapi_liveness(self.config.backend_url),
+                lambda: check_fastapi_health(self.config.backend_url),
             ),
             (
                 ComponentName.MCP,
@@ -676,6 +696,10 @@ class RuntimeSupervisor:
             if current is None or current.owned:
                 continue
             health = health_check()
+            if component is ComponentName.FASTAPI:
+                _apply_backend_readiness(self.status, health)
+            elif component is ComponentName.MCP:
+                self.status.mcp_ready = health.ready and self.status.retrieval_ready
             if health.ready:
                 current.state = ComponentState.EXTERNAL
                 current.error_code = None
@@ -980,8 +1004,10 @@ class RuntimeSupervisor:
         *,
         error_code: str | None = None,
     ) -> None:
-        _apply_runtime_identity(self.status, self.config)
         self.status.state = state
+        if state is RuntimeState.STOPPED:
+            _clear_runtime_readiness(self.status)
+        _apply_runtime_identity(self.status, self.config)
         self.status.updated_at = _utc_now()
         self.status.error_code = error_code
         atomic_write_json(self.config.paths.status_file, self.status.to_dict())
@@ -1173,6 +1199,10 @@ class RuntimeController:
                 local_ready = False
                 continue
             health = health_check()
+            if component_name is ComponentName.FASTAPI:
+                _apply_backend_readiness(current, health)
+            elif component_name is ComponentName.MCP:
+                current.mcp_ready = health.ready and current.retrieval_ready
             if not health.ready:
                 component.state = ComponentState.DEGRADED
                 component.error_code = f"{component_name.value}_health_failed"
@@ -1281,9 +1311,46 @@ def _apply_runtime_identity(
     status.data_root = str(config.paths.data_dir)
     status.machine_config_status = config.machine_config.status
     status.machine_config_error_code = config.machine_config.error_code
-    status.embedding_model_ready = bool(config.machine_config.ready and config.machine_config.embedding)
-    status.reranker_model_ready = bool(config.machine_config.ready and config.machine_config.reranker)
     return status
+
+
+def _apply_backend_readiness(status: RuntimeStatus, result: HealthResult) -> None:
+    details = result.details or {}
+    status.api_ready = details.get("api_ready") is True
+    status.retrieval_ready = details.get("retrieval_ready") is True
+    status.model_state = _safe_model_state(details.get("model_state"))
+    status.embedding_state = _safe_model_state(details.get("embedding_state"))
+    status.reranker_state = _safe_model_state(details.get("reranker_state"))
+    error_code = details.get("last_model_error_code")
+    status.last_model_error_code = (
+        str(error_code)
+        if isinstance(error_code, str)
+        and error_code
+        and len(error_code) <= 96
+        and all(character.isalnum() or character in "_.-" for character in error_code)
+        else None
+    )
+    changed = details.get("last_state_change")
+    status.last_state_change = str(changed)[:64] if isinstance(changed, str) else None
+    status.embedding_model_ready = status.embedding_state == "ready"
+    status.reranker_model_ready = status.reranker_state == "ready"
+
+
+def _clear_runtime_readiness(status: RuntimeStatus) -> None:
+    status.api_ready = False
+    status.retrieval_ready = False
+    status.mcp_ready = False
+    status.model_state = "unconfigured"
+    status.embedding_state = "unconfigured"
+    status.reranker_state = "unconfigured"
+    status.last_model_error_code = None
+    status.last_state_change = None
+    status.embedding_model_ready = False
+    status.reranker_model_ready = False
+
+
+def _safe_model_state(value: Any) -> str:
+    return str(value) if value in {"unconfigured", "loading", "ready", "failed", "recovering"} else "unconfigured"
 
 
 def _utc_now() -> str:
