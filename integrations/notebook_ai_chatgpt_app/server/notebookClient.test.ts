@@ -186,3 +186,25 @@ test("NotebookClient classifies malformed success responses without leaking cont
       && !error.message.includes("do not leak"),
   );
 });
+
+test("NotebookClient classifies a rejected fetch as backend unavailable", async () => {
+  const client = new NotebookClient({
+    baseUrl: "http://127.0.0.1:8123",
+    fetchImpl: async () => {
+      throw new TypeError("private connection detail");
+    },
+  });
+  await assert.rejects(
+    client.search({
+      query: "probe",
+      limit: 1,
+      source_types: ["pdf_chunk"],
+      document_ids: [],
+      include_context: false,
+    }),
+    (error: unknown) => error instanceof NotebookBackendError
+      && error.status === 503
+      && error.code === "BACKEND_UNAVAILABLE"
+      && !error.message.includes("private connection detail"),
+  );
+});

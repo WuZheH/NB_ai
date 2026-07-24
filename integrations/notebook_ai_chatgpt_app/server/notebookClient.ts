@@ -194,6 +194,16 @@ export class NotebookClient {
       if (error instanceof Error && error.name === "AbortError") {
         throw new NotebookBackendError("Search backend request timed out.", 504, "BACKEND_TIMEOUT");
       }
+      if (error instanceof SyntaxError) {
+        throw invalidBackendResponse();
+      }
+      if (error instanceof TypeError) {
+        throw new NotebookBackendError(
+          "Search backend is unavailable.",
+          503,
+          "BACKEND_UNAVAILABLE",
+        );
+      }
       throw error;
     } finally {
       clearTimeout(timer);
