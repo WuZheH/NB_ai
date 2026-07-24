@@ -6,6 +6,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.library.read_common import *  # noqa: F401,F403
 from app.core.paths import DEFAULT_DB_PATH
+from app.services.library import book_archive_service
 
 
 router = APIRouter()
@@ -27,11 +28,16 @@ def _empty_library_response() -> dict[str, Any]:
 def read_shelf(
     include_test_data: bool = False,
     limit: int = Query(default=100, ge=20, le=500),
+    view: str = Query(default="active", pattern="^(active|archived)$"),
 ) -> dict[str, Any]:
     if not DEFAULT_DB_PATH.is_file():
         return _empty_library_response()
     try:
-        documents = library_service.get_library_home(item_type="document", limit=limit)
+        documents = (
+            book_archive_service.list_archived_documents(limit=limit)
+            if view == "archived"
+            else library_service.get_library_home(item_type="document", limit=limit)
+        )
     except (SQLAlchemyError, sqlite3.Error, OSError) as exc:
         raise _read_shelf_failure(
             "read_shelf_database_read_failed",
@@ -46,7 +52,11 @@ def read_shelf(
     items = [
         _read_shelf_item(document)
         for document in documents
-        if _value(document, "read_status") in READ_STATUSES
+        if (
+            _value(document, "read_status") == book_archive_service.ARCHIVE_STATUS
+            if view == "archived"
+            else _value(document, "read_status") in READ_STATUSES
+        )
         and (include_test_data or not library_service.is_test_library_record(document))
     ]
     items = _annotate_read_shelf_duplicates(items)
@@ -54,6 +64,7 @@ def read_shelf(
         "status": "ok",
         "implementation_status": "connected",
         "items": items,
+        "view": view,
         **safety_fields(),
     }
 

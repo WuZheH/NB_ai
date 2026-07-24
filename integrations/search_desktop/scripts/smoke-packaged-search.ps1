@@ -147,6 +147,13 @@ $RoamingAppData = Join-Path $RunRoot "roaming-app-data"
 $TempDirectory = Join-Path $RunRoot "temp"
 $StdoutPath = Join-Path $RunRoot "search.stdout.log"
 $StderrPath = Join-Path $RunRoot "search.stderr.log"
+$DeletionArchiveRoot = Join-Path (
+    Split-Path -Parent (
+        Split-Path -Parent (
+            Split-Path -Parent $DataDir
+        )
+    )
+) "Archives\SearchBookDeletion"
 $StartupLog = Join-Path $UserData "logs\search-startup.log"
 $DesktopRuntimePath = Join-Path $UserData "desktop-runtime.json"
 foreach ($Directory in @($UserData, $LocalAppData, $RoamingAppData, $TempDirectory)) {
@@ -243,6 +250,7 @@ $CloudflaredBefore = @(Get-Process cloudflared -ErrorAction SilentlyContinue | S
 $SearchProcess = $null
 $PrimaryError = $null
 $SmokeResult = $null
+$DeletionSmokeVerified = $false
 
 try {
     $env:LOCALAPPDATA = $LocalAppData
@@ -310,6 +318,118 @@ try {
         $Health = Invoke-RestMethod -Uri "http://127.0.0.1:8000/health" -TimeoutSec 10
         $McpHealth = Invoke-RestMethod -Uri "http://127.0.0.1:8787/healthz" -TimeoutSec 10
         if ($Health.status -ne "ok" -or $McpHealth.status -ne "ok") { throw "search_packaged_smoke_health_not_ready" }
+        if ($Scenario -eq "valid") {
+            $OpenApi = Invoke-RestMethod -Uri "http://127.0.0.1:8000/openapi.json" -TimeoutSec 10
+            foreach ($Route in @(
+                "/api/v1/library/read-shelf",
+                "/api/v1/library/documents/{document_id}/deletion-preview",
+                "/api/v1/library/documents/{document_id}/delete",
+                "/api/v1/library/management/archive",
+                "/api/v1/library/management/restore"
+            )) {
+                if (-not $OpenApi.paths.PSObject.Properties[$Route]) {
+                    throw "search_packaged_smoke_library_route_missing"
+                }
+            }
+            if (-not $OpenApi.paths.PSObject.Properties["/api/v1/library/documents/{document_id}/deletion-preview"].Value.get) {
+                throw "search_packaged_smoke_deletion_preview_not_get"
+            }
+            if (-not $OpenApi.paths.PSObject.Properties["/api/v1/library/documents/{document_id}/delete"].Value.post) {
+                throw "search_packaged_smoke_delete_not_post"
+            }
+
+            $WorkspaceResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$RendererPort/workspace" -TimeoutSec 10
+            if ([int]$WorkspaceResponse.StatusCode -ne 200) {
+                throw "search_packaged_smoke_workspace_deep_link_unavailable"
+            }
+            $FixtureScript = Join-Path $RuntimeRoot "scripts\maintenance\smoke_search_book_deletion_isolated.py"
+            if (-not (Test-Path -LiteralPath $FixtureScript -PathType Leaf)) {
+                throw "search_packaged_smoke_deletion_fixture_script_missing"
+            }
+            $SeedOutput = @(
+                & $PythonExe $FixtureScript --action seed --data-dir $DataDir `
+                    --archive-root $DeletionArchiveRoot --allow-isolated-smoke
+            )
+            if ($LASTEXITCODE -ne 0) { throw "search_packaged_smoke_deletion_fixture_seed_failed" }
+            $Seed = $SeedOutput | Select-Object -Last 1 | ConvertFrom-Json
+            if ($Seed.status -ne "seeded") { throw "search_packaged_smoke_deletion_fixture_seed_invalid" }
+            $FixtureDocumentId = [int]$Seed.document_id
+
+            $RendererHeaders = @{ Origin = "http://127.0.0.1:5173" }
+            $MutationSession = Invoke-RestMethod -Method Post `
+                -Uri "http://127.0.0.1:8000/api/v1/library/management/mutation-session" `
+                -Headers $RendererHeaders -ContentType "application/json" -Body "{}" -TimeoutSec 10
+            if ($MutationSession.status -ne "ok" -or -not $MutationSession.mutation_token) {
+                throw "search_packaged_smoke_mutation_session_failed"
+            }
+            $MutationHeaders = @{
+                Origin = "http://127.0.0.1:5173"
+                "X-Search-Mutation-Token" = [string]$MutationSession.mutation_token
+            }
+            $ActiveShelf = Invoke-RestMethod `
+                -Uri "http://127.0.0.1:8000/api/v1/library/read-shelf?view=active" -TimeoutSec 10
+            if ($ActiveShelf.status -ne "ok" -or @($ActiveShelf.items).Count -ne 1) {
+                throw "search_packaged_smoke_read_shelf_contract_failed"
+            }
+
+            $ArchiveBody = @{ document_ids = @($FixtureDocumentId) } | ConvertTo-Json -Compress
+            $ArchiveResult = Invoke-RestMethod -Method Post `
+                -Uri "http://127.0.0.1:8000/api/v1/library/management/archive" `
+                -Headers $MutationHeaders -ContentType "application/json" -Body $ArchiveBody -TimeoutSec 10
+            if ($ArchiveResult.status -ne "ok" -or $ArchiveResult.action -ne "archived") {
+                throw "search_packaged_smoke_archive_failed"
+            }
+            $ArchivedShelf = Invoke-RestMethod `
+                -Uri "http://127.0.0.1:8000/api/v1/library/read-shelf?view=archived" -TimeoutSec 10
+            if ($ArchivedShelf.status -ne "ok" -or @($ArchivedShelf.items).Count -ne 1) {
+                throw "search_packaged_smoke_archived_shelf_contract_failed"
+            }
+            $RestoreResult = Invoke-RestMethod -Method Post `
+                -Uri "http://127.0.0.1:8000/api/v1/library/management/restore" `
+                -Headers $MutationHeaders -ContentType "application/json" -Body $ArchiveBody -TimeoutSec 10
+            if ($RestoreResult.status -ne "ok" -or $RestoreResult.action -ne "restored") {
+                throw "search_packaged_smoke_archive_restore_failed"
+            }
+
+            $Preview = Invoke-RestMethod `
+                -Uri "http://127.0.0.1:8000/api/v1/library/documents/$FixtureDocumentId/deletion-preview" `
+                -Headers $RendererHeaders -TimeoutSec 20
+            if (
+                $Preview.status -ne "ok" -or
+                $Preview.read_only -ne $true -or
+                $Preview.whether_safe_to_delete -ne $true -or
+                -not $Preview.preview_token -or
+                -not $Preview.document_revision
+            ) {
+                throw "search_packaged_smoke_deletion_preview_invalid"
+            }
+            $DeleteBody = [ordered]@{
+                document_id = $FixtureDocumentId
+                preview_token = [string]$Preview.preview_token
+                expected_document_revision = [string]$Preview.document_revision
+                confirmation_text = [string]$Seed.title
+                deletion_options = $Preview.deletion_options
+            } | ConvertTo-Json -Depth 8 -Compress
+            $DeleteResult = Invoke-RestMethod -Method Post `
+                -Uri "http://127.0.0.1:8000/api/v1/library/documents/$FixtureDocumentId/delete" `
+                -Headers $MutationHeaders -ContentType "application/json" -Body $DeleteBody -TimeoutSec 30
+            if ($DeleteResult.status -ne "completed" -or -not $DeleteResult.audit_id) {
+                throw "search_packaged_smoke_isolated_delete_failed"
+            }
+            $VerifyOutput = @(
+                & $PythonExe $FixtureScript --action verify --data-dir $DataDir `
+                    --archive-root $DeletionArchiveRoot --allow-isolated-smoke
+            )
+            if ($LASTEXITCODE -ne 0) { throw "search_packaged_smoke_deletion_fixture_verify_failed" }
+            $FixtureVerification = $VerifyOutput | Select-Object -Last 1 | ConvertFrom-Json
+            if (
+                $FixtureVerification.status -ne "verified" -or
+                [int]$FixtureVerification.foreign_key_issue_count -ne 0
+            ) {
+                throw "search_packaged_smoke_deletion_fixture_verify_invalid"
+            }
+            $DeletionSmokeVerified = $true
+        }
     }
     else {
         if (@(Get-PackagedRuntimeProcesses -ExpectedRuntimeRoot $RuntimeRoot).Count -ne 0) {
@@ -377,6 +497,12 @@ try {
         duplicate_instance_reused = $true
         graceful_tray_exit = $true
         renderer_ready = $true
+        read_shelf_ready = ($Scenario -eq "valid" -and $DeletionSmokeVerified)
+        workspace_deep_link_ready = ($Scenario -eq "valid" -and $DeletionSmokeVerified)
+        archive_restore_verified = ($Scenario -eq "valid" -and $DeletionSmokeVerified)
+        deletion_preview_verified = ($Scenario -eq "valid" -and $DeletionSmokeVerified)
+        isolated_deletion_verified = ($Scenario -eq "valid" -and $DeletionSmokeVerified)
+        recovery_package_verified = ($Scenario -eq "valid" -and $DeletionSmokeVerified)
         visible_console_count = 0
         cloudflared_started = $false
         runtime_residual_count = 0

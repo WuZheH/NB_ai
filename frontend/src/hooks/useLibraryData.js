@@ -25,6 +25,7 @@ export function useLibraryData({
 }) {
   const [readShelf, setReadShelf] = useState({
     status: "idle",
+    view: "active",
     items: [],
     error: "",
     errorCode: "",
@@ -49,13 +50,15 @@ export function useLibraryData({
   const [zoteroCandidateState, setZoteroCandidateState] = useState({ byDocumentId: {} });
   const [selectedDocumentId, setSelectedDocumentId] = useState(null);
 
-  async function loadReadShelf() {
-    setReadShelf({ status: "loading", items: [], error: "", errorCode: "", errorTitle: "" });
+  async function loadReadShelf(shelfView = "active") {
+    const view = shelfView === "archived" ? "archived" : "active";
+    setReadShelf({ status: "loading", view, items: [], error: "", errorCode: "", errorTitle: "" });
     try {
-      const payload = await getJson("/api/v1/library/read-shelf");
+      const payload = await getJson(`/api/v1/library/read-shelf?view=${view}`);
       const normalized = normalizeReadShelfPayload(payload);
       setReadShelf({
         status: normalized.status,
+        view,
         items: normalized.items,
         error: normalized.message,
         errorCode: "",
@@ -66,6 +69,7 @@ export function useLibraryData({
       const presentation = presentReadShelfError(error);
       setReadShelf({
         status: "error",
+        view,
         items: [],
         error: presentation.message,
         errorCode: presentation.code,

@@ -17,6 +17,11 @@ from app.api.library.books import (
     get_book_detail,
     get_book_chapter_workspace_state,
 )
+from app.api.library.management import (
+    archive_documents,
+    create_mutation_session,
+    restore_documents,
+)
 from app.api.library.search import (
     read_shelf,
     search_library,
@@ -35,6 +40,9 @@ from app.api.library.pdf import (
     _document_pdf_not_found_response,
 )
 from app.api.library.documents import (
+    delete_document,
+    delete_documents_batch,
+    deletion_preview,
     zotero_link_candidates,
     document_detail,
 )

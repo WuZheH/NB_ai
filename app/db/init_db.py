@@ -17,6 +17,7 @@ from app.models import (  # noqa: F401
     KnowledgeChunk,
     KnowledgeRelation,
     KnowledgeTag,
+    LibraryArchiveState,
     MarkdownNode,
     NoteTag,
     NoteEvidenceLink,

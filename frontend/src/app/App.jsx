@@ -281,9 +281,13 @@ function App() {
             apiStatus={apiStatus}
             selectedDocumentId={library.selectedDocumentId}
             onOpenDocument={openDocumentRoute}
-            onOpenWorkspace={(documentId) => openWorkspaceRoute({ documentId })}
             onOpenImport={() => openLegacyView("importPreview")}
             onRefresh={library.loadReadShelf}
+            onShelfViewChange={library.loadReadShelf}
+            onBooksChanged={async (view) => {
+              clearSelection();
+              await library.loadReadShelf(view);
+            }}
           />
         )}
         {navigation.view === "document" && (
@@ -294,7 +298,6 @@ function App() {
             onBack={() => {
               openLegacyView("readShelf");
             }}
-            onOpenWorkspace={(documentId, chapterId) => openWorkspaceRoute({ documentId, chapterId })}
             onOpenEvidence={(chunkId, trace) => library.openEvidence(chunkId, trace, "document")}
             onOpenObject={(objectKey) => library.openObject(objectKey, "document")}
             onLocateEvidence={(chunkId, evidence) => {

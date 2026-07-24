@@ -24,7 +24,7 @@ import {
   pageRange,
 } from "../features/library/utils/bookDetail.js";
 
-export default function BookDetailPage({ state, onBack, onOpenWorkspace, initialChapterId = null, initialWorkflow = "" }) {
+export default function BookDetailPage({ state, onBack, initialChapterId = null, initialWorkflow = "" }) {
   const book = state.data?.book_detail;
   const [expandedChapterId, setExpandedChapterId] = useState(null);
   const [showProcessingWorkspace, setShowProcessingWorkspace] = useState(true);
@@ -531,13 +531,6 @@ export default function BookDetailPage({ state, onBack, onOpenWorkspace, initial
           <p>按章节组织正文证据、Zotero 笔记、对象审核与机制审核进度。</p>
         </div>
         <div className="documentHeroActions">
-          <button
-            className="quietButton"
-            type="button"
-            onClick={() => onOpenWorkspace?.(book.document_id, activeChapter?.chapter_id)}
-          >
-            打开 Research Workspace
-          </button>
           <button className="primaryButton" type="button" onClick={() => setShowProcessingWorkspace((value) => !value)}>
             {showProcessingWorkspace ? "收起 Notes Import Flow" : "打开 Notes Import Flow"}
           </button>

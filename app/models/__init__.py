@@ -9,6 +9,7 @@ from app.models.inspiration_card import (
 )
 from app.models.knowledge_relation import KnowledgeRelation
 from app.models.knowledge_chunk import KnowledgeChunk
+from app.models.library_archive_state import LibraryArchiveState
 from app.models.markdown_node import MarkdownNode
 from app.models.note_evidence_link import NoteEvidenceLink
 from app.models.object_candidate import ObjectCandidate
@@ -27,6 +28,7 @@ __all__ = [
     "InspirationCardSource",
     "InspirationCardTag",
     "KnowledgeChunk",
+    "LibraryArchiveState",
     "KnowledgeRelation",
     "KnowledgeTag",
     "MarkdownNode",

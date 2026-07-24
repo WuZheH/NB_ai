@@ -86,6 +86,8 @@
           "phase110k_p_d_import_alignment_hook_dry_run.py",
           "phase110k_p_f_batch_alignment_writeback_apply.py",
           "phase110k_p_inspiration_match_readiness_dry_run.py",
+          "maintenance/reconcile_search_book_deletion.py",
+          "maintenance/smoke_search_book_deletion_isolated.py",
           "zotero/phase110k_p_b_alignment_writeback_plan.py",
           "zotero/phase110k_p_c_import_time_alignment_batch_dry_run.py",
           "zotero/phase110k_p_d_import_alignment_hook_dry_run.py",

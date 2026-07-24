@@ -31,7 +31,6 @@ export default function DocumentDetailPage({
   locatorState,
   zoteroCandidateState,
   onBack,
-  onOpenWorkspace,
   onOpenEvidence,
   onOpenObject,
   onLocateEvidence,
@@ -99,23 +98,11 @@ export default function DocumentDetailPage({
         <div className="documentHeroActions">
           <PdfActionGroup source={documentSource} />
           <PdfPageHint source={documentSource} />
-          {bookDetail && (
-            <button
-              className="quietButton"
-              type="button"
-              onClick={() => onOpenWorkspace?.(document.document_id, bookDetail.chapters?.[0]?.chapter_id)}
-            >
-              打开 Research Workspace
-            </button>
-          )}
         </div>
       </article>
 
       {bookDetail && (
-        <ReadOnlyChapterList
-          book={bookDetail}
-          onOpenWorkspace={(chapterId) => onOpenWorkspace?.(document.document_id, chapterId)}
-        />
+        <ReadOnlyChapterList book={bookDetail} />
       )}
 
       <section className="documentObjectOverview">
@@ -568,7 +555,7 @@ function sourceNoteIds(object = {}) {
   return [];
 }
 
-function ReadOnlyChapterList({ book, onOpenWorkspace }) {
+function ReadOnlyChapterList({ book }) {
   const chapters = book?.chapters || [];
   return (
     <section className="bookChapterSection" aria-label="章节只读信息">
@@ -586,13 +573,6 @@ function ReadOnlyChapterList({ book, onOpenWorkspace }) {
                   {chapterPageRange(chapter)} · {Number(chapter.evidence_count || 0)} 条证据 · {Number(chapter.note_count || chapter.user_note_count || 0)} 条笔记
                 </span>
               </div>
-              <button
-                className="quietButton"
-                type="button"
-                onClick={() => onOpenWorkspace?.(chapter.chapter_id)}
-              >
-                在 Workspace 中打开
-              </button>
             </article>
           ))}
         </div>

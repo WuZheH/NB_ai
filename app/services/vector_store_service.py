@@ -589,6 +589,144 @@ def sync_affected_passage_embeddings(
     }
 
 
+def inspect_document_vector_impact(
+    *,
+    passage_source_ids: list[str],
+    object_keys: list[str],
+    store_path: Path | None = None,
+) -> dict[str, Any]:
+    """Read only: count exact vector identities affected by one document."""
+
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    if not actual_store_path.exists():
+        raise VectorStoreUnavailable(f"vector store path missing: {actual_store_path}")
+    db = _connect_existing_vector_store(actual_store_path)
+    passage_ids = (
+        sorted(set(_validated_passage_source_ids(passage_source_ids)))
+        if passage_source_ids
+        else []
+    )
+    object_ids = sorted(
+        {
+            make_object_source_id(value)
+            for value in object_keys
+            if str(value or "").strip()
+        }
+    )
+    passage_records = _existing_records_by_source_ids(
+        db, PASSAGE_TABLE, passage_ids
+    ) if passage_ids else {}
+    object_records = _existing_records_by_source_ids(
+        db, OBJECT_TABLE, object_ids
+    ) if object_ids else {}
+    return {
+        "status": "ok",
+        "read_only": True,
+        "passage_vector_count": len(passage_records),
+        "object_vector_count": len(object_records),
+        "passage_source_ids": sorted(passage_records),
+        "object_source_ids": sorted(object_records),
+    }
+
+
+def cleanup_document_vectors(
+    *,
+    passage_source_ids: list[str],
+    affected_object_keys: list[str],
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    """Delete exact passage vectors and reconcile only affected object keys."""
+
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    actual_manifest_path = Path(manifest_path or MANIFEST_PATH)
+    db = open_vector_store(actual_store_path)
+    passage_ids = (
+        sorted(set(_validated_passage_source_ids(passage_source_ids)))
+        if passage_source_ids
+        else []
+    )
+    object_source_ids = sorted(
+        {
+            make_object_source_id(value)
+            for value in affected_object_keys
+            if str(value or "").strip()
+        }
+    )
+    passage_before = _existing_records_by_source_ids(
+        db, PASSAGE_TABLE, passage_ids
+    ) if passage_ids else {}
+    if passage_before and PASSAGE_TABLE in _table_names(db):
+        _delete_vector_ids(db.open_table(PASSAGE_TABLE), list(passage_before))
+
+    current_object_sources = {
+        source["source_id"]: source
+        for source in collect_object_sources()
+        if source["source_id"] in object_source_ids
+    }
+    existing_objects = _existing_records_by_source_ids(
+        db, OBJECT_TABLE, object_source_ids
+    ) if object_source_ids else {}
+    delete_object_ids = sorted(set(existing_objects) - set(current_object_sources))
+    changed_sources = [
+        source
+        for source_id, source in current_object_sources.items()
+        if source_id not in existing_objects
+        or _record_stale(existing_objects[source_id], source)
+    ]
+    if delete_object_ids and OBJECT_TABLE in _table_names(db):
+        _delete_vector_ids(db.open_table(OBJECT_TABLE), delete_object_ids)
+
+    upserted_ids: list[str] = []
+    if changed_sources:
+        table_fields = _table_schema_fields(db, OBJECT_TABLE)
+        missing_fields = OBJECT_EXPECTED_RECORD_FIELDS - table_fields
+        if missing_fields:
+            raise VectorStoreSchemaMismatch(
+                "affected object cleanup forbids schema rebuild; missing fields: "
+                + ", ".join(sorted(missing_fields))
+            )
+        model = local_embedding_service._load_model({})
+        records = [
+            build_object_record(source["object"], model=model)
+            for source in changed_sources
+        ]
+        upserted_ids = [source["source_id"] for source in changed_sources]
+        if OBJECT_TABLE in _table_names(db):
+            table = db.open_table(OBJECT_TABLE)
+            _delete_vector_ids(table, upserted_ids)
+            table.add(records)
+        else:
+            db.create_table(OBJECT_TABLE, data=records, mode="create")
+
+    passage_count = (
+        _table_status(db, PASSAGE_TABLE)["count"]
+        if PASSAGE_TABLE in _table_names(db)
+        else 0
+    )
+    object_count = (
+        _table_status(db, OBJECT_TABLE)["count"]
+        if OBJECT_TABLE in _table_names(db)
+        else 0
+    )
+    current_manifest = get_vector_manifest(actual_manifest_path) or {}
+    _updated_manifest(
+        manifest_path=actual_manifest_path,
+        embedding_dim=int(current_manifest.get("embedding_dim") or 1024),
+        passage_count=passage_count,
+        object_count=object_count,
+    )
+    return {
+        "status": "ok",
+        "deleted_passage_vectors": len(passage_before),
+        "deleted_object_vectors": len(delete_object_ids),
+        "updated_shared_object_vectors": len(upserted_ids),
+        "passage_count": passage_count,
+        "object_count": object_count,
+        "full_rebuild_performed": False,
+    }
+
+
 def sync_object_embeddings(
     *,
     limit: int | None = None,

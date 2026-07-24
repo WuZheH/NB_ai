@@ -1,9 +1,91 @@
 from __future__ import annotations
 
 from app.api.library.read_common import *  # noqa: F401,F403
+from app.schemas.library_deletion import (
+    DeleteDocumentRequest,
+    DeleteDocumentsBatchRequest,
+    DeletionOptions,
+)
+from app.services.library import document_deletion_service
+from app.services.library.local_mutation_security import (
+    require_local_renderer,
+    require_mutation_token,
+)
 
 
 router = APIRouter()
+
+
+@router.post("/documents/delete-batch")
+def delete_documents_batch(
+    payload: DeleteDocumentsBatchRequest,
+    request: Request,
+) -> dict[str, Any]:
+    require_mutation_token(request, rate_scope="delete_documents_batch", rate_limit=5)
+    try:
+        return document_deletion_service.delete_documents_batch(
+            document_ids=payload.document_ids,
+            requests=[item.model_dump() for item in payload.requests],
+            confirmation_text=payload.confirmation_text,
+        )
+    except document_deletion_service.DeletionError as exc:
+        raise _deletion_http_error(exc) from exc
+
+
+@router.get("/documents/{document_id}/deletion-preview")
+def deletion_preview(
+    document_id: int,
+    request: Request,
+    delete_managed_pdf: bool = Query(default=False),
+) -> dict[str, Any]:
+    require_local_renderer(request, rate_scope="deletion_preview", rate_limit=60)
+    try:
+        return document_deletion_service.create_deletion_preview(
+            document_id,
+            deletion_options=DeletionOptions(delete_managed_pdf=delete_managed_pdf),
+        )
+    except document_deletion_service.DeletionError as exc:
+        raise _deletion_http_error(exc) from exc
+
+
+@router.post("/documents/{document_id}/delete")
+def delete_document(
+    document_id: int,
+    payload: DeleteDocumentRequest,
+    request: Request,
+) -> dict[str, Any]:
+    require_mutation_token(request, rate_scope="delete_document", rate_limit=10)
+    if document_id != payload.document_id:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "error",
+                "error_code": "deletion_document_id_mismatch",
+                "message": "路径 document ID 与请求正文不一致。",
+            },
+        )
+    try:
+        return document_deletion_service.delete_document(
+            document_id=document_id,
+            preview_token=payload.preview_token,
+            expected_document_revision=payload.expected_document_revision,
+            confirmation_text=payload.confirmation_text,
+            deletion_options=payload.deletion_options,
+        )
+    except document_deletion_service.DeletionError as exc:
+        raise _deletion_http_error(exc) from exc
+
+
+def _deletion_http_error(exc: document_deletion_service.DeletionError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "status": "error",
+            "error_code": exc.error_code,
+            "message": str(exc),
+            **exc.details,
+        },
+    )
 
 
 @router.get("/documents/{document_id}/zotero-link-candidates")
