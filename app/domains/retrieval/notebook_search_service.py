@@ -3,7 +3,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from app.domains.retrieval.fragment_repository import get_notebook_fragments
+from app.domains.retrieval.fragment_repository import (
+    cache_notebook_fragments,
+    get_notebook_fragments,
+)
 from app.domains.retrieval.note_vector_index import (
     DEFAULT_RECALL_LIMIT,
     NoteVectorIndexUnavailable,
@@ -46,7 +49,10 @@ def search_notebook(
 
     if "pdf_chunk" in search_request.source_types:
         pdf_started = time.perf_counter()
-        pdf_payload = high_quality_search_service.search_high_quality(search_request.query)
+        pdf_payload = high_quality_search_service.search_high_quality(
+            search_request.query,
+            include_objects=False,
+        )
         backends.append(str(pdf_payload.get("retrieval_backend") or "legacy_high_quality"))
         fallback_reason = pdf_payload.get("fallback_reason")
         if fallback_reason:
@@ -100,6 +106,7 @@ def search_notebook(
     else:
         ranked = candidates
     limited = ranked[: search_request.limit]
+    cache_notebook_fragments(item["fragment"] for item in limited)
     results = [
         _result_from_candidate(
             item,
@@ -166,9 +173,16 @@ def _pdf_candidates(
             )
     if not flattened:
         return []
+    detail_document_ids = {
+        int(item["document_id"])
+        for item in flattened
+    }
     details = {
         fragment.fragment_id: fragment
-        for fragment in get_notebook_fragments(item["fragment_id"] for item in flattened)
+        for fragment in get_notebook_fragments(
+            (item["fragment_id"] for item in flattened),
+            document_ids=detail_document_ids,
+        )
     }
     for candidate in flattened:
         candidate["fragment"] = details[candidate["fragment_id"]]

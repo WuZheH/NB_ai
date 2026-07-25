@@ -402,22 +402,12 @@ def _enrich_passage_page_metadata(results: list[dict[str, Any]]) -> list[dict[st
 
 
 def _vector_store_fallback_reason(status: dict[str, Any], table_name: str) -> str | None:
-    if not status.get("available"):
-        reason = status.get("reason")
-        if reason == "vector_manifest_missing":
-            return "vector_store_unavailable"
-        return str(reason or "vector_store_unavailable")
-    freshness = status.get("freshness") or {}
-    if status.get("stale") or (freshness and not freshness.get("complete")):
-        return str(
-            status.get("reason")
-            or freshness.get("reason")
-            or "vector_store_stale"
-        )
-    table = (status.get("tables") or {}).get(table_name) or {}
-    if not table.get("exists"):
-        return "vector_table_missing"
-    return None
+    from app.services import vector_store_service
+
+    return vector_store_service.vector_table_fallback_reason(
+        status,
+        table_name,
+    )
 
 
 def _vector_status_summary(status: dict[str, Any]) -> dict[str, Any]:

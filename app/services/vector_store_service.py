@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import lru_cache
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import time
@@ -14,6 +16,10 @@ from sqlalchemy.orm import undefer
 from app.core.paths import LANCEDB_DIR, VECTOR_STORE_DIR
 from app.db.session import SessionLocal
 from app.models import BookChapter, Document, KnowledgeChunk
+from app.runtime.machine_config import (
+    MachineConfigUnavailable,
+    require_runtime_machine_config,
+)
 from app.services import local_embedding_service, object_semantic_search_service
 from app.services.library_service import READ_LIBRARY_STATUSES, is_metadata_chunk_text
 
@@ -104,6 +110,37 @@ class VectorStoreUnavailable(RuntimeError):
 
 class VectorStoreSchemaMismatch(RuntimeError):
     pass
+
+
+@lru_cache(maxsize=1)
+def _active_embedding_model_path() -> str:
+    """Return the model directory actually selected by Runtime machine-config.
+
+    The source-tree default is only a fallback for isolated tests and tooling
+    that run without SEARCH_MACHINE_CONFIG_PATH.
+    """
+
+    try:
+        config = require_runtime_machine_config()
+    except MachineConfigUnavailable:
+        return EMBEDDING_MODEL_PATH
+
+    if config.embedding is None:
+        return EMBEDDING_MODEL_PATH
+
+    return str(config.embedding.path)
+
+
+def _normalized_model_path(value: Any) -> str:
+    return os.path.normcase(
+        str(Path(str(value or "")).expanduser().resolve(strict=False))
+    )
+
+
+def _same_model_path(left: Any, right: Any) -> bool:
+    if not str(left or "").strip() or not str(right or "").strip():
+        return False
+    return _normalized_model_path(left) == _normalized_model_path(right)
 
 
 def open_vector_store(path: Path | None = None) -> Any:
@@ -315,7 +352,7 @@ def _passage_record_from_parts(
         "pdf_page_start": pdf_page_start,
         "pdf_page_end": pdf_page_end,
         "embedding_model": EMBEDDING_MODEL,
-        "embedding_model_path": model_path or EMBEDDING_MODEL_PATH,
+        "embedding_model_path": model_path or _active_embedding_model_path(),
         "embedding_dim": len(vector),
         "profile_version": PASSAGE_PROFILE_VERSION,
         "source_updated_at": _format_datetime(_safe_attr(chunk, "updated_at", None)),
@@ -398,7 +435,7 @@ def _object_record_from_parts(
         "text_for_embedding": profile_text,
         "profile_hash": source_hash,
         "embedding_model": EMBEDDING_MODEL,
-        "embedding_model_path": model_path or EMBEDDING_MODEL_PATH,
+        "embedding_model_path": model_path or _active_embedding_model_path(),
         "embedding_dim": len(vector),
         "profile_version": OBJECT_PROFILE_VERSION,
         "created_at": now,
@@ -772,6 +809,50 @@ def sync_vector_store(
     return results
 
 
+def vector_table_fallback_reason(
+    status: dict[str, Any],
+    table_name: str,
+) -> str | None:
+    """Return a fallback reason scoped to the table being queried."""
+
+    if table_name not in {PASSAGE_TABLE, OBJECT_TABLE}:
+        raise ValueError(f"unsupported vector table: {table_name}")
+
+    if not status.get("available"):
+        reason = status.get("reason")
+        if reason == "vector_manifest_missing":
+            return "vector_store_unavailable"
+        return str(reason or "vector_store_unavailable")
+
+    manifest = status.get("manifest") or {}
+    manifest_reason = _stale_reason(manifest)
+    if manifest_reason:
+        return manifest_reason
+
+    table = (status.get("tables") or {}).get(table_name) or {}
+    if not table.get("exists"):
+        return "vector_table_missing"
+
+    kind = "passages" if table_name == PASSAGE_TABLE else "objects"
+    table_freshness = (
+        ((status.get("freshness") or {}).get("tables") or {}).get(kind)
+        or (status.get("sync") or {}).get(kind)
+        or {}
+    )
+
+    source_count = int(table_freshness.get("source_count") or 0)
+    indexed_count = int(table_freshness.get("indexed_count") or 0)
+    drift_count = sum(
+        int(table_freshness.get(field) or 0)
+        for field in ("missing_count", "stale_count", "orphan_count")
+    )
+
+    if source_count != indexed_count or drift_count:
+        return "vector_store_source_drift"
+
+    return None
+
+
 def search_passage_vectors(
     query: str,
     limit: int = 10,
@@ -811,14 +892,8 @@ def _search_table(
 ) -> dict[str, Any]:
     if store_path is None:
         status = status or check_vector_store_status()
-        freshness = status.get("freshness") or {}
-        freshness_incomplete = bool(freshness) and not bool(freshness.get("complete"))
-        if not status.get("available") or status.get("stale") or freshness_incomplete:
-            reason = str(
-                status.get("reason")
-                or freshness.get("reason")
-                or "vector_store_unavailable"
-            )
+        reason = vector_table_fallback_reason(status, table_name)
+        if reason:
             return {
                 "status": reason,
                 "results": [],
@@ -827,6 +902,8 @@ def _search_table(
                     "stale": bool(status.get("stale")),
                     "reason": status.get("reason"),
                     "freshness": status.get("freshness") or {},
+                    "requested_table": table_name,
+                    "requested_table_reason": reason,
                 },
             }
     db = open_vector_store(store_path)
@@ -1105,7 +1182,10 @@ def _record_stale(record: dict[str, Any], source: dict[str, Any]) -> bool:
         record.get("source_hash") != source.get("source_hash")
         or record.get("profile_version") != source.get("profile_version")
         or record.get("embedding_model") != source.get("embedding_model")
-        or record.get("embedding_model_path") != EMBEDDING_MODEL_PATH
+        or not _same_model_path(
+            record.get("embedding_model_path"),
+            _active_embedding_model_path(),
+        )
     )
 
 
@@ -1230,7 +1310,7 @@ def _updated_manifest(
     manifest = {
         "backend": BACKEND,
         "embedding_model": EMBEDDING_MODEL,
-        "embedding_model_path": EMBEDDING_MODEL_PATH,
+        "embedding_model_path": _active_embedding_model_path(),
         "embedding_dim": embedding_dim or current.get("embedding_dim"),
         "passage_profile_version": PASSAGE_PROFILE_VERSION,
         "object_profile_version": OBJECT_PROFILE_VERSION,
@@ -1348,7 +1428,6 @@ def _stale_reason(manifest: dict[str, Any]) -> str | None:
     expected = {
         "backend": BACKEND,
         "embedding_model": EMBEDDING_MODEL,
-        "embedding_model_path": EMBEDDING_MODEL_PATH,
         "passage_profile_version": PASSAGE_PROFILE_VERSION,
         "object_profile_version": OBJECT_PROFILE_VERSION,
     }

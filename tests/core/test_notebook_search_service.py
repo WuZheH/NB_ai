@@ -88,7 +88,14 @@ def test_pdf_only_uses_legacy_order_scores_and_defaults(monkeypatch: pytest.Monk
         calls.append((query, kwargs))
         return _pdf_payload()
 
-    def fake_details(ids: Any) -> list[NotebookFragment]:
+    def fake_details(
+        ids: Any,
+        *,
+        document_ids: Any = None,
+        registry: Any = None,
+    ) -> list[NotebookFragment]:
+        assert registry is None
+        assert set(document_ids or []) == {1, 2}
         result = []
         for value in ids:
             document_id = 1 if value == _pdf_id(1, 101) else 2
@@ -114,7 +121,7 @@ def test_pdf_only_uses_legacy_order_scores_and_defaults(monkeypatch: pytest.Monk
         {"query": "EDSR", "limit": 10, "source_types": ["pdf_chunk"]}
     )
 
-    assert calls == [("EDSR", {})]
+    assert calls == [("EDSR", {"include_objects": False})]
     assert [item["fragment_id"] for item in response["results"]] == [
         _pdf_id(1, 101),
         _pdf_id(2, 202),
@@ -134,13 +141,32 @@ def test_mixed_search_preserves_note_roles_filters_and_unified_reranker(
         selected_text="quoted paper text",
     )
     observed: dict[str, Any] = {}
-    monkeypatch.setattr(service.high_quality_search_service, "search_high_quality", lambda _q: _pdf_payload())
+    monkeypatch.setattr(
+        service.high_quality_search_service,
+        "search_high_quality",
+        lambda _q, **_kwargs: _pdf_payload(),
+    )
+    def fake_filtered_details(
+        ids: Any,
+        *,
+        document_ids: Any = None,
+        registry: Any = None,
+    ) -> list[NotebookFragment]:
+        assert registry is None
+        assert set(document_ids or []) == {1}
+        return [
+            _fragment(
+                value,
+                source_type="pdf_chunk",
+                text="full source chunk",
+            )
+            for value in ids
+        ]
+
     monkeypatch.setattr(
         service,
         "get_notebook_fragments",
-        lambda ids: [
-            _fragment(value, source_type="pdf_chunk", text="full source chunk") for value in ids
-        ],
+        fake_filtered_details,
     )
 
     def fake_note_search(query: str, **kwargs: Any) -> dict[str, Any]:

@@ -24,6 +24,7 @@ from app.services import local_embedding_service
 
 RERANKER_MODEL_NAME = "Qwen3-Reranker-0.6B"
 DEFAULT_RERANKER_MODEL_PATH = RERANKER_MODEL_PATH
+RERANKER_BATCH_SIZE = 8
 
 _RERANKER: Any | None = None
 _RERANKER_LOAD_MS: float | None = None
@@ -180,7 +181,11 @@ def _predict_scores(reranker: Any, pairs: list[tuple[str, str]]) -> list[float]:
 
 
 def _raw_predict_scores(reranker: Any, pairs: list[tuple[str, str]]) -> list[float]:
-    raw_scores = reranker.predict(pairs, batch_size=1, show_progress_bar=False)
+    raw_scores = reranker.predict(
+        pairs,
+        batch_size=RERANKER_BATCH_SIZE,
+        show_progress_bar=False,
+    )
     if hasattr(raw_scores, "tolist"):
         raw_scores = raw_scores.tolist()
     if isinstance(raw_scores, (int, float)):

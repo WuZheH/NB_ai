@@ -19,6 +19,7 @@ DEFAULT_PASSAGE_LIMIT = 15
 def search_high_quality(
     query: str,
     *,
+    include_objects: bool = True,
     object_limit: int = DEFAULT_OBJECT_LIMIT,
     passage_recall_limit: int = DEFAULT_PASSAGE_RECALL_LIMIT,
     passage_limit: int = DEFAULT_PASSAGE_LIMIT,
@@ -33,11 +34,31 @@ def search_high_quality(
     safe_passage_recall_limit = max(1, min(int(passage_recall_limit or DEFAULT_PASSAGE_RECALL_LIMIT), 50))
     safe_passage_limit = max(1, min(int(passage_limit or DEFAULT_PASSAGE_LIMIT), safe_passage_recall_limit))
 
-    objects_payload = object_semantic_search_service.search_semantic_objects(
-        normalized_query,
-        recall_limit=max(safe_object_limit, object_semantic_search_service.OBJECT_CANDIDATE_POOL_LIMIT),
-        limit=safe_object_limit,
-    )
+    if include_objects:
+        objects_payload = object_semantic_search_service.search_semantic_objects(
+            normalized_query,
+            recall_limit=max(
+                safe_object_limit,
+                object_semantic_search_service.OBJECT_CANDIDATE_POOL_LIMIT,
+            ),
+            limit=safe_object_limit,
+        )
+    else:
+        objects_payload = {
+            "results": [],
+            "retrieval_backend": None,
+            "fallback_reason": None,
+            "vector_store_status": None,
+            "degraded_reason": None,
+            "object_total_candidates": 0,
+            "object_returned_count": 0,
+            "object_hidden_low_score_count": 0,
+            "object_score_direction": None,
+            "object_threshold": None,
+            "object_threshold_kind": None,
+            "timing": {"total_ms": 0.0},
+        }
+
     reranker_payload = local_reranker_service.search_reranker_sidecar(
         normalized_query,
         recall_limit=safe_passage_recall_limit,

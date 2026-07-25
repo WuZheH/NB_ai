@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from threading import RLock
 from typing import Any
 
 from app.core.database import connect_immutable_readonly_sqlite
-from app.core.paths import DEFAULT_DB_PATH
+from app.core.paths import DEFAULT_DB_PATH, ZOTERO_SNAPSHOT_PATH
 from app.domains.retrieval.result_contracts import (
     NOTEBOOK_SOURCE_TYPES,
     NotebookFragment,
@@ -25,6 +26,13 @@ _SUPPORT_SOURCE_TYPES: tuple[RetrievalSourceType, ...] = (
 )
 EXCLUDED_NOTE_ORIGIN_KINDS: tuple[str, ...] = ("synthetic_seed",)
 
+_FRAGMENT_CACHE_LOCK = RLock()
+_FRAGMENT_CACHE_REVISION: tuple[
+    tuple[int, int] | None,
+    tuple[int, int] | None,
+] | None = None
+_FRAGMENT_CACHE: dict[str, NotebookFragment] = {}
+
 
 class NotebookFragmentNotFound(LookupError):
     pass
@@ -34,6 +42,60 @@ class NotebookFragmentNotFound(LookupError):
 class NotebookFragmentRecord:
     fragment: NotebookFragment
     source: RetrievalFragment
+
+
+def _path_signature(path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return int(stat.st_mtime_ns), int(stat.st_size)
+
+
+def _notebook_corpus_revision() -> tuple[
+    tuple[int, int] | None,
+    tuple[int, int] | None,
+]:
+    return (
+        _path_signature(DEFAULT_DB_PATH),
+        _path_signature(ZOTERO_SNAPSHOT_PATH),
+    )
+
+
+def cache_notebook_fragments(fragments: Iterable[NotebookFragment]) -> None:
+    values = [
+        fragment
+        for fragment in fragments
+        if fragment.source_type in NOTEBOOK_SOURCE_TYPES
+    ]
+    if not values:
+        return
+
+    revision = _notebook_corpus_revision()
+    global _FRAGMENT_CACHE_REVISION
+    with _FRAGMENT_CACHE_LOCK:
+        if _FRAGMENT_CACHE_REVISION != revision:
+            _FRAGMENT_CACHE.clear()
+            _FRAGMENT_CACHE_REVISION = revision
+        for fragment in values:
+            _FRAGMENT_CACHE[fragment.fragment_id] = fragment
+
+
+def _cached_notebook_fragments(
+    fragment_ids: Iterable[str],
+) -> dict[str, NotebookFragment]:
+    revision = _notebook_corpus_revision()
+    global _FRAGMENT_CACHE_REVISION
+    with _FRAGMENT_CACHE_LOCK:
+        if _FRAGMENT_CACHE_REVISION != revision:
+            _FRAGMENT_CACHE.clear()
+            _FRAGMENT_CACHE_REVISION = revision
+            return {}
+        return {
+            fragment_id: _FRAGMENT_CACHE[fragment_id]
+            for fragment_id in fragment_ids
+            if fragment_id in _FRAGMENT_CACHE
+        }
 
 
 def list_notebook_fragments(
@@ -74,7 +136,19 @@ def get_notebook_fragment(
     *,
     registry: RetrievalSourceRegistry | None = None,
 ) -> NotebookFragment:
-    return get_notebook_fragment_record(fragment_id, registry=registry).fragment
+    cleaned = str(fragment_id or "").strip()
+    if not cleaned:
+        raise NotebookFragmentNotFound("fragment_id must not be empty")
+
+    if registry is None:
+        cached = _cached_notebook_fragments([cleaned]).get(cleaned)
+        if cached is not None:
+            return cached
+
+    fragment = get_notebook_fragment_record(cleaned, registry=registry).fragment
+    if registry is None:
+        cache_notebook_fragments([fragment])
+    return fragment
 
 
 def get_notebook_fragment_record(
@@ -109,11 +183,27 @@ def get_notebook_fragments(
     fragment_ids: Iterable[str],
     *,
     registry: RetrievalSourceRegistry | None = None,
+    document_ids: Iterable[int] | None = None,
 ) -> list[NotebookFragment]:
-    ordered_ids = list(dict.fromkeys(str(value).strip() for value in fragment_ids if str(value).strip()))
+    ordered_ids = list(
+        dict.fromkeys(
+            str(value).strip()
+            for value in fragment_ids
+            if str(value).strip()
+        )
+    )
     if not ordered_ids:
         return []
-    catalog = (registry or RetrievalSourceRegistry()).read(source_types=_SUPPORT_SOURCE_TYPES)
+
+    if registry is None:
+        cached = _cached_notebook_fragments(ordered_ids)
+        if len(cached) == len(ordered_ids):
+            return [cached[value] for value in ordered_ids]
+
+    catalog = (registry or RetrievalSourceRegistry()).read(
+        source_types=_SUPPORT_SOURCE_TYPES,
+        document_ids=document_ids,
+    )
     by_id = {item.fragment_id: item for item in catalog.fragments}
     missing = [value for value in ordered_ids if value not in by_id]
     unsupported = [
@@ -130,13 +220,25 @@ def get_notebook_fragments(
         raise NotebookFragmentNotFound(
             f"Notebook fragments not found: {', '.join(unavailable[:5])}"
         )
+
     document_types = _document_types(
-        {value.document_id for value in catalog.fragments if value.document_id is not None}
+        {
+            value.document_id
+            for value in catalog.fragments
+            if value.document_id is not None
+        }
     )
-    return [
-        _to_notebook_fragment(by_id[value], by_id=by_id, document_types=document_types)
+    result = [
+        _to_notebook_fragment(
+            by_id[value],
+            by_id=by_id,
+            document_types=document_types,
+        )
         for value in ordered_ids
     ]
+    if registry is None:
+        cache_notebook_fragments(result)
+    return result
 
 
 def _to_notebook_fragment(

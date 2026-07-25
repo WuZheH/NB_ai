@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from threading import RLock
 import time
 from typing import Any
 from uuid import uuid4
@@ -30,6 +31,18 @@ MANIFEST_NAME = "manifest.json"
 DEFAULT_RECALL_LIMIT = 30
 NORMALIZE_EMBEDDINGS = True
 ENCODE_BATCH_SIZE = 1
+
+_INDEX_CACHE_LOCK = RLock()
+_INDEX_CACHE: dict[
+    str,
+    tuple[
+        tuple[int, int],
+        str,
+        tuple[int, int],
+        dict[str, Any],
+        list[dict[str, Any]],
+    ],
+] = {}
 
 
 class NoteVectorIndexUnavailable(RuntimeError):
@@ -205,6 +218,8 @@ def sync_zotero_note_vectors(
         elif hashlib.sha256(generation.read_bytes()).hexdigest() != payload_sha:
             raise ValueError(f"existing note index generation hash mismatch: {generation.name}")
         _atomic_write_bytes(root / MANIFEST_NAME, _json_bytes(manifest))
+        with _INDEX_CACHE_LOCK:
+            _INDEX_CACHE.pop(str(root.resolve()), None)
         _prune_old_generations(root, keep=generation_name)
     except Exception:
         if generation_created and generation.is_file():
@@ -330,6 +345,11 @@ def _default_encoder() -> Callable[[str], list[float]]:
     return encode
 
 
+def _file_signature(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return int(stat.st_mtime_ns), int(stat.st_size)
+
+
 def _load_existing(
     root: Path, *, required: bool
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -338,20 +358,47 @@ def _load_existing(
         if required:
             raise NoteVectorIndexUnavailable("zotero note vector manifest is missing")
         return None, []
+
+    cache_key = str(root.resolve())
     try:
+        manifest_signature = _file_signature(manifest_path)
+
+        with _INDEX_CACHE_LOCK:
+            cached = _INDEX_CACHE.get(cache_key)
+
+        if cached is not None and cached[0] == manifest_signature:
+            cached_index_path = root / cached[1]
+            if _file_signature(cached_index_path) == cached[2]:
+                return cached[3], cached[4]
+
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         index_name = str(manifest["index_file"])
         if Path(index_name).name != index_name:
             raise ValueError("unsafe note index file name")
+
         index_path = root / index_name
         payload_bytes = index_path.read_bytes()
         if hashlib.sha256(payload_bytes).hexdigest() != manifest["index_sha256"]:
             raise ValueError("note index SHA256 mismatch")
+
         payload = json.loads(payload_bytes)
         entries = list(payload["entries"])
         _validate_loaded_index(manifest, payload, entries)
+        index_signature = _file_signature(index_path)
+
+        with _INDEX_CACHE_LOCK:
+            _INDEX_CACHE[cache_key] = (
+                manifest_signature,
+                index_name,
+                index_signature,
+                manifest,
+                entries,
+            )
+
         return manifest, entries
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        with _INDEX_CACHE_LOCK:
+            _INDEX_CACHE.pop(cache_key, None)
         if required:
             raise NoteVectorIndexUnavailable(f"invalid zotero note vector index: {exc}") from exc
         return None, []
