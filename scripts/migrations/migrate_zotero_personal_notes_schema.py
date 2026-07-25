@@ -193,6 +193,24 @@ def is_production_database(path: str | Path) -> bool:
     return resolved(path) == resolved(DEFAULT_DB_PATH)
 
 
+def connect_database(
+    path: Path,
+    *,
+    read_only: bool,
+) -> sqlite3.Connection:
+    if read_only:
+        connection = sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro",
+            uri=True,
+        )
+        connection.execute("PRAGMA query_only = ON")
+    else:
+        connection = sqlite3.connect(path)
+
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
 def table_exists(
     connection: sqlite3.Connection,
     table_name: str,
@@ -609,9 +627,10 @@ def migrate_database(
             f"Database not found: {path}"
         )
 
-    with sqlite3.connect(path) as connection:
-        connection.row_factory = sqlite3.Row
-
+    with connect_database(
+        path,
+        read_only=dry_run,
+    ) as connection:
         operations = plan_migration(
             connection
         )

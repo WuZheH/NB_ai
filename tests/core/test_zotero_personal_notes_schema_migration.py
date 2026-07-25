@@ -532,6 +532,61 @@ def test_migration_is_idempotent(
     assert second["remaining_operations"] == []
 
 
+def test_dry_run_uses_read_only_query_only_connection(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "legacy.db"
+    make_legacy_database(db_path)
+
+    observed = []
+    real_connect_database = migration.connect_database
+
+    def recording_connect_database(
+        path,
+        *,
+        read_only,
+    ):
+        connection = real_connect_database(
+            path,
+            read_only=read_only,
+        )
+
+        query_only = int(
+            connection.execute(
+                "PRAGMA query_only"
+            ).fetchone()[0]
+        )
+
+        observed.append(
+            {
+                "read_only": read_only,
+                "query_only": query_only,
+            }
+        )
+
+        return connection
+
+    monkeypatch.setattr(
+        migration,
+        "connect_database",
+        recording_connect_database,
+    )
+
+    result = migration.migrate_database(
+        db_path,
+        dry_run=True,
+    )
+
+    assert result["status"] == "dry_run"
+    assert observed == [
+        {
+            "read_only": True,
+            "query_only": 1,
+        }
+    ]
+
+
 def test_production_apply_is_hard_blocked():
     with pytest.raises(
         migration.MigrationSafetyError,
