@@ -46,6 +46,7 @@ from app.schemas.zotero_inspiration import (
     ZoteroMechanismReadinessDryRunResponse,
 )
 from app.schemas.zotero_markdown_export import ZoteroMarkdownExportRequest
+from app.schemas.zotero_selected_book_import import ZoteroSelectedBookImportPreviewRequest
 from app.services import (
     inspiration_note_matching_service,
     mechanism_draft_candidate_handoff_service,
@@ -55,6 +56,7 @@ from app.services import (
     mechanism_readiness_service,
     zotero_inspiration_note_service,
     zotero_markdown_export_service,
+    zotero_selected_book_preview_service,
     zotero_source_cache_service,
 )
 
@@ -305,6 +307,30 @@ def pdf_sources(
         return zotero_source_cache_service.list_pdf_sources(q=q, status=status)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/import-preview")
+def selected_book_import_preview(
+    request: ZoteroSelectedBookImportPreviewRequest,
+) -> dict[str, Any]:
+    try:
+        return (
+            zotero_selected_book_preview_service
+            .build_selected_book_preview(
+                zotero_item_key=request.zotero_item_key,
+                zotero_attachment_key=(
+                    request.zotero_attachment_key
+                ),
+            )
+        )
+    except (
+        zotero_selected_book_preview_service
+        .ZoteroSelectedBookPreviewError
+    ) as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail(),
+        ) from exc
 
 
 @router.post("/export-markdown")
