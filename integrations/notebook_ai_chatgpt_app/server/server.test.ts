@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { actionsOpenApiDocument, authenticateActions, dispatchAction } from "./actions";
+import { stageChatPdf } from "./fileTransfer";
 import { createNotebookMcpServer } from "./app";
 import type { NotebookFragment, NotebookResult, NotebookSearchInput } from "./contracts";
 import { NotebookBackendError, NotebookClient } from "./notebookClient";
@@ -404,6 +405,47 @@ test("ChatGPT PDF file params stream to isolated staging and are removed after c
       confirmed: true,
     });
     assert.equal("structuredContent" in imported, true);
+    assert.deepEqual(await readdir(stagingDirectory), []);
+  } finally {
+    await rm(stagingDirectory, { recursive: true, force: true });
+  }
+});
+
+test("attachment redirect is rejected before requesting a private destination", async () => {
+  const temporaryRoot = resolve(process.cwd(), "..", "..", ".codex_tmp");
+  await mkdir(temporaryRoot, { recursive: true });
+  const stagingDirectory = await mkdtemp(resolve(temporaryRoot, "mcp-file-redirect-"));
+  const requestedUrls: string[] = [];
+
+  try {
+    await assert.rejects(
+      stageChatPdf(
+        {
+          download_url: "https://files.openaiusercontent.com/fixture.pdf",
+          file_id: "file_fixture",
+          mime_type: "application/pdf",
+        },
+        {
+          env: { SEARCH_IMPORT_INBOX: stagingDirectory },
+          fetchImpl: async (input) => {
+            requestedUrls.push(String(input));
+            return new Response(null, {
+              status: 302,
+              headers: {
+                location: "https://127.0.0.1/private.pdf",
+              },
+            });
+          },
+        },
+      ),
+      /Attachment URL is invalid/,
+    );
+
+    assert.equal(requestedUrls.length, 1);
+    assert.equal(
+      requestedUrls[0],
+      "https://files.openaiusercontent.com/fixture.pdf",
+    );
     assert.deepEqual(await readdir(stagingDirectory), []);
   } finally {
     await rm(stagingDirectory, { recursive: true, force: true });

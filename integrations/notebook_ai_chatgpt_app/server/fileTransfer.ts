@@ -46,13 +46,11 @@ export async function stageChatPdf(
   const fetchImpl = options.fetchImpl ?? fetch;
   let response: Response;
   try {
-    response = await fetchImpl(downloadUrl, {
-      method: "GET",
-      redirect: "follow",
-      signal: AbortSignal.timeout(60_000),
-      headers: { Accept: "application/pdf,application/octet-stream;q=0.5" },
-    });
+    response = await fetchAttachmentSafely(downloadUrl, fetchImpl);
   } catch (error) {
+    if (error instanceof NotebookBackendError) {
+      throw error;
+    }
     throw new NotebookBackendError(
       "ChatGPT attachment download failed.",
       502,
@@ -64,13 +62,6 @@ export async function stageChatPdf(
       "ChatGPT attachment download failed.",
       502,
       "IMPORT_FILE_DOWNLOAD_FAILED",
-    );
-  }
-  if (response.url && new URL(response.url).protocol !== "https:") {
-    throw new NotebookBackendError(
-      "Attachment redirect was not secure.",
-      422,
-      "IMPORT_FILE_URL_INVALID",
     );
   }
   const contentLength = Number(response.headers.get("content-length") ?? "0");
@@ -154,6 +145,56 @@ async function purgeExpiredStagedImports(): Promise<void> {
   }
 }
 
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const MAX_ATTACHMENT_REDIRECTS = 5;
+
+async function fetchAttachmentSafely(
+  initialUrl: string,
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  let currentUrl = validateDownloadUrl(initialUrl);
+
+  for (let redirectCount = 0; redirectCount <= MAX_ATTACHMENT_REDIRECTS; redirectCount += 1) {
+    const response = await fetchImpl(currentUrl, {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(60_000),
+      headers: { Accept: "application/pdf,application/octet-stream;q=0.5" },
+    });
+
+    if (!REDIRECT_STATUSES.has(response.status)) {
+      return response;
+    }
+
+    if (redirectCount >= MAX_ATTACHMENT_REDIRECTS) {
+      throw new NotebookBackendError(
+        "Attachment redirected too many times.",
+        422,
+        "IMPORT_FILE_URL_INVALID",
+      );
+    }
+
+    const location = response.headers.get("location");
+    if (!location) {
+      throw new NotebookBackendError(
+        "Attachment redirect is invalid.",
+        422,
+        "IMPORT_FILE_URL_INVALID",
+      );
+    }
+
+    currentUrl = validateDownloadUrl(
+      new URL(location, currentUrl).toString(),
+    );
+  }
+
+  throw new NotebookBackendError(
+    "Attachment redirect is invalid.",
+    422,
+    "IMPORT_FILE_URL_INVALID",
+  );
+}
+
 function validateDownloadUrl(value: string): string {
   let parsed: URL;
   try {
@@ -167,7 +208,10 @@ function validateDownloadUrl(value: string): string {
   const hostname = parsed.hostname.toLowerCase();
   if (
     hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname === "0.0.0.0"
     || hostname === "::1"
+    || hostname === "[::1]"
     || /^127\./.test(hostname)
     || /^10\./.test(hostname)
     || /^192\.168\./.test(hostname)

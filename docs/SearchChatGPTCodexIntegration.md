@@ -14,15 +14,17 @@ Search MCP (loopback)
   -> ChatGPT / Codex
 ```
 
-OpenAI currently documents that developer mode enables full MCP access,
-including write tools. The connection guide says Apps are supported on all
-plans, subject to the account/workspace developer-mode permission. ChatGPT
-uses tool annotations and user app permission settings to decide when to ask
-for confirmation.
+OpenAI currently documents full MCP support, including write/modify actions,
+for ChatGPT Business and Enterprise/Edu workspaces. Pro users can build Apps
+SDK apps, but custom MCP connections in developer mode are currently limited
+to read/fetch permissions. Search therefore keeps an authenticated Actions
+fallback for accounts or workspaces where write-capable custom MCP is not
+available.
 
 Official sources:
 
 - [Connect from ChatGPT](https://developers.openai.com/apps-sdk/deploy/connect-chatgpt)
+- [Developer mode and MCP apps](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt-beta)
 - [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
 - [Security and privacy](https://developers.openai.com/apps-sdk/guides/security-privacy)
 - [Authentication](https://developers.openai.com/apps-sdk/build/auth)

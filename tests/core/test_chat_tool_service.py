@@ -112,6 +112,10 @@ def test_delete_tools_keep_internal_revision_and_require_confirmation(
     )
     result = chat_tool_service.delete_preview(7, runtime=runtime)
     assert result["safe_to_delete"] is True
+    assert (
+        result["confirmation_expires_in_seconds"]
+        == document_deletion_service.PREVIEW_TTL_SECONDS
+    )
     assert "document_revision" not in result
     assert "preview_token" not in result
     with pytest.raises(chat_tool_service.ChatToolError) as missing:

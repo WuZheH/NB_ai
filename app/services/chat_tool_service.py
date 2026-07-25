@@ -24,7 +24,8 @@ from app.services import (
 from app.services.library import document_deletion_service
 
 
-CHAT_CONFIRMATION_TTL_SECONDS = 10 * 60
+DELETE_CONFIRMATION_TTL_SECONDS = document_deletion_service.PREVIEW_TTL_SECONDS
+IMPORT_CONFIRMATION_TTL_SECONDS = 10 * 60
 MAX_IMPORT_BYTES = 200 * 1024 * 1024
 _SAFE_FILENAME = re.compile(r"^[^\\/:*?\"<>|\x00-\x1f]{1,255}$")
 _TOKEN_LOCK = threading.RLock()
@@ -201,7 +202,7 @@ def delete_preview(
         title=str(preview["title"]),
         preview_token=str(preview["preview_token"]),
         document_revision=str(preview["document_revision"]),
-        expires_at=time.monotonic() + CHAT_CONFIRMATION_TTL_SECONDS,
+        expires_at=time.monotonic() + DELETE_CONFIRMATION_TTL_SECONDS,
     )
     with _TOKEN_LOCK:
         _purge_expired_tokens()
@@ -220,7 +221,7 @@ def delete_preview(
         "notes_preserved": True,
         "blockers": blockers,
         "confirmation_token": token,
-        "confirmation_expires_in_seconds": CHAT_CONFIRMATION_TTL_SECONDS,
+        "confirmation_expires_in_seconds": DELETE_CONFIRMATION_TTL_SECONDS,
     }
 
 
@@ -302,7 +303,7 @@ def import_preview(
             document_type=str(classification.get("document_type") or "paper"),
             object_import_mode=str(classification.get("object_import_mode") or "full_document"),
             page_count=page_count,
-            expires_at=time.monotonic() + CHAT_CONFIRMATION_TTL_SECONDS,
+            expires_at=time.monotonic() + IMPORT_CONFIRMATION_TTL_SECONDS,
         )
         with _TOKEN_LOCK:
             _purge_expired_tokens()
@@ -319,7 +320,7 @@ def import_preview(
         "document_type": str(classification.get("document_type") or "paper"),
         "warnings": [str(value) for value in classification.get("reasons") or []][:8],
         "confirmation_token": token,
-        "confirmation_expires_in_seconds": CHAT_CONFIRMATION_TTL_SECONDS if token else None,
+        "confirmation_expires_in_seconds": IMPORT_CONFIRMATION_TTL_SECONDS if token else None,
     }
 
 
