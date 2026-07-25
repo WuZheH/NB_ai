@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.domains.retrieval import fragment_repository
 from app.domains.retrieval import notebook_search_service
@@ -333,3 +334,42 @@ def test_passage_table_remains_usable_when_only_object_table_drifts():
         )
         == "vector_store_source_drift"
     )
+def test_active_embedding_model_path_uses_default_config_without_runtime_env(
+    monkeypatch,
+    tmp_path,
+):
+    configured_path = tmp_path / "Qwen3-Embedding-0.6B"
+    configured_path.mkdir()
+
+    config = SimpleNamespace(
+        ready=True,
+        embedding=SimpleNamespace(path=configured_path),
+    )
+
+    def runtime_config_missing():
+        raise vector_store_service.MachineConfigUnavailable("config_missing")
+
+    monkeypatch.setattr(
+        vector_store_service,
+        "require_runtime_machine_config",
+        runtime_config_missing,
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "default_machine_config_path",
+        lambda: tmp_path / "machine-config.json",
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "load_machine_config",
+        lambda _path: config,
+    )
+
+    vector_store_service._active_embedding_model_path.cache_clear()
+    try:
+        assert (
+            vector_store_service._active_embedding_model_path()
+            == str(configured_path)
+        )
+    finally:
+        vector_store_service._active_embedding_model_path.cache_clear()

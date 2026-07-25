@@ -18,6 +18,8 @@ from app.db.session import SessionLocal
 from app.models import BookChapter, Document, KnowledgeChunk
 from app.runtime.machine_config import (
     MachineConfigUnavailable,
+    default_machine_config_path,
+    load_machine_config,
     require_runtime_machine_config,
 )
 from app.services import local_embedding_service, object_semantic_search_service
@@ -114,18 +116,22 @@ class VectorStoreSchemaMismatch(RuntimeError):
 
 @lru_cache(maxsize=1)
 def _active_embedding_model_path() -> str:
-    """Return the model directory actually selected by Runtime machine-config.
+    """Return the embedding model directory selected for this machine.
 
-    The source-tree default is only a fallback for isolated tests and tooling
-    that run without SEARCH_MACHINE_CONFIG_PATH.
+    Runtime-provided configuration takes precedence. Direct CLI and maintenance
+    processes fall back to the normal roaming machine-config before using the
+    source-tree default.
     """
 
     try:
         config = require_runtime_machine_config()
     except MachineConfigUnavailable:
-        return EMBEDDING_MODEL_PATH
+        try:
+            config = load_machine_config(default_machine_config_path())
+        except RuntimeError:
+            return EMBEDDING_MODEL_PATH
 
-    if config.embedding is None:
+    if not config.ready or config.embedding is None:
         return EMBEDDING_MODEL_PATH
 
     return str(config.embedding.path)
