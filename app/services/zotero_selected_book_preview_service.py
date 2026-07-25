@@ -288,6 +288,7 @@ def build_selected_book_preview(
                 ),
                 "snapshot_path": str(snapshot),
                 "db_path": str(research_db),
+                "resolved_pdf_path": str(pdf_path),
                 "config": source_config,
             },
             now_ts=timestamp,
@@ -350,6 +351,7 @@ def resolve_selected_book_preview_token(
     preview_token: str,
     *,
     now_ts: float | None = None,
+    expected_db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     token = str(preview_token or "").strip()
 
@@ -391,6 +393,26 @@ def resolve_selected_book_preview_token(
                 "Run preview again."
             ),
         )
+
+    if expected_db_path is not None:
+        token_db = Path(
+            str(entry["db_path"])
+        ).resolve(strict=False)
+
+        expected_db = Path(
+            expected_db_path
+        ).resolve(strict=False)
+
+        if token_db != expected_db:
+            raise ZoteroSelectedBookPreviewError(
+                status_code=409,
+                code="preview_target_db_mismatch",
+                message=(
+                    "The Zotero import preview "
+                    "belongs to a different "
+                    "target database."
+                ),
+            )
 
     try:
         current = build_selected_book_preview(
@@ -447,6 +469,123 @@ def resolve_selected_book_preview_token(
 
     return current
 
+
+
+
+def resolve_selected_book_preview_source(
+    preview_token: str,
+    *,
+    now_ts: float | None = None,
+    expected_db_path: str | Path | None = None,
+) -> tuple[dict[str, Any], Path]:
+    current = resolve_selected_book_preview_token(
+        preview_token,
+        now_ts=now_ts,
+        expected_db_path=expected_db_path,
+    )
+
+    token = str(
+        preview_token
+        or ""
+    ).strip()
+
+    with _PREVIEW_CACHE_LOCK:
+        entry = dict(
+            _PREVIEW_CACHE.get(
+                token
+            )
+            or {}
+        )
+
+    if not entry:
+        raise ZoteroSelectedBookPreviewError(
+            status_code=410,
+            code="preview_token_unknown",
+            message=(
+                "The Zotero import preview "
+                "is unavailable. Run preview again."
+            ),
+        )
+
+    raw_path = str(
+        entry.get(
+            "resolved_pdf_path"
+        )
+        or ""
+    ).strip()
+
+    if not raw_path:
+        raise ZoteroSelectedBookPreviewError(
+            status_code=409,
+            code="preview_source_drift",
+            message=(
+                "The Zotero PDF source is no "
+                "longer available. Run preview again."
+            ),
+            details={
+                "cause_code": (
+                    "resolved_pdf_path_missing"
+                ),
+            },
+        )
+
+    pdf_path = Path(
+        raw_path
+    ).resolve(strict=False)
+
+    if (
+        not pdf_path.is_file()
+        or pdf_path.suffix.lower()
+        != ".pdf"
+    ):
+        raise ZoteroSelectedBookPreviewError(
+            status_code=409,
+            code="preview_source_drift",
+            message=(
+                "The Zotero PDF source changed "
+                "after preview. Run preview again."
+            ),
+            details={
+                "cause_code": (
+                    "resolved_pdf_unavailable"
+                ),
+            },
+        )
+
+    expected_hash = str(
+        (
+            current.get(
+                "selected_attachment"
+            )
+            or {}
+        ).get(
+            "pdf_sha256"
+        )
+        or ""
+    )
+
+    if (
+        not expected_hash
+        or _sha256_file(
+            pdf_path
+        )
+        != expected_hash
+    ):
+        raise ZoteroSelectedBookPreviewError(
+            status_code=409,
+            code="preview_source_drift",
+            message=(
+                "The Zotero PDF source changed "
+                "after preview. Run preview again."
+            ),
+            details={
+                "cause_code": (
+                    "resolved_pdf_hash_changed"
+                ),
+            },
+        )
+
+    return current, pdf_path
 
 def validate_selected_book_preview_token(
     preview_token: str,

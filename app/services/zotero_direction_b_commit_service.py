@@ -162,6 +162,7 @@ def commit_selected_book_preview_to_temp_db(
         .resolve_selected_book_preview_token(
             preview_token,
             now_ts=now_ts,
+            expected_db_path=path,
         )
     )
 

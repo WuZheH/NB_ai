@@ -20,6 +20,8 @@ from app.services import (
     commit_paper_service,
     import_preview_service,
     pdf_import_classifier_service,
+    zotero_direction_b_import_service,
+    zotero_selected_book_preview_service,
 )
 from app.services.library import document_deletion_service
 
@@ -30,7 +32,10 @@ MAX_IMPORT_BYTES = 200 * 1024 * 1024
 _SAFE_FILENAME = re.compile(r"^[^\\/:*?\"<>|\x00-\x1f]{1,255}$")
 _TOKEN_LOCK = threading.RLock()
 _DELETE_CONFIRMATIONS: dict[str, "DeleteConfirmation"] = {}
-_IMPORT_CONFIRMATIONS: dict[str, "ImportConfirmation"] = {}
+_IMPORT_CONFIRMATIONS: dict[
+    str,
+    "ImportConfirmation | ZoteroImportConfirmation",
+] = {}
 
 
 class ChatToolError(RuntimeError):
@@ -71,6 +76,19 @@ class ImportConfirmation:
 
 
 @dataclass(frozen=True)
+class ZoteroImportConfirmation:
+    preview_token: str
+    target_db_path: Path
+    title: str
+    document_type: str
+    page_count: int
+    annotation_count: int
+    child_note_count: int
+    duplicate_status: str
+    expires_at: float
+
+
+@dataclass(frozen=True)
 class ChatToolRuntime:
     db_path: Path = DEFAULT_DB_PATH
     data_dir: Path = DATA_DIR
@@ -78,6 +96,8 @@ class ChatToolRuntime:
     deletion_runtime: document_deletion_service.DeletionRuntime | None = None
     classify_pdf: Callable[..., dict[str, Any]] | None = None
     commit_import: Callable[..., dict[str, Any]] | None = None
+    zotero_body_importer: Callable[..., dict[str, Any]] | None = None
+    commit_zotero_import: Callable[..., dict[str, Any]] | None = None
 
     def resolved_inbox_root(self) -> Path:
         if self.inbox_root is not None:
@@ -324,6 +344,206 @@ def import_preview(
     }
 
 
+def register_zotero_selected_book_import_preview(
+    *,
+    preview_token: str,
+    runtime: ChatToolRuntime | None = None,
+) -> dict[str, Any]:
+    actual_runtime = (
+        runtime
+        or ChatToolRuntime()
+    )
+
+    target_db_path = Path(
+        actual_runtime.db_path
+    ).resolve(strict=False)
+
+    # B4 remains temp-only. Do not ask the
+    # user to confirm an operation that the
+    # backend is not allowed to perform.
+    if target_db_path == Path(
+        DEFAULT_DB_PATH
+    ).resolve(strict=False):
+        raise ChatToolError(
+            (
+                "zotero_direction_b_"
+                "production_not_enabled"
+            ),
+            (
+                "Direction-B selected-book "
+                "import is not enabled for "
+                "production."
+            ),
+            status_code=503,
+        )
+
+    if not target_db_path.is_file():
+        raise ChatToolError(
+            (
+                "zotero_direction_b_"
+                "target_db_missing"
+            ),
+            (
+                "Direction-B target database "
+                "does not exist."
+            ),
+            status_code=503,
+        )
+
+    try:
+        preview = (
+            zotero_selected_book_preview_service
+            .resolve_selected_book_preview_token(
+                preview_token,
+                expected_db_path=(
+                    target_db_path
+                ),
+            )
+        )
+    except (
+        zotero_selected_book_preview_service
+        .ZoteroSelectedBookPreviewError
+    ) as exc:
+        raise ChatToolError(
+            exc.code,
+            exc.message,
+            status_code=exc.status_code,
+            details=exc.details,
+        ) from exc
+
+    if preview.get("status") != "ready":
+        raise ChatToolError(
+            "zotero_import_preview_not_ready",
+            (
+                "The Zotero selected-book "
+                "preview is not ready."
+            ),
+            status_code=409,
+        )
+
+    selected = (
+        preview.get(
+            "selected_attachment"
+        )
+        or {}
+    )
+
+    duplicate = (
+        preview.get(
+            "duplicate_check"
+        )
+        or {}
+    )
+
+    # B4 intentionally does NOT infer the
+    # existing target from Zotero item/attachment
+    # keys alone. Those keys are library-scoped.
+    # Until body provenance is library-aware,
+    # any duplicate requires explicit resolution
+    # in a later stage.
+    if bool(
+        duplicate.get(
+            "duplicate_found"
+        )
+    ):
+        raise ChatToolError(
+            (
+                "zotero_import_duplicate_"
+                "requires_review"
+            ),
+            (
+                "The selected Zotero book "
+                "already matches existing "
+                "library data. B4 will not "
+                "create another book body or "
+                "guess an existing target."
+            ),
+            status_code=409,
+        )
+
+    token = secrets.token_urlsafe(32)
+
+    record = ZoteroImportConfirmation(
+        preview_token=str(
+            preview_token
+        ),
+        target_db_path=(
+            target_db_path
+        ),
+        title=str(
+            (
+                preview.get(
+                    "zotero_item"
+                )
+                or {}
+            ).get(
+                "title"
+            )
+            or ""
+        ),
+        document_type="book",
+        page_count=int(
+            selected.get(
+                "page_count"
+            )
+            or 0
+        ),
+        annotation_count=int(
+            preview.get(
+                "annotation_count"
+            )
+            or 0
+        ),
+        child_note_count=int(
+            preview.get(
+                "child_note_count"
+            )
+            or 0
+        ),
+        duplicate_status=(
+            "not_detected"
+        ),
+        expires_at=(
+            time.monotonic()
+            + IMPORT_CONFIRMATION_TTL_SECONDS
+        ),
+    )
+
+    with _TOKEN_LOCK:
+        _purge_expired_tokens()
+
+        _IMPORT_CONFIRMATIONS[
+            _token_digest(token)
+        ] = record
+
+    return {
+        "status": "ok",
+        "source_type": (
+            "zotero_selected_book"
+        ),
+        "title": record.title,
+        "document_type": (
+            record.document_type
+        ),
+        "estimated_pages": (
+            record.page_count
+        ),
+        "annotation_count": (
+            record.annotation_count
+        ),
+        "child_note_count": (
+            record.child_note_count
+        ),
+        "duplicate_status": (
+            record.duplicate_status
+        ),
+        "confirmation_token": token,
+        "confirmation_expires_in_seconds": (
+            IMPORT_CONFIRMATION_TTL_SECONDS
+        ),
+    }
+
+
 def import_document(
     *,
     confirmation_token: str,
@@ -333,32 +553,148 @@ def import_document(
     if confirmed is not True:
         raise ChatToolError(
             "chat_import_confirmation_required",
-            "Explicit user confirmation is required before importing a document.",
+            (
+                "Explicit user confirmation "
+                "is required before importing "
+                "a document."
+            ),
             status_code=422,
         )
-    actual_runtime = runtime or ChatToolRuntime()
-    record = _consume_import_confirmation(confirmation_token)
-    _validate_import_source_unchanged(record)
-    importer = actual_runtime.commit_import or _commit_confirmed_import
+
+    actual_runtime = (
+        runtime
+        or ChatToolRuntime()
+    )
+
+    record = _consume_import_confirmation(
+        confirmation_token
+    )
+
+    if isinstance(
+        record,
+        ZoteroImportConfirmation,
+    ):
+        runtime_db = Path(
+            actual_runtime.db_path
+        ).resolve(strict=False)
+
+        if runtime_db != (
+            record.target_db_path
+        ):
+            raise ChatToolError(
+                "zotero_import_target_changed",
+                (
+                    "The Zotero import target "
+                    "changed after preview."
+                ),
+                status_code=409,
+            )
+
+        importer = (
+            actual_runtime
+            .commit_zotero_import
+            or _commit_confirmed_zotero_import
+        )
+
+    else:
+        _validate_import_source_unchanged(
+            record
+        )
+
+        importer = (
+            actual_runtime.commit_import
+            or _commit_confirmed_import
+        )
+
     try:
-        result = importer(record=record, runtime=actual_runtime)
+        result = importer(
+            record=record,
+            runtime=actual_runtime,
+        )
     except ChatToolError:
         raise
     except Exception as exc:
         raise ChatToolError(
             "import_document_failed",
-            "Search could not import the confirmed PDF.",
+            (
+                "Search could not import "
+                "the confirmed document."
+            ),
             status_code=500,
         ) from exc
+
+    duplicate_status = (
+        record.duplicate_status
+        if isinstance(
+            record,
+            ZoteroImportConfirmation,
+        )
+        else "not_detected"
+    )
+
     return {
-        "status": str(result.get("status") or "unknown"),
-        "document_id": result.get("document_id"),
-        "title": str(result.get("title") or record.title),
-        "document_type": record.document_type,
-        "chunk_count": int(result.get("chunk_count") or result.get("inserted_chunks") or 0),
-        "duplicate_status": "not_detected",
-        "error_code": result.get("error_code"),
+        "status": str(
+            result.get("status")
+            or "unknown"
+        ),
+        "document_id": (
+            result.get(
+                "document_id"
+            )
+        ),
+        "title": str(
+            result.get("title")
+            or record.title
+        ),
+        "document_type": (
+            record.document_type
+        ),
+        "chunk_count": int(
+            result.get("chunk_count")
+            or result.get(
+                "inserted_chunks"
+            )
+            or 0
+        ),
+        "duplicate_status": (
+            duplicate_status
+        ),
+        "error_code": (
+            result.get(
+                "error_code"
+            )
+        ),
     }
+
+
+def _commit_confirmed_zotero_import(
+    *,
+    record: ZoteroImportConfirmation,
+    runtime: ChatToolRuntime,
+) -> dict[str, Any]:
+    try:
+        return (
+            zotero_direction_b_import_service
+            .commit_selected_book_import_to_temp_db(
+                preview_token=(
+                    record.preview_token
+                ),
+                db_path=runtime.db_path,
+                body_importer=(
+                    runtime.zotero_body_importer
+                ),
+            )
+        )
+    except (
+        zotero_direction_b_import_service
+        .DirectionBSelectedBookImportError
+    ) as exc:
+        raise ChatToolError(
+            exc.code,
+            exc.message,
+            status_code=exc.status_code,
+            details=exc.details,
+        ) from exc
 
 
 def _commit_confirmed_import(
