@@ -19,7 +19,7 @@ try {
   await client.connect(transport);
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name).sort();
-  if (names.join(",") !== "export_evidence,fetch,search") {
+  if (names.join(",") !== "delete_document,delete_preview,export_evidence,fetch,import_document,import_preview,list_library,search") {
     throw new Error(`Unexpected MCP tools: ${names.join(", ")}`);
   }
 
@@ -59,6 +59,14 @@ try {
     throw new Error("export_evidence returned no content");
   }
 
+  const library = await client.callTool({
+    name: "list_library",
+    arguments: { status: "active", limit: 5 },
+  });
+  if (library.isError || !Array.isArray(library.structuredContent?.items)) {
+    throw new Error("list_library returned an invalid response");
+  }
+
   console.log(JSON.stringify({
     status: "ok",
     endpoint: endpoint.toString(),
@@ -68,6 +76,7 @@ try {
     fetched_source_type: first.source_type,
     export_format: exported.structuredContent?.format,
     export_content_length: exported.structuredContent?.content_length,
+    library_count: library.structuredContent?.count,
   }, null, 2));
 } finally {
   await client.close();

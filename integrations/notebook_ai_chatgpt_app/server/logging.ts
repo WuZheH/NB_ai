@@ -1,5 +1,13 @@
 export interface ToolLogRecord {
-  tool: "search" | "fetch" | "export_evidence";
+  tool:
+    | "search"
+    | "fetch"
+    | "export_evidence"
+    | "list_library"
+    | "import_preview"
+    | "import_document"
+    | "delete_preview"
+    | "delete_document";
   duration_ms: number;
   result_count?: number;
   error_code?: string;

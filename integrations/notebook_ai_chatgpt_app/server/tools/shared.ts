@@ -36,6 +36,20 @@ export const notebookResultOutputSchema = notebookFragmentOutputSchema.extend({
   semantic_score: z.number().nullable(),
 });
 
+export const WRITE_ANNOTATIONS = Object.freeze({
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: false,
+});
+
+export const DESTRUCTIVE_ANNOTATIONS = Object.freeze({
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: false,
+});
+
 export function toolMetadata(
   invoking: string,
   invoked: string,

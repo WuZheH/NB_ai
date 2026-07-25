@@ -9,7 +9,38 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-EXPECTED_MCP_TOOLS = frozenset({"search", "fetch", "export_evidence"})
+EXPECTED_MCP_TOOLS = frozenset(
+    {
+        "search",
+        "fetch",
+        "export_evidence",
+        "list_library",
+        "import_preview",
+        "import_document",
+        "delete_preview",
+        "delete_document",
+    }
+)
+EXPECTED_MCP_ANNOTATIONS = {
+    "import_document": {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+    "delete_document": {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+}
+READ_ONLY_MCP_ANNOTATIONS = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
 MCP_WIDGET_MIME = "text/html;profile=mcp-app"
 MAX_MCP_RESPONSE_BYTES = 4 * 1024 * 1024
 
@@ -135,7 +166,7 @@ def check_mcp_health(port: int) -> HealthResult:
 
 
 def check_mcp_contract(port: int, *, timeout_seconds: float = 2.0) -> HealthResult:
-    """Verify health, the three read-only tools, and the MCP Apps widget MIME."""
+    """Verify health, all eight Chat-first tools, annotations, and widget MIME."""
 
     started = time.monotonic()
     health = check_mcp_health(port)
@@ -157,10 +188,13 @@ def check_mcp_contract(port: int, *, timeout_seconds: float = 2.0) -> HealthResu
             not isinstance(tool.get("inputSchema"), dict)
             or not isinstance(tool.get("outputSchema"), dict)
             or tool.get("_meta", {}).get("notebookAi/errorContract") != "isError-content-v1"
-            or tool.get("annotations", {}).get("readOnlyHint") is not True
-            for tool in by_name.values()
+            or tool.get("annotations")
+            != EXPECTED_MCP_ANNOTATIONS.get(name, READ_ONLY_MCP_ANNOTATIONS)
+            for name, tool in by_name.items()
         ):
             return HealthResult(False, "mcp_tool_metadata_invalid", time.monotonic() - started)
+        if not _import_file_param_contract_valid(by_name["import_preview"]):
+            return HealthResult(False, "mcp_file_param_contract_invalid", time.monotonic() - started)
 
         resources = _mcp_request(port, "resources/list", {}, timeout_seconds=timeout_seconds)
         listed_resources = resources.get("resources")
@@ -199,6 +233,27 @@ def check_mcp_contract(port: int, *, timeout_seconds: float = 2.0) -> HealthResu
         return HealthResult(False, "mcp_contract_unreachable", time.monotonic() - started)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return HealthResult(False, "mcp_contract_invalid", time.monotonic() - started)
+
+
+def _import_file_param_contract_valid(tool: dict[str, Any]) -> bool:
+    metadata = tool.get("_meta")
+    input_schema = tool.get("inputSchema")
+    if not isinstance(metadata, dict) or metadata.get("openai/fileParams") != ["file"]:
+        return False
+    if not isinstance(input_schema, dict):
+        return False
+    properties = input_schema.get("properties")
+    if not isinstance(properties, dict):
+        return False
+    file_schema = properties.get("file")
+    if not isinstance(file_schema, dict):
+        return False
+    file_properties = file_schema.get("properties")
+    if not isinstance(file_properties, dict):
+        return False
+    if set(file_properties) < {"download_url", "file_id", "mime_type", "file_name"}:
+        return False
+    return set(file_schema.get("required") or []) == {"download_url", "file_id"}
 
 
 def _mcp_request(

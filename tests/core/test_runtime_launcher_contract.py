@@ -154,7 +154,7 @@ def test_fastapi_readiness_accepts_only_a_safe_empty_library(monkeypatch) -> Non
     assert observed == [True, False, True, False, False, False, False]
 
 
-def test_mcp_contract_requires_three_read_only_tools_and_widget_mime(monkeypatch) -> None:
+def test_mcp_contract_requires_eight_annotated_tools_and_widget_mime(monkeypatch) -> None:
     monkeypatch.setattr(runtime_health, "check_mcp_health", lambda port: HealthResult(True))
 
     def request(port: int, method: str, params: dict[str, object], *, timeout_seconds: float):
@@ -164,12 +164,40 @@ def test_mcp_contract_requires_three_read_only_tools_and_widget_mime(monkeypatch
                 "tools": [
                     {
                         "name": name,
-                        "inputSchema": {},
+                        "inputSchema": (
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "file": {
+                                        "type": "object",
+                                        "properties": {
+                                            "download_url": {"type": "string"},
+                                            "file_id": {"type": "string"},
+                                            "mime_type": {"type": "string"},
+                                            "file_name": {"type": "string"},
+                                        },
+                                        "required": ["download_url", "file_id"],
+                                    }
+                                },
+                            }
+                            if name == "import_preview"
+                            else {}
+                        ),
                         "outputSchema": {"type": "object"},
-                        "annotations": {"readOnlyHint": True},
-                        "_meta": {"notebookAi/errorContract": "isError-content-v1"},
+                        "annotations": runtime_health.EXPECTED_MCP_ANNOTATIONS.get(
+                            name,
+                            runtime_health.READ_ONLY_MCP_ANNOTATIONS,
+                        ),
+                        "_meta": {
+                            "notebookAi/errorContract": "isError-content-v1",
+                            **(
+                                {"openai/fileParams": ["file"]}
+                                if name == "import_preview"
+                                else {}
+                            ),
+                        },
                     }
-                    for name in ("search", "fetch", "export_evidence")
+                    for name in runtime_health.EXPECTED_MCP_TOOLS
                 ]
             }
         if method == "resources/list":
@@ -247,6 +275,23 @@ def test_search_environment_names_take_priority_and_roaming_config_is_separate(
     assert config.node_exe.name == "search-node.exe"
     assert config.backend_port == 18001
     assert config.mcp_port == 18788
+
+
+def test_supervisor_passes_one_ephemeral_chat_token_only_to_backend_and_mcp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SEARCH_CHAT_GATEWAY_TOKEN", raising=False)
+    supervisor = RuntimeSupervisor(_config(tmp_path))
+    fastapi = supervisor._fastapi_spec()
+    mcp = supervisor._mcp_spec()
+    fastapi_token = fastapi.environment["SEARCH_CHAT_GATEWAY_TOKEN"]
+    assert len(fastapi_token) >= 32
+    assert mcp.environment["SEARCH_CHAT_GATEWAY_TOKEN"] == fastapi_token
+    assert mcp.environment["SEARCH_BACKEND_BEARER_TOKEN"] == fastapi_token
+    assert "SEARCH_ACTIONS_BEARER_TOKEN" not in fastapi.environment
+    assert "SEARCH_ACTIONS_BEARER_TOKEN" not in mcp.environment
+    assert fastapi_token not in str(supervisor.status.to_dict())
 
 
 def test_runtime_config_reads_legacy_config_without_copying_it(tmp_path: Path) -> None:

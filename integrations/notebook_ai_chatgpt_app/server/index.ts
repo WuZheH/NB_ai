@@ -6,6 +6,7 @@ export { requireUnauthenticatedDevelopment } from "./security.js";
 export { NOTEBOOK_TOOL_NAMES } from "./tools/index.js";
 export { RESOURCE_MIME_TYPE } from "./widgetResource.js";
 export { startNotebookMcpHttpServer } from "./http.js";
+export { actionsOpenApiDocument, authenticateActions, dispatchAction } from "./actions.js";
 
 import { startNotebookMcpHttpServer } from "./http.js";
 

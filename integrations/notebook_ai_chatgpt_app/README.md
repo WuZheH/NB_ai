@@ -1,14 +1,20 @@
 # Search for ChatGPT
 
-This local Developer Mode app lets ChatGPT search the private Search collection, render PDF passages and Zotero reading notes in an embedded React widget, fetch one complete evidence fragment, and export selected evidence. The MCP server is deliberately a thin HTTP adapter: embedding, semantic recall, reranking, fragment resolution, and evidence formatting remain in the Search Python backend.
+This local Developer Mode app exposes the Chat-first Search surface: research
+search, exact evidence fetch, evidence export, compact library listing, PDF
+import preview/commit, and safe book deletion preview/commit. The MCP server is
+a thin adapter; ranking, importing, deletion, recovery, database, FTS, and
+vector behavior remain in the Search Python backend.
 
-The app does **not** call the OpenAI API, run an external LLM, access SQLite from Node or the widget, or write to the Search collection.
+Node and the widget never access SQLite. Read tools cannot mutate Search.
+`import_document` and `delete_document` are explicit write tools and require a
+fresh preview token plus current-conversation confirmation.
 
 ## Architecture
 
 ```text
-ChatGPT
-  -> HTTPS tunnel -> MCP Streamable HTTP /mcp (loopback-only Node server)
+ChatGPT / Codex
+  -> Secure MCP Tunnel -> MCP Streamable HTTP /mcp (loopback-only Node server)
   -> Search FastAPI on 127.0.0.1
   -> existing Qwen3 embedding + semantic recall + Qwen3 reranker + final ranking
 ```
@@ -20,22 +26,30 @@ calls, model-context updates, and link opening. `window.openai` is used only as
 an additive ChatGPT compatibility surface. The widget never calls the backend
 or production data directly.
 
-The three MCP tools are read-only:
+The stable tool surface is:
 
-- `search`: extended Developer Mode search input (`query`, `limit`, `source_types`, `document_ids`, `include_context`), with at most 20 results.
+- `search`: compact ranked snippets, at most 20 results.
 - `fetch`: one stable `fragment_id`.
 - `export_evidence`: at most 50 fragment ids in `markdown`, `jsonl`, or `json` format.
+- `list_library`: compact active/archived library results.
+- `import_preview`: ChatGPT PDF attachment or Search Import Inbox preview.
+- `import_document`: confirmed import through the existing Core pipeline.
+- `delete_preview`: compact Candidate10 deletion preview.
+- `delete_document`: confirmed destructive deletion through the existing Core
+  transaction and recovery service.
 
-This extended `search` contract is intended for this private Developer Mode app; it is not the strict two-tool company-knowledge `search`/`fetch` compatibility profile.
+The same Core has a thin authenticated Actions fallback. Apps and Actions are
+never configured in the same GPT.
 
 ## Requirements
 
 - Search backend dependencies in the existing project conda environment.
 - Node.js 20.19 or newer.
-- An HTTPS tunnel program already installed by the user for the short connection test.
+- OpenAI Secure MCP Tunnel access for the private connection.
 - ChatGPT Developer Mode access.
 
-No OpenAI API key is used or required.
+Tunnel provisioning uses a Platform tunnel runtime key managed outside this
+repository. Search itself does not call an OpenAI model API.
 
 ## Install and build
 
@@ -122,26 +136,19 @@ In Inspector:
 1. Select **Streamable HTTP**.
 2. Enter `http://127.0.0.1:8787/mcp`.
 3. Connect and run **List Tools**.
-4. Confirm `search`, `fetch`, and `export_evidence` are present and read-only.
-5. Call `search`, pass one returned `fragment_id` to `fetch`, then pass that id to `export_evidence`.
+4. Confirm all eight tools and their read/write/destructive annotations.
+5. Call `search`, `fetch`, `export_evidence`, and `list_library`. Use only
+   isolated fixtures for confirmed import/delete tests.
 6. Open the widget resource and confirm the MIME type is `text/html;profile=mcp-app`.
 
 The repository tests use the official MCP SDK in-memory transport and a real Streamable HTTP client smoke; they do not write production data. Installing Inspector itself is optional and separate from `npm ci`; if it is not already installed, obtain the pinned `@modelcontextprotocol/inspector@0.22.0` only under the user's normal package-install policy.
 
-## Manual development fallback: short-lived HTTPS tunnel
+## Secure MCP Tunnel
 
-Local Search, Codex, and Zotero do not need a Tunnel. ChatGPT App requires an HTTPS endpoint; the commands below are only a temporary, unauthenticated development fallback and must not be configured for login autostart.
-
-For a brief manual Developer Mode diagnostic, start a tunnel only after both local services pass their checks. Use a tunnel program you already trust and have installed; do not put its token or generated URL in Git. Examples:
-
-```powershell
-$env:SEARCH_CLOUDFLARED = "C:\Tools\cloudflared.exe"
-powershell -NoProfile -ExecutionPolicy Bypass -File ..\..\scripts\start_quick_tunnel.ps1
-```
-
-Only use the `/mcp` URL printed after the script's public health check succeeds. The script does not modify ChatGPT App. Clear the development switch from the current shell after testing.
-
-Unauthenticated tunnel mode is for brief local Developer Mode testing only. A hosted deployment must implement the Apps SDK/MCP OAuth 2.1 protected-resource flow and token validation before accepting traffic. `SEARCH_BACKEND_BEARER_TOKEN` is only a backend-authentication extension point; never commit a real value.
+Local Search keeps 8000 and 8787 on loopback. The formal ChatGPT connection
+uses the official outbound-only Secure MCP Tunnel. Do not use Quick Tunnel,
+public raw ports, or an unauthenticated public URL. Tunnel ID, runtime API key,
+and profile live outside Git and logs.
 
 ## Connect from ChatGPT
 
@@ -153,7 +160,7 @@ Unauthenticated tunnel mode is for brief local Developer Mode testing only. A ho
 
    > Searches my private Search collection for relevant PDF passages and Zotero reading notes before answering research and literature questions.
 
-6. Enter the short-lived HTTPS tunnel URL ending in `/mcp`.
+6. Select the configured Secure MCP Tunnel.
 7. Finish creating the app and enable it for a new chat.
 8. After changing tool or widget metadata, return to the app in **Settings → Plugins** and use **Refresh** before testing again.
 
@@ -161,7 +168,9 @@ First test prompt:
 
 > 请在我的资料中搜索“避免动作生成中的脚步滑动”，分别列出 PDF 原文和我的 Zotero 笔记，并标注页码和 fragment_id。
 
-Creating and enabling the app in ChatGPT is a manual user action; this repository never registers the app automatically. Until `search`, `fetch`, and `export_evidence` have all succeeded inside ChatGPT, the truthful status is `PENDING_CHATGPT_TUNNEL_CONFIGURATION`.
+Creating and enabling the app is a manual account action. Until all four read
+workflows succeed in a real chat, the truthful status is
+`PENDING_CHATGPT_TUNNEL_CONFIGURATION`.
 
 ## Official sources and example lineage
 
@@ -175,6 +184,8 @@ Implementation follows the current official OpenAI Apps SDK documentation:
 - [Authentication](https://developers.openai.com/apps-sdk/build/auth/)
 - [Connect from ChatGPT](https://developers.openai.com/apps-sdk/deploy/connect-chatgpt/)
 - [Testing your integration](https://developers.openai.com/apps-sdk/deploy/testing/)
+- [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+- [Plugins](https://learn.chatgpt.com/docs/plugins)
 - [Official examples](https://developers.openai.com/apps-sdk/build/examples/)
 
 The widget structure and list-card interaction patterns are based on the official [`openai/openai-apps-sdk-examples`](https://github.com/openai/openai-apps-sdk-examples) **Pizzaz list-view** example (repository main observed at `18cc38e`), while the server transport follows the official stateless Streamable HTTP quickstart. The lockfile uses the current compatible registry contract (`@modelcontextprotocol/ext-apps` 1.7.4 with `@modelcontextprotocol/sdk` 1.29.0); this supersedes older quickstart version snippets whose peer range no longer resolves. No search or ranking algorithm is copied into TypeScript.

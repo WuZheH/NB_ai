@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import sys
 from threading import Thread
@@ -157,6 +158,12 @@ class RuntimeSupervisor:
         self.logger = logger or RuntimeMetadataLogger(config.paths.runtime_log_file)
         self.tunnel_probe = CloudflareTunnelProbe(config)
         self.control_queue = ControlRequestQueue(config.paths.control_dir)
+        configured_chat_token = os.environ.get("SEARCH_CHAT_GATEWAY_TOKEN", "").strip()
+        self._chat_gateway_token = (
+            configured_chat_token
+            if len(configured_chat_token) >= 32
+            else secrets.token_urlsafe(32)
+        )
         self._managed: dict[ComponentName, ManagedProcess] = {}
         self.status = _empty_status(RuntimeState.STOPPED, config=config)
 
@@ -436,8 +443,13 @@ class RuntimeSupervisor:
         )
 
     def _fastapi_spec(self) -> ProcessSpec:
+        import_inbox = str(
+            self.config.paths.data_project_root.with_name("search-import-inbox")
+        )
         environment = {
             "PYTHONDONTWRITEBYTECODE": "1",
+            "SEARCH_CHAT_GATEWAY_TOKEN": self._chat_gateway_token,
+            "SEARCH_IMPORT_INBOX": import_inbox,
             "SEARCH_LOG_DIR": str(self.config.paths.logs_dir),
         }
         if self.config.machine_config.path is not None:
@@ -496,8 +508,14 @@ class RuntimeSupervisor:
         )
 
     def _mcp_spec(self) -> ProcessSpec:
+        import_inbox = str(
+            self.config.paths.data_project_root.with_name("search-import-inbox")
+        )
         environment = {
             "SEARCH_BACKEND_URL": self.config.backend_url,
+            "SEARCH_BACKEND_BEARER_TOKEN": self._chat_gateway_token,
+            "SEARCH_CHAT_GATEWAY_TOKEN": self._chat_gateway_token,
+            "SEARCH_IMPORT_INBOX": import_inbox,
             "SEARCH_ALLOW_UNAUTHENTICATED_MCP_DEV": "1",
             "SEARCH_LOG_DIR": str(self.config.paths.logs_dir),
             "SEARCH_MCP_PORT": str(self.config.mcp_port),
@@ -1063,7 +1081,10 @@ class RuntimeController:
             executable=self.config.python_exe,
             arguments=tuple(supervisor_arguments),
             cwd=self.config.paths.runtime_root,
-            environment={"PYTHONDONTWRITEBYTECODE": "1"},
+            environment={
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "SEARCH_CHAT_GATEWAY_TOKEN": secrets.token_urlsafe(32),
+            },
         )
         try:
             self.process_manager.spawn(spec)

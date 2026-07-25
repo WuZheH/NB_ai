@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.chat_tool_api import router as chat_tool_router
 from app.api.evidence_export_api import router as evidence_export_router
 from app.api.import_api import router as import_router
 from app.api.library.router import router as library_router
@@ -30,6 +31,7 @@ from app.services.vector_store_worker import start_vector_store_worker, stop_vec
 
 API_ROUTERS = (
     product_router,
+    chat_tool_router,
     library_router,
     retrieval_router,
     evidence_export_router,

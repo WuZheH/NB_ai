@@ -81,6 +81,98 @@ export interface EvidenceExportResponse {
   [key: string]: unknown;
 }
 
+export interface LibraryItem {
+  document_id: number;
+  title: string;
+  type: string;
+  imported_at: string;
+  chunk_count: number;
+  has_pdf: boolean;
+  duplicate_status: string;
+  status: "active" | "archived";
+}
+
+export interface ListLibraryInput {
+  query?: string;
+  document_type?: string;
+  status: "active" | "archived" | "all";
+  limit: number;
+}
+
+export interface ListLibraryResponse {
+  status: "ok";
+  count: number;
+  items: LibraryItem[];
+  truncated: boolean;
+}
+
+export interface ImportPreviewInput {
+  inbox_filename?: string;
+}
+
+export interface OpenAIFileInput {
+  download_url: string;
+  file_id: string;
+  mime_type?: string;
+  file_name?: string;
+}
+
+export interface ImportPreviewResponse {
+  status: "ok";
+  filename: string;
+  title: string;
+  pdf_sha256: string;
+  duplicate_status: string;
+  existing_document_id: number | null;
+  estimated_pages: number | null;
+  estimated_chunks: number | null;
+  document_type: string;
+  warnings: string[];
+  confirmation_token: string | null;
+  confirmation_expires_in_seconds: number | null;
+}
+
+export interface ImportDocumentInput {
+  confirmation_token: string;
+  confirmed: true;
+}
+
+export interface ImportDocumentResponse {
+  status: string;
+  document_id: number | null;
+  title: string;
+  document_type: string;
+  chunk_count: number;
+  duplicate_status: string;
+  error_code: string | null;
+}
+
+export interface DeletePreviewResponse {
+  status: "ok";
+  document_id: number;
+  title: string;
+  safe_to_delete: boolean;
+  pdf_preserved: boolean;
+  notes_preserved: boolean;
+  blockers: string[];
+  confirmation_token: string;
+  confirmation_expires_in_seconds: number;
+}
+
+export interface DeleteDocumentInput {
+  confirmation_token: string;
+  confirmed: true;
+}
+
+export interface DeleteDocumentResponse {
+  status: string;
+  document_id: number;
+  title: string;
+  recovery_created: boolean;
+  cleanup_complete: boolean;
+  error_code: string | null;
+}
+
 export function unwrapFragment(payload: FragmentResponse | NotebookFragment): NotebookFragment {
   if ("fragment" in payload && payload.fragment) {
     return payload.fragment;

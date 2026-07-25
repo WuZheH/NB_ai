@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
+import { handleActionsHttpRequest } from "./actions.js";
 import { createNotebookMcpServer } from "./app.js";
 import { logDevelopmentWarning } from "./logging.js";
 import { requireUnauthenticatedDevelopment } from "./security.js";
@@ -20,6 +21,9 @@ export async function startNotebookMcpHttpServer(): Promise<Server> {
 
     if (request.method === "GET" && url.pathname === "/healthz") {
       sendJson(response, 200, { status: "ok", service: "notebook-ai-mcp" });
+      return;
+    }
+    if (await handleActionsHttpRequest(request, response)) {
       return;
     }
     if (url.pathname !== "/mcp") {

@@ -58,16 +58,22 @@ def classify_pdf_import(
     zotero_key: str | None = None,
     zotero_pdf_source_id: int | None = None,
     zotero_metadata: dict[str, Any] | None = None,
+    allowed_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    pdf = resolve_pdf_path(pdf_path)
+    pdf = _resolve_classification_path(pdf_path, allowed_root=allowed_root)
     metadata = _load_zotero_metadata(
         source=source,
         zotero_key=zotero_key,
         zotero_pdf_source_id=zotero_pdf_source_id,
         explicit=zotero_metadata,
     )
-    probe = probe_pdf(pdf)
-    duplicate = find_duplicate_pdf(pdf, metadata=metadata, title=probe.title)
+    probe = probe_pdf(pdf, allowed_root=allowed_root)
+    duplicate = find_duplicate_pdf(
+        pdf,
+        metadata=metadata,
+        title=probe.title,
+        allowed_root=allowed_root,
+    )
     result = classify_pdf_probe(probe, zotero_metadata=metadata)
     return {
         "status": "ok",
@@ -231,15 +237,27 @@ def commit_pdf_import(request: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def probe_pdf(pdf_path: str | Path) -> PdfProbe:
-    pdf = resolve_pdf_path(pdf_path)
+def probe_pdf(
+    pdf_path: str | Path,
+    *,
+    allowed_root: str | Path | None = None,
+) -> PdfProbe:
+    pdf = _resolve_classification_path(pdf_path, allowed_root=allowed_root)
     fitz = load_fitz_backend()
     with fitz.open(pdf) as document:
         page_count = len(document)
         metadata_title = str((document.metadata or {}).get("title") or "").strip()
-    outline_candidates = extract_pdf_outline_chapter_candidates(pdf)
-    outline_titles = [candidate.title for candidate in outline_candidates]
-    outline_chapter_count = len(outline_candidates)
+        external_outline = document.get_toc(simple=True) if allowed_root is not None else None
+    if external_outline is None:
+        outline_candidates = extract_pdf_outline_chapter_candidates(pdf)
+        outline_titles = [candidate.title for candidate in outline_candidates]
+    else:
+        outline_titles = [
+            str(item[1]).strip()
+            for item in external_outline
+            if isinstance(item, (list, tuple)) and len(item) >= 2 and str(item[1]).strip()
+        ]
+    outline_chapter_count = len(outline_titles)
     return PdfProbe(
         pdf_path=pdf,
         title=metadata_title or pdf.stem,
@@ -256,8 +274,9 @@ def find_duplicate_pdf(
     *,
     metadata: ZoteroImportMetadata | None = None,
     title: str | None = None,
+    allowed_root: str | Path | None = None,
 ) -> dict[str, Any] | None:
-    pdf = resolve_pdf_path(pdf_path)
+    pdf = _resolve_classification_path(pdf_path, allowed_root=allowed_root)
     normalized_pdf = str(pdf)
     normalized_title = _normalize_title(title or metadata.title or "")
     with SessionLocal() as session:
@@ -271,6 +290,25 @@ def find_duplicate_pdf(
         if normalized_title and _normalize_title(str(item["title"] or "")) == normalized_title:
             return _duplicate_payload(item, "title")
     return None
+
+
+def _resolve_classification_path(
+    pdf_path: str | Path,
+    *,
+    allowed_root: str | Path | None,
+) -> Path:
+    if allowed_root is None:
+        return resolve_pdf_path(pdf_path)
+    root = Path(allowed_root).resolve(strict=True)
+    pdf = Path(pdf_path).resolve(strict=True)
+    if (
+        not root.is_dir()
+        or not pdf.is_file()
+        or pdf.suffix.lower() != ".pdf"
+        or not pdf.is_relative_to(root)
+    ):
+        raise FileNotFoundError("PDF is outside the explicit import root")
+    return pdf
 
 
 def _duplicate_payload(item: Any, reason: str) -> dict[str, Any]:

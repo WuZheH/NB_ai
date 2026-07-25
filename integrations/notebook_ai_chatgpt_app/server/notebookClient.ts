@@ -3,6 +3,15 @@ import {
   type EvidenceExportInput,
   type EvidenceExportResponse,
   type FragmentResponse,
+  type ImportDocumentInput,
+  type ImportDocumentResponse,
+  type ImportPreviewInput,
+  type ImportPreviewResponse,
+  type ListLibraryInput,
+  type ListLibraryResponse,
+  type DeleteDocumentInput,
+  type DeleteDocumentResponse,
+  type DeletePreviewResponse,
   type NotebookFragment,
   type NotebookResult,
   type NotebookSearchInput,
@@ -15,6 +24,7 @@ export interface NotebookClientOptions {
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
+  adapter?: "mcp" | "actions";
 }
 
 export class NotebookBackendError extends Error {
@@ -45,6 +55,7 @@ export class NotebookClient {
   private readonly bearerToken?: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly adapter: "mcp" | "actions";
 
   constructor(options: NotebookClientOptions = {}) {
     const environment = options.env ?? process.env;
@@ -59,6 +70,7 @@ export class NotebookClient {
       ?? environment.NOTEBOOK_AI_BACKEND_BEARER_TOKEN;
     this.timeoutMs = options.timeoutMs ?? 120_000;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.adapter = options.adapter ?? "mcp";
   }
 
   async search(input: NotebookSearchInput): Promise<NotebookSearchResponse> {
@@ -133,6 +145,50 @@ export class NotebookClient {
       throw invalidBackendResponse();
     }
     return response;
+  }
+
+  async listLibrary(input: ListLibraryInput): Promise<ListLibraryResponse> {
+    return this.requestChatTool<ListLibraryResponse>("/api/v1/chat-tools/list-library", input, "ok");
+  }
+
+  async importPreview(input: ImportPreviewInput): Promise<ImportPreviewResponse> {
+    return this.requestChatTool<ImportPreviewResponse>("/api/v1/chat-tools/import-preview", input, "ok");
+  }
+
+  async importDocument(input: ImportDocumentInput): Promise<ImportDocumentResponse> {
+    return this.requestChatTool<ImportDocumentResponse>("/api/v1/chat-tools/import-document", input);
+  }
+
+  async deletePreview(documentId: number): Promise<DeletePreviewResponse> {
+    return this.requestChatTool<DeletePreviewResponse>(
+      "/api/v1/chat-tools/delete-preview",
+      { document_id: documentId },
+      "ok",
+    );
+  }
+
+  async deleteDocument(input: DeleteDocumentInput): Promise<DeleteDocumentResponse> {
+    return this.requestChatTool<DeleteDocumentResponse>("/api/v1/chat-tools/delete-document", input);
+  }
+
+  private async requestChatTool<T>(
+    path: string,
+    input: unknown,
+    expectedStatus?: string,
+  ): Promise<T> {
+    const response = await this.requestJson<T>(path, {
+      method: "POST",
+      headers: { "X-Search-Chat-Adapter": this.adapter },
+      body: JSON.stringify(input),
+    });
+    if (
+      !isRecord(response)
+      || typeof response.status !== "string"
+      || (expectedStatus !== undefined && response.status !== expectedStatus)
+    ) {
+      throw invalidBackendResponse();
+    }
+    return response as T;
   }
 
   private async requestJson<T>(path: string, init: RequestInit): Promise<T> {

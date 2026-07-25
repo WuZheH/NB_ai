@@ -93,7 +93,7 @@ def test_delete_routes_are_post_only_and_preview_is_get() -> None:
     assert methods["/api/v1/library/management/restore"] == {"POST"}
 
 
-def test_mcp_contract_does_not_expose_delete_or_archive_tools() -> None:
+def test_chat_first_mcp_exposes_guarded_delete_tools_but_no_archive_tool() -> None:
     server = "\n".join(
         (
             _read("integrations/notebook_ai_chatgpt_app/server/app.ts"),
@@ -108,7 +108,11 @@ def test_mcp_contract_does_not_expose_delete_or_archive_tools() -> None:
         "/documents/delete-batch",
     ):
         assert forbidden not in server
-    assert 'NOTEBOOK_TOOL_NAMES = ["search", "fetch", "export_evidence"]' in server
+    assert '"delete_document"' in server
+    assert '"delete_preview"' in server
+    assert '"import_document"' in server
+    assert '"import_preview"' in server
+    assert '"list_library"' in server
 
 
 def test_local_delete_security_rejects_forwarded_and_non_renderer_calls() -> None:
