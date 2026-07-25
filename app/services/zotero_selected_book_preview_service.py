@@ -346,6 +346,108 @@ def build_selected_book_preview(
     }
 
 
+def resolve_selected_book_preview_token(
+    preview_token: str,
+    *,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    token = str(preview_token or "").strip()
+
+    if not token:
+        raise ZoteroSelectedBookPreviewError(
+            status_code=422,
+            code="preview_token_required",
+            message="Preview token is required.",
+        )
+
+    timestamp = float(
+        time.time() if now_ts is None else now_ts
+    )
+
+    with _PREVIEW_CACHE_LOCK:
+        entry = dict(
+            _PREVIEW_CACHE.get(token) or {}
+        )
+
+    if not entry:
+        raise ZoteroSelectedBookPreviewError(
+            status_code=410,
+            code="preview_token_unknown",
+            message=(
+                "The Zotero import preview is unavailable. "
+                "Run preview again."
+            ),
+        )
+
+    if timestamp >= float(entry["expires_at"]):
+        with _PREVIEW_CACHE_LOCK:
+            _PREVIEW_CACHE.pop(token, None)
+
+        raise ZoteroSelectedBookPreviewError(
+            status_code=410,
+            code="preview_token_expired",
+            message=(
+                "The Zotero import preview expired. "
+                "Run preview again."
+            ),
+        )
+
+    try:
+        current = build_selected_book_preview(
+            zotero_item_key=entry[
+                "zotero_item_key"
+            ],
+            zotero_attachment_key=entry[
+                "zotero_attachment_key"
+            ],
+            snapshot_path=entry[
+                "snapshot_path"
+            ],
+            db_path=entry["db_path"],
+            config=entry["config"],
+            now_ts=timestamp,
+            issue_token=False,
+        )
+    except ZoteroSelectedBookPreviewError as exc:
+        raise ZoteroSelectedBookPreviewError(
+            status_code=409,
+            code="preview_source_drift",
+            message=(
+                "The Zotero source changed after preview. "
+                "Run preview again."
+            ),
+            details={
+                "cause_code": exc.code,
+            },
+        ) from exc
+
+    current_fingerprint = current[
+        "source_revision"
+    ]["fingerprint"]
+
+    if current_fingerprint != entry[
+        "source_revision_fingerprint"
+    ]:
+        raise ZoteroSelectedBookPreviewError(
+            status_code=409,
+            code="preview_source_drift",
+            message=(
+                "The Zotero source changed after preview. "
+                "Run preview again."
+            ),
+            details={
+                "preview_fingerprint": entry[
+                    "source_revision_fingerprint"
+                ],
+                "current_fingerprint": (
+                    current_fingerprint
+                ),
+            },
+        )
+
+    return current
+
+
 def validate_selected_book_preview_token(
     preview_token: str,
     *,

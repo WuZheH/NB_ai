@@ -41,6 +41,7 @@ PERSONAL_NOTE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("source_uri", "TEXT"),
     ("source_created_at", "TEXT"),
     ("source_updated_at", "TEXT"),
+    ("source_version", "INTEGER"),
     ("source_content_hash", "TEXT"),
     ("source_missing", "INTEGER NOT NULL DEFAULT 0"),
 )
