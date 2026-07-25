@@ -192,7 +192,27 @@ export async function dispatchAction(
     });
   }
   if (action === "import_preview") {
-    return await client.importPreview({ inbox_filename: optionalString(input.inbox_filename, 255) });
+    const sourceType = input.source_type === undefined
+      ? "local_pdf"
+      : requiredImportSourceType(input.source_type);
+    const inboxFilename = optionalString(input.inbox_filename, 255);
+    const zoteroItemKey = optionalString(input.zotero_item_key, 64);
+    const zoteroAttachmentKey = optionalString(input.zotero_attachment_key, 64);
+    if (sourceType === "local_pdf" && (zoteroItemKey || zoteroAttachmentKey)) {
+      throw new ActionRequestError("ACTIONS_INVALID_ARGUMENT", "local_pdf does not accept Zotero keys.");
+    }
+    if (sourceType === "zotero_selected_book" && (!zoteroItemKey || inboxFilename)) {
+      throw new ActionRequestError(
+        "ACTIONS_INVALID_ARGUMENT",
+        "zotero_selected_book requires zotero_item_key and does not accept inbox_filename.",
+      );
+    }
+    return await client.importPreview({
+      source_type: sourceType,
+      inbox_filename: inboxFilename,
+      zotero_item_key: zoteroItemKey,
+      zotero_attachment_key: zoteroAttachmentKey,
+    });
   }
   if (action === "import_document") {
     requireConfirmed(input.confirmed, "ACTIONS_IMPORT_CONFIRMATION_REQUIRED");
@@ -313,6 +333,11 @@ function optionalString(value: unknown, maximum: number): string | undefined {
   return requiredString(value, "value", maximum);
 }
 
+function requiredImportSourceType(value: unknown): "local_pdf" | "zotero_selected_book" {
+  if (value === "local_pdf" || value === "zotero_selected_book") return value;
+  throw new ActionRequestError("ACTIONS_INVALID_ARGUMENT", "source_type is invalid.");
+}
+
 function requiredStringArray(value: unknown, name: string, maximumItems: number, maximumLength: number): string[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > maximumItems) {
     throw new ActionRequestError("ACTIONS_INVALID_ARGUMENT", `${name} is invalid.`);
@@ -391,7 +416,40 @@ function actionInputSchema(name: string): Record<string, unknown> {
     properties.status = { type: "string", enum: ["active", "archived", "all"], default: "active" };
     properties.limit = { type: "integer", minimum: 1, maximum: 50, default: 20 };
   } else if (name === "import_preview") {
-    properties.inbox_filename = { type: "string", maxLength: 255 };
+    properties.source_type = {
+      type: "string",
+      enum: ["local_pdf", "zotero_selected_book"],
+      default: "local_pdf",
+    };
+    properties.inbox_filename = { type: "string", minLength: 1, maxLength: 255 };
+    properties.zotero_item_key = { type: "string", minLength: 1, maxLength: 64 };
+    properties.zotero_attachment_key = { type: "string", minLength: 1, maxLength: 64 };
+    return {
+      type: "object",
+      additionalProperties: false,
+      properties,
+      oneOf: [
+        {
+          properties: {
+            source_type: { type: "string", const: "local_pdf" },
+          },
+          not: {
+            anyOf: [
+              { required: ["zotero_item_key"] },
+              { required: ["zotero_attachment_key"] },
+            ],
+          },
+        },
+        {
+          required: ["source_type", "zotero_item_key"],
+          properties: {
+            source_type: { type: "string", const: "zotero_selected_book" },
+          },
+          not: { required: ["inbox_filename"] },
+        },
+      ],
+      required,
+    };
   } else if (name === "delete_preview") {
     properties.document_id = { type: "integer", minimum: 1 };
     required.push("document_id");

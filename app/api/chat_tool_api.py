@@ -52,7 +52,13 @@ def list_library(payload: ListLibraryRequest, request: Request) -> dict[str, Any
 @router.post("/import-preview")
 def import_preview(payload: ImportPreviewRequest, request: Request) -> dict[str, Any]:
     require_chat_adapter(request)
-    return _call(chat_tool_service.import_preview, inbox_filename=payload.inbox_filename)
+    return _call(
+        chat_tool_service.import_preview,
+        source_type=payload.source_type,
+        inbox_filename=payload.inbox_filename,
+        zotero_item_key=payload.zotero_item_key,
+        zotero_attachment_key=payload.zotero_attachment_key,
+    )
 
 
 @router.post("/import-document")

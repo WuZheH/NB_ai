@@ -152,7 +152,16 @@ export class NotebookClient {
   }
 
   async importPreview(input: ImportPreviewInput): Promise<ImportPreviewResponse> {
-    return this.requestChatTool<ImportPreviewResponse>("/api/v1/chat-tools/import-preview", input, "ok");
+    return this.requestChatTool<ImportPreviewResponse>(
+      "/api/v1/chat-tools/import-preview",
+      {
+        source_type: input.source_type,
+        inbox_filename: input.inbox_filename,
+        zotero_item_key: input.zotero_item_key,
+        zotero_attachment_key: input.zotero_attachment_key,
+      },
+      "ok",
+    );
   }
 
   async importDocument(input: ImportDocumentInput): Promise<ImportDocumentResponse> {

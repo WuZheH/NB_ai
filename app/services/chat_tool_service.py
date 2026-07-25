@@ -281,11 +281,26 @@ def delete_document(
 
 
 def import_preview(
-    *,
     inbox_filename: str | None = None,
+    *,
+    source_type: str = "local_pdf",
+    zotero_item_key: str | None = None,
+    zotero_attachment_key: str | None = None,
     runtime: ChatToolRuntime | None = None,
 ) -> dict[str, Any]:
     actual_runtime = runtime or ChatToolRuntime()
+    if source_type == "zotero_selected_book":
+        return _import_zotero_selected_book_preview(
+            zotero_item_key=zotero_item_key,
+            zotero_attachment_key=zotero_attachment_key,
+            runtime=actual_runtime,
+        )
+    if source_type != "local_pdf":
+        raise ChatToolError(
+            "import_source_type_invalid",
+            "Import preview source type is invalid.",
+            status_code=422,
+        )
     source = _resolve_inbox_pdf(actual_runtime.resolved_inbox_root(), inbox_filename)
     source_size = source.stat().st_size
     if source_size > MAX_IMPORT_BYTES:
@@ -330,6 +345,7 @@ def import_preview(
             _IMPORT_CONFIRMATIONS[_token_digest(token)] = record
     return {
         "status": "ok",
+        "source_type": "local_pdf",
         "filename": source.name,
         "title": str(classification.get("title") or source.stem),
         "pdf_sha256": digest,
@@ -341,7 +357,160 @@ def import_preview(
         "warnings": [str(value) for value in classification.get("reasons") or []][:8],
         "confirmation_token": token,
         "confirmation_expires_in_seconds": IMPORT_CONFIRMATION_TTL_SECONDS if token else None,
+        "attachment_choices": [],
+        "annotation_count": None,
+        "child_note_count": None,
     }
+
+
+def _import_zotero_selected_book_preview(
+    *,
+    zotero_item_key: str | None,
+    zotero_attachment_key: str | None,
+    runtime: ChatToolRuntime,
+) -> dict[str, Any]:
+    item_key = str(zotero_item_key or "").strip()
+    attachment_key = str(zotero_attachment_key or "").strip() or None
+    if not item_key:
+        raise ChatToolError(
+            "zotero_item_key_required",
+            "A Zotero parent item key is required.",
+            status_code=422,
+        )
+
+    target_db = Path(runtime.db_path).resolve(strict=False)
+    temporary_target = target_db != Path(DEFAULT_DB_PATH).resolve(strict=False)
+    try:
+        preview = zotero_selected_book_preview_service.build_selected_book_preview(
+            zotero_item_key=item_key,
+            zotero_attachment_key=attachment_key,
+            db_path=runtime.db_path,
+            issue_token=temporary_target,
+        )
+    except zotero_selected_book_preview_service.ZoteroSelectedBookPreviewError as exc:
+        raise ChatToolError(
+            exc.code,
+            exc.message,
+            status_code=exc.status_code,
+            details=_safe_zotero_error_details(exc.details),
+        ) from exc
+
+    item = preview.get("zotero_item") if isinstance(preview.get("zotero_item"), dict) else {}
+    choices = preview.get("attachment_choices") if isinstance(preview.get("attachment_choices"), list) else []
+    safe_choices = [
+        {
+            key: choice.get(key)
+            for key in (
+                "zotero_attachment_key",
+                "file_name",
+                "path_exists",
+                "path_status",
+                "content_type",
+                "date_modified",
+                "version",
+            )
+        }
+        for choice in choices
+        if isinstance(choice, dict)
+    ]
+    base = {
+        "status": "ok",
+        "source_type": "zotero_selected_book",
+        "filename": None,
+        "title": str(item.get("title") or ""),
+        "pdf_sha256": None,
+        "duplicate_status": "not_evaluated",
+        "existing_document_id": None,
+        "estimated_pages": None,
+        "estimated_chunks": None,
+        "document_type": "book",
+        "warnings": [str(value) for value in preview.get("warnings") or []][:8],
+        "confirmation_token": None,
+        "confirmation_expires_in_seconds": None,
+        "attachment_choices": safe_choices,
+        "annotation_count": preview.get("annotation_count"),
+        "child_note_count": preview.get("child_note_count"),
+    }
+    if preview.get("status") == "attachment_choice_required":
+        return base
+    if preview.get("status") != "ready":
+        raise ChatToolError(
+            "zotero_import_preview_not_ready",
+            "The Zotero selected-book preview is not ready.",
+            status_code=409,
+        )
+
+    selected = preview.get("selected_attachment") if isinstance(preview.get("selected_attachment"), dict) else {}
+    duplicate = preview.get("duplicate_check") if isinstance(preview.get("duplicate_check"), dict) else {}
+    existing = duplicate.get("existing_documents")
+    unique_document_id = None
+    if isinstance(existing, list) and len(existing) == 1 and isinstance(existing[0], dict):
+        candidate = existing[0].get("document_id", existing[0].get("id"))
+        if isinstance(candidate, int):
+            unique_document_id = candidate
+    base.update(
+        {
+            "filename": str(selected.get("file_name") or "") or None,
+            "pdf_sha256": str(selected.get("pdf_sha256") or "") or None,
+            "estimated_pages": selected.get("page_count"),
+            "estimated_chunks": (
+                max(1, int(selected["page_count"]) * 3)
+                if isinstance(selected.get("page_count"), int) and selected["page_count"] > 0
+                else None
+            ),
+        }
+    )
+    if bool(duplicate.get("duplicate_found")):
+        base["duplicate_status"] = "duplicate"
+        base["existing_document_id"] = unique_document_id
+        return base
+    if not temporary_target:
+        base["warnings"] = list(
+            dict.fromkeys(
+                [
+                    *base["warnings"],
+                    "zotero_direction_b_production_not_enabled",
+                ]
+            )
+        )
+        return base
+
+    preview_token = str(preview.get("preview_token") or "")
+    if not preview_token:
+        raise ChatToolError(
+            "zotero_import_preview_token_missing",
+            "The Zotero selected-book preview did not issue a confirmation token.",
+            status_code=503,
+        )
+    confirmation = register_zotero_selected_book_import_preview(
+        preview_token=preview_token,
+        runtime=runtime,
+    )
+    base["duplicate_status"] = str(confirmation.get("duplicate_status") or "not_detected")
+    base["confirmation_token"] = confirmation.get("confirmation_token")
+    base["confirmation_expires_in_seconds"] = confirmation.get(
+        "confirmation_expires_in_seconds"
+    )
+    return base
+
+
+def _safe_zotero_error_details(value: Any) -> Any:
+    unsafe = {
+        "resolved_pdf_path",
+        "snapshot_path",
+        "db_path",
+        "zotero_data_dir",
+        "zotero_storage_root",
+    }
+    if isinstance(value, dict):
+        return {
+            str(key): _safe_zotero_error_details(item)
+            for key, item in value.items()
+            if str(key) not in unsafe
+        }
+    if isinstance(value, list):
+        return [_safe_zotero_error_details(item) for item in value]
+    return value
 
 
 def register_zotero_selected_book_import_preview(

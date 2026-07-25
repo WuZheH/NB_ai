@@ -1151,6 +1151,256 @@ def test_preview_token_is_bound_to_target_database(
         )
 
 
+def _public_chat_zotero_ready_preview(
+    *,
+    duplicate: bool = False,
+    existing_documents: list[dict] | None = None,
+) -> dict:
+    return {
+        "status": "ready",
+        "zotero_item": {"title": "Selected Zotero Book"},
+        "attachment_choices": [
+            {
+                "zotero_attachment_key": "EFGH5678",
+                "file_name": "selected.pdf",
+                "path_exists": True,
+                "path_status": "available",
+                "content_type": "application/pdf",
+                "date_modified": "2026-07-26",
+                "version": 2,
+            }
+        ],
+        "selected_attachment": {
+            "zotero_attachment_key": "EFGH5678",
+            "file_name": "selected.pdf",
+            "path_exists": True,
+            "path_status": "available",
+            "content_type": "application/pdf",
+            "date_modified": "2026-07-26",
+            "version": 2,
+            "pdf_sha256": "a" * 64,
+            "page_count": 12,
+        },
+        "annotation_count": 4,
+        "child_note_count": 2,
+        "duplicate_check": {
+            "duplicate_found": duplicate,
+            "existing_documents": existing_documents or [],
+        },
+        "warnings": [],
+        "preview_token": "internal-b2-token",
+    }
+
+
+def test_public_chat_zotero_preview_forwards_keys_and_sanitizes_choices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "research.db"
+    database.write_bytes(b"fixture")
+    calls: list[dict] = []
+
+    def build(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "attachment_choice_required",
+            "zotero_item": {"title": "Choose a PDF"},
+            "attachment_choices": [
+                {
+                    "zotero_attachment_key": "ATTACH01",
+                    "file_name": "choice.pdf",
+                    "path_exists": True,
+                    "path_status": "available",
+                    "content_type": "application/pdf",
+                    "date_modified": "2026-07-26",
+                    "version": 1,
+                    "resolved_pdf_path": r"C:\private\choice.pdf",
+                }
+            ],
+            "annotation_count": None,
+            "child_note_count": None,
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        zotero_selected_book_preview_service,
+        "build_selected_book_preview",
+        build,
+    )
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=database,
+        data_dir=tmp_path / "data",
+    )
+    result = chat_tool_service.import_preview(
+        source_type="zotero_selected_book",
+        zotero_item_key="ABCD1234",
+        zotero_attachment_key="ATTACH01",
+        runtime=runtime,
+    )
+    assert calls == [
+        {
+            "zotero_item_key": "ABCD1234",
+            "zotero_attachment_key": "ATTACH01",
+            "db_path": database,
+            "issue_token": True,
+        }
+    ]
+    assert result["status"] == "ok"
+    assert result["duplicate_status"] == "not_evaluated"
+    assert result["confirmation_token"] is None
+    assert result["attachment_choices"][0] == {
+        "zotero_attachment_key": "ATTACH01",
+        "file_name": "choice.pdf",
+        "path_exists": True,
+        "path_status": "available",
+        "content_type": "application/pdf",
+        "date_modified": "2026-07-26",
+        "version": 1,
+    }
+    assert "C:\\" not in str(result)
+
+
+def test_public_chat_zotero_temp_preview_registers_chat_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "research.db"
+    database.write_bytes(b"fixture")
+    registered: list[dict] = []
+    monkeypatch.setattr(
+        zotero_selected_book_preview_service,
+        "build_selected_book_preview",
+        lambda **_kwargs: _public_chat_zotero_ready_preview(),
+    )
+
+    def register(**kwargs):
+        registered.append(kwargs)
+        return {
+            "status": "ok",
+            "source_type": "zotero_selected_book",
+            "duplicate_status": "not_detected",
+            "confirmation_token": "chat-confirmation-token",
+            "confirmation_expires_in_seconds": 600,
+        }
+
+    monkeypatch.setattr(
+        chat_tool_service,
+        "register_zotero_selected_book_import_preview",
+        register,
+    )
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=database,
+        data_dir=tmp_path / "data",
+    )
+    result = chat_tool_service.import_preview(
+        source_type="zotero_selected_book",
+        zotero_item_key="ABCD1234",
+        runtime=runtime,
+    )
+    assert registered == [
+        {
+            "preview_token": "internal-b2-token",
+            "runtime": runtime,
+        }
+    ]
+    assert result["confirmation_token"] == "chat-confirmation-token"
+    assert result["confirmation_expires_in_seconds"] == 600
+    assert result["estimated_pages"] == 12
+    assert result["estimated_chunks"] == 36
+    assert "internal-b2-token" not in str(result)
+
+
+def test_public_chat_zotero_production_and_duplicate_do_not_register(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registrations: list[dict] = []
+    previews = [
+        _public_chat_zotero_ready_preview(),
+        _public_chat_zotero_ready_preview(
+            duplicate=True,
+            existing_documents=[{"document_id": 17, "pdf_path": r"C:\private.pdf"}],
+        ),
+    ]
+    monkeypatch.setattr(
+        zotero_selected_book_preview_service,
+        "build_selected_book_preview",
+        lambda **_kwargs: previews.pop(0),
+    )
+    monkeypatch.setattr(
+        chat_tool_service,
+        "register_zotero_selected_book_import_preview",
+        lambda **kwargs: registrations.append(kwargs),
+    )
+    production = chat_tool_service.import_preview(
+        source_type="zotero_selected_book",
+        zotero_item_key="ABCD1234",
+        runtime=chat_tool_service.ChatToolRuntime(
+            db_path=DEFAULT_DB_PATH,
+            data_dir=tmp_path / "production-data",
+        ),
+    )
+    assert production["confirmation_token"] is None
+    assert "zotero_direction_b_production_not_enabled" in production["warnings"]
+
+    database = tmp_path / "research.db"
+    database.write_bytes(b"fixture")
+    duplicate = chat_tool_service.import_preview(
+        source_type="zotero_selected_book",
+        zotero_item_key="ABCD1234",
+        runtime=chat_tool_service.ChatToolRuntime(
+            db_path=database,
+            data_dir=tmp_path / "data",
+        ),
+    )
+    assert duplicate["duplicate_status"] == "duplicate"
+    assert duplicate["existing_document_id"] == 17
+    assert duplicate["confirmation_token"] is None
+    assert registrations == []
+    assert "private.pdf" not in str(duplicate)
+
+
+def test_public_chat_zotero_preview_filters_private_error_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "research.db"
+    database.write_bytes(b"fixture")
+
+    def fail(**_kwargs):
+        raise zotero_selected_book_preview_service.ZoteroSelectedBookPreviewError(
+            status_code=422,
+            code="pdf_file_missing",
+            message="The selected PDF is missing.",
+            details={
+                "zotero_item_key": "ABCD1234",
+                "resolved_pdf_path": r"C:\Users\ROG\private.pdf",
+                "snapshot_path": r"D:\private\zotero.sqlite",
+                "db_path": r"D:\private\research.db",
+                "zotero_data_dir": r"D:\private\Zotero",
+                "zotero_storage_root": r"D:\private\storage",
+            },
+        )
+
+    monkeypatch.setattr(
+        zotero_selected_book_preview_service,
+        "build_selected_book_preview",
+        fail,
+    )
+    with pytest.raises(chat_tool_service.ChatToolError) as caught:
+        chat_tool_service.import_preview(
+            source_type="zotero_selected_book",
+            zotero_item_key="ABCD1234",
+            runtime=chat_tool_service.ChatToolRuntime(
+                db_path=database,
+                data_dir=tmp_path / "data",
+            ),
+        )
+    assert caught.value.error_code == "pdf_file_missing"
+    assert caught.value.details == {"zotero_item_key": "ABCD1234"}
+    assert "private" not in str(caught.value.details)
+
+
 
 def test_default_core_body_importer_is_used_without_runtime_override(
     tmp_path,

@@ -9,8 +9,10 @@ import sys
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.main import app
+from app.schemas.chat_tools import ImportPreviewRequest
 from app.services import chat_tool_service, pdf_import_classifier_service
 from app.services.pdf_backend_service import load_fitz_backend
 from app.services.library import document_deletion_service
@@ -244,6 +246,79 @@ def test_import_rejects_changed_pdf_and_duplicate_without_commit_token(tmp_path:
     duplicate = chat_tool_service.import_preview(runtime=duplicate_runtime)
     assert duplicate["duplicate_status"] == "duplicate"
     assert duplicate["confirmation_token"] is None
+
+
+def test_import_preview_request_source_contract() -> None:
+    assert ImportPreviewRequest(inbox_filename="book.pdf").source_type == "local_pdf"
+    assert ImportPreviewRequest(
+        source_type="local_pdf",
+        inbox_filename="book.pdf",
+    ).inbox_filename == "book.pdf"
+    with pytest.raises(ValidationError):
+        ImportPreviewRequest(source_type="local_pdf", zotero_item_key="ABCD1234")
+    with pytest.raises(ValidationError):
+        ImportPreviewRequest(source_type="zotero_selected_book")
+    with pytest.raises(ValidationError):
+        ImportPreviewRequest(
+            source_type="zotero_selected_book",
+            inbox_filename="book.pdf",
+            zotero_item_key="ABCD1234",
+        )
+    item_only = ImportPreviewRequest(
+        source_type="zotero_selected_book",
+        zotero_item_key="ABCD1234",
+    )
+    assert item_only.zotero_attachment_key is None
+    selected = ImportPreviewRequest(
+        source_type="zotero_selected_book",
+        zotero_item_key=" ABCD1234 ",
+        zotero_attachment_key=" EFGH5678 ",
+    )
+    assert selected.zotero_item_key == "ABCD1234"
+    assert selected.zotero_attachment_key == "EFGH5678"
+    with pytest.raises(ValidationError):
+        ImportPreviewRequest(
+            source_type="zotero_selected_book",
+            zotero_item_key=" ",
+        )
+
+
+def test_import_preview_api_forwards_all_source_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    def preview(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "ok",
+            "source_type": "zotero_selected_book",
+        }
+
+    monkeypatch.setattr(chat_tool_service, "import_preview", preview)
+    monkeypatch.setenv("SEARCH_CHAT_GATEWAY_TOKEN", "t" * 32)
+    client = TestClient(app, client=("127.0.0.1", 50100))
+    response = client.post(
+        "/api/v1/chat-tools/import-preview",
+        headers={
+            "Authorization": f"Bearer {'t' * 32}",
+            "X-Search-Chat-Adapter": "mcp",
+        },
+        json={
+            "source_type": "zotero_selected_book",
+            "zotero_item_key": "ABCD1234",
+            "zotero_attachment_key": "EFGH5678",
+        },
+    )
+    assert response.status_code == 200
+    assert calls == [
+        {
+            "source_type": "zotero_selected_book",
+            "inbox_filename": None,
+            "zotero_item_key": "ABCD1234",
+            "zotero_attachment_key": "EFGH5678",
+        }
+    ]
 
 
 def test_pdf_classifier_accepts_only_the_explicit_inbox_root(

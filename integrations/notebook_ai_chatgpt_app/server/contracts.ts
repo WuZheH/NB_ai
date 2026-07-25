@@ -107,7 +107,10 @@ export interface ListLibraryResponse {
 }
 
 export interface ImportPreviewInput {
+  source_type?: "local_pdf" | "zotero_selected_book";
   inbox_filename?: string;
+  zotero_item_key?: string;
+  zotero_attachment_key?: string;
 }
 
 export interface OpenAIFileInput {
@@ -119,9 +122,10 @@ export interface OpenAIFileInput {
 
 export interface ImportPreviewResponse {
   status: "ok";
-  filename: string;
+  source_type: "local_pdf" | "zotero_selected_book";
+  filename: string | null;
   title: string;
-  pdf_sha256: string;
+  pdf_sha256: string | null;
   duplicate_status: string;
   existing_document_id: number | null;
   estimated_pages: number | null;
@@ -130,6 +134,17 @@ export interface ImportPreviewResponse {
   warnings: string[];
   confirmation_token: string | null;
   confirmation_expires_in_seconds: number | null;
+  attachment_choices: Array<{
+    zotero_attachment_key: string;
+    file_name: string | null;
+    path_exists: boolean;
+    path_status: string | null;
+    content_type: string | null;
+    date_modified: string | null;
+    version: number | string | null;
+  }>;
+  annotation_count: number | null;
+  child_note_count: number | null;
 }
 
 export interface ImportDocumentInput {
