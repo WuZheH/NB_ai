@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from app.main import app
 from app.schemas.chat_tools import ImportPreviewRequest
 from app.services import chat_tool_service, pdf_import_classifier_service
+from app.services import chat_pdf_production_import_service
 from app.services.pdf_backend_service import load_fitz_backend
 from app.services.library import document_deletion_service
 
@@ -401,31 +402,30 @@ def test_forwarded_chat_gateway_request_is_rejected(monkeypatch: pytest.MonkeyPa
     assert response.json()["detail"]["error_code"] == "chat_gateway_forwarded_request_forbidden"
 
 
-def test_real_chat_import_pipeline_commits_only_to_isolated_root(tmp_path: Path) -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-B",
-            "scripts/maintenance/smoke_search_chat_import_isolated.py",
-            "--root",
-            str(tmp_path / "isolated-import"),
-        ],
-        cwd=Path(__file__).resolve().parents[2],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
+def test_default_chat_import_routes_to_production_orchestrator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "fixture.pdf"
+    source.write_bytes(b"%PDF-1.4 fixture")
+    record = chat_tool_service.ImportConfirmation(
+        source_path=source, source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        source_size=source.stat().st_size, source_mtime_ns=source.stat().st_mtime_ns,
+        title="Fixture", document_type="paper", object_import_mode="full_document", page_count=1,
+        expires_at=9999999999.0,
     )
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert payload["chunk_count"] >= 1
-    assert {key: value for key, value in payload.items() if key != "chunk_count"} == {
-        "document_count": 1,
-        "document_id": 1,
-        "duplicate_status": "duplicate",
-        "duplicate_token_absent": True,
-        "managed_pdf_count": 1,
-        "production_path_used": False,
-        "source_pdf_preserved": True,
-        "status": "ok",
-    }
+    calls = []
+    monkeypatch.setattr(chat_pdf_production_import_service, "import_document_to_production", lambda **kwargs: calls.append(kwargs) or {"status": "completed", "document_id": 1, "title": "Fixture", "chunk_count": 1})
+    monkeypatch.setattr(chat_tool_service, "_managed_pdf_name", lambda _record: "fixture.pdf")
+    with pytest.raises(chat_tool_service.ChatToolError, match="Production import runtime"):
+        chat_tool_service._commit_confirmed_import(record=record, runtime=chat_tool_service.ChatToolRuntime(db_path=tmp_path / "db.sqlite", data_dir=tmp_path / "data", inbox_root=tmp_path))
+    assert not calls
+
+
+def test_noncanonical_chat_tool_runtime_rejects_default_import_route(tmp_path: Path) -> None:
+    runtime = chat_tool_service.ChatToolRuntime(db_path=tmp_path / "db.sqlite", data_dir=tmp_path / "data", inbox_root=tmp_path)
+    with pytest.raises(chat_tool_service.ChatToolError, match="Production import runtime"):
+        chat_tool_service._commit_confirmed_import(
+            record=chat_tool_service.ImportConfirmation(
+                source_path=tmp_path / "missing.pdf", source_sha256="0" * 64, source_size=0,
+                source_mtime_ns=0, title="Fixture", document_type="paper", object_import_mode="full_document",
+                page_count=1, expires_at=9999999999.0,
+            ), runtime=runtime,
+        )

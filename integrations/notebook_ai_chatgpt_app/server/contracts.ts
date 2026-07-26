@@ -81,7 +81,7 @@ export interface EvidenceExportResponse {
   [key: string]: unknown;
 }
 
-export interface LibraryItem {
+export interface ImportedLibraryItem {
   document_id: number;
   title: string;
   type: string;
@@ -91,9 +91,24 @@ export interface LibraryItem {
   duplicate_status: string;
   status: "active" | "archived";
 }
+export interface CatalogLibraryItem {
+  kind: "catalog";
+  document_id: null;
+  title: string;
+  type: "pdf";
+  has_pdf: true;
+  import_ref: string;
+  file_name: string;
+  relative_path: string;
+  note_count: number;
+  note_files: string[];
+  status: "available";
+  duplicate_status: string;
+}
+export type LibraryItem = ImportedLibraryItem | CatalogLibraryItem;
 
 export interface ListLibraryInput {
-  scope?: "imported" | "catalog";
+  scope: "imported" | "catalog";
   query?: string;
   document_type?: string;
   status: "active" | "archived" | "all";

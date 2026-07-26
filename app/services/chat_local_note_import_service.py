@@ -21,8 +21,10 @@ def _source_rows(note_files: list[Path], root: Path) -> list[dict[str, Any]]:
             content = str(block.text).strip()
             if not content:
                 continue
-            identity = hashlib.sha256(f"{path.as_posix()}\0{index}\0{content}".encode()).hexdigest()
-            rows.append({"path": path, "content": content, "heading": " / ".join(getattr(block, "heading_path", ()) or ()), "identity": identity})
+            relative_path = path.resolve().relative_to(root.resolve()).as_posix()
+            content_sha256 = hashlib.sha256(content.encode()).hexdigest()
+            identity = hashlib.sha256(f"{relative_path}\0{index}\0{content_sha256}".encode()).hexdigest()
+            rows.append({"path": path, "relative_path": relative_path, "block_ordinal": index, "content": content, "heading": " / ".join(getattr(block, "heading_path", ()) or ()), "identity": identity})
     return rows
 
 
@@ -40,7 +42,7 @@ def import_local_notes(*, db_path: str | Path, document_id: int, note_files: lis
             note_type = "local_note"
             kind = "local_markdown_block" if is_markdown else "local_text_note"
             columns = ["document_id", "note_type", "scope_type", "title", "content", "summary", "source_path", "content_hash", "source_system", "source_record_kind", "source_identity", "selected_text", "source_comment", "source_missing", "created_at", "updated_at"]
-            values = [document_id, note_type, "document", row["heading"] or row["path"].stem, row["content"], None, row["path"].relative_to(inbox_root).as_posix(), hashlib.sha256(row["content"].encode()).hexdigest(), "chat_catalog", kind, row["identity"], "", row["content"], 0, "CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
+            values = [document_id, note_type, "document", row["heading"] or row["path"].stem, row["content"], None, row["relative_path"], hashlib.sha256(row["content"].encode()).hexdigest(), "chat_catalog", kind, row["identity"], "", row["content"], 0, now, now]
             placeholders = ",".join("?" for _ in values)
             cur = connection.execute(f"INSERT INTO personal_notes ({','.join(columns)}) VALUES ({placeholders})", values)
             note_id = int(cur.lastrowid)
@@ -53,7 +55,7 @@ def import_local_notes(*, db_path: str | Path, document_id: int, note_files: lis
                 VALUES (?, ?, NULL, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL)""",
                 (note_id, document_id, "document_context", "user_note", 1.0,
                  "chat_catalog", now,
-                 json.dumps({"relative_path": row["path"].relative_to(inbox_root).as_posix(), "block_ordinal": rows.index(row)}, ensure_ascii=False),
+                 json.dumps({"relative_path": row["relative_path"], "block_ordinal": row["block_ordinal"]}, ensure_ascii=False),
                  "document_only", "chat_catalog_bundle", "[]"))
         connection.commit()
     except Exception:

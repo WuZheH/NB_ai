@@ -889,6 +889,9 @@ def _commit_confirmed_import(
 ) -> dict[str, Any]:
     if runtime.commit_import is not None:
         return runtime.commit_import(record=record, runtime=runtime)
+    if (Path(runtime.db_path).resolve(strict=False) != Path(DEFAULT_DB_PATH).resolve(strict=False)
+            or Path(runtime.data_dir).resolve(strict=False) != Path(DATA_DIR).resolve(strict=False)):
+        raise ChatToolError("chat_import_runtime_not_configured", "Production import runtime is not configured.", status_code=503)
     destination_dir = Path(runtime.data_dir) / "pdfs" / "chat_imports"
     destination_dir.mkdir(parents=True, exist_ok=True)
     safe_name = _managed_pdf_name(record)
@@ -917,7 +920,7 @@ def _commit_confirmed_import(
             note_files=[record.inbox_root / Path(item["relative_path"]) for item in record.note_sources] if record.inbox_root else [],
             inbox_root=record.inbox_root,
             allow_production=True,
-            runtime=runtime,
+            runtime=chat_pdf_production_import_service.ChatPdfImportRuntime.production(),
         )
     except Exception:
         if created_copy and destination.is_file():

@@ -34,8 +34,16 @@ def main() -> int:
     from app.db.init_db import init_db
     from app.services import chat_tool_service
     from app.services.pdf_backend_service import load_fitz_backend
+    from app.services.retrieval.fts_index_service import build_retrieval_fts
 
     init_db()
+    (data_dir / "zotero" / "snapshot").mkdir(parents=True, exist_ok=True)
+    (data_dir / "zotero" / "snapshot" / "zotero.sqlite").touch()
+    (data_dir / "notes").mkdir(parents=True, exist_ok=True)
+    build_retrieval_fts(
+        index_path=data_dir / "search_index" / "retrieval_fts_v1.db",
+        manifest_path=data_dir / "search_index" / "retrieval_fts_v1_manifest.json",
+    )
     source = inbox / "isolated-chat-import.pdf"
     fitz = load_fitz_backend()
     document = fitz.open()
