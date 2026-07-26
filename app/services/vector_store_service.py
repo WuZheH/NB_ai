@@ -977,7 +977,7 @@ def sync_affected_passage_embeddings(
                 table.add(records)
             else:
                 db.create_table(PASSAGE_TABLE, data=records, mode="create")
-        if source_db_path is not None:
+        if apply and manifest_path is not None:
             table_names = _table_names(db)
             passage_records = _existing_records(db, PASSAGE_TABLE)
             passage_count = (

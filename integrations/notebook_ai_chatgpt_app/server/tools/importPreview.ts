@@ -76,6 +76,8 @@ export const importPreviewOutputShape = {
   })),
   annotation_count: z.number().int().nonnegative().nullable(),
   child_note_count: z.number().int().nonnegative().nullable(),
+  note_count: z.number().int().nonnegative().optional(),
+  note_files: z.array(z.string()).optional(),
 };
 
 export async function runImportPreviewTool(

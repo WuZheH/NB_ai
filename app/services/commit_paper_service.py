@@ -26,7 +26,7 @@ DB_PATH = DEFAULT_DB_PATH
 COMMIT_MANIFEST_FILE = "commit_result.json"
 
 
-def commit_paper_from_staging(import_job_id: str) -> dict[str, Any]:
+def commit_paper_from_staging(import_job_id: str, *, rebuild_legacy_vector_index: bool = True) -> dict[str, Any]:
     job_dir = _existing_job_dir(import_job_id)
 
     paper_md_path = job_dir / "paper.md"
@@ -109,17 +109,17 @@ def commit_paper_from_staging(import_job_id: str) -> dict[str, Any]:
         source_path=str(paper_md_path.relative_to(DATA_PROJECT_ROOT)).replace("\\", "/"),
     )
 
-    # Rebuild vector index
-    try:
-        vector_result = rebuild_vector_index()
-        chunk_count_index = vector_result.chunk_count
-    except Exception:
-        vector_chunks.write_text("", encoding="utf-8")
-        vector_manifest.write_text(json.dumps({
-            "chunk_count": 0, "embedding_model": "none",
-            "embedder_type": "reset_empty_index",
-        }), encoding="utf-8")
-        chunk_count_index = 0
+    chunk_count_index = 0
+    if rebuild_legacy_vector_index:
+        try:
+            vector_result = rebuild_vector_index()
+            chunk_count_index = vector_result.chunk_count
+        except Exception:
+            vector_chunks.write_text("", encoding="utf-8")
+            vector_manifest.write_text(json.dumps({
+                "chunk_count": 0, "embedding_model": "none",
+                "embedder_type": "reset_empty_index",
+            }), encoding="utf-8")
 
     # Record commit
     committed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()

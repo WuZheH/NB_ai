@@ -148,7 +148,7 @@ export class NotebookClient {
   }
 
   async listLibrary(input: ListLibraryInput): Promise<ListLibraryResponse> {
-    return this.requestChatTool<ListLibraryResponse>("/api/v1/chat-tools/list-library", input, "ok");
+    return this.requestChatTool<ListLibraryResponse>("/api/v1/chat-tools/list-library", { scope: input.scope ?? "imported", ...input }, "ok");
   }
 
   async importPreview(input: ImportPreviewInput): Promise<ImportPreviewResponse> {

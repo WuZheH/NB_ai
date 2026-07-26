@@ -16,6 +16,8 @@ from app.core.database import connect_readonly_sqlite
 from app.core.paths import DATA_DIR, DATA_PROJECT_ROOT, DEFAULT_DB_PATH
 from app.schemas.library_deletion import DeletionOptions
 from app.services import (
+    chat_import_catalog_service,
+    chat_pdf_production_import_service,
     commit_book_service,
     commit_paper_service,
     import_preview_service,
@@ -73,6 +75,8 @@ class ImportConfirmation:
     object_import_mode: str
     page_count: int
     expires_at: float
+    note_sources: tuple[dict[str, Any], ...] = ()
+    inbox_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -129,9 +133,14 @@ def list_library(
     document_type: str | None = None,
     status: str = "active",
     limit: int = 20,
+    scope: str = "imported",
     runtime: ChatToolRuntime | None = None,
 ) -> dict[str, Any]:
     actual_runtime = runtime or ChatToolRuntime()
+    if scope == "catalog":
+        return chat_import_catalog_service.list_catalog(inbox_root=actual_runtime.resolved_inbox_root(), query=query, limit=limit)
+    if scope != "imported":
+        raise ChatToolError("library_scope_invalid", "Library scope is invalid.", status_code=422)
     normalized_status = str(status or "active").strip().lower()
     if normalized_status not in {"active", "archived", "all"}:
         raise ChatToolError("library_status_invalid", "Library status filter is invalid.", status_code=422)
@@ -196,6 +205,7 @@ def list_library(
     ]
     return {
         "status": "ok",
+        "scope": "imported",
         "count": len(items),
         "items": items,
         "truncated": len(items) >= bounded_limit,
@@ -301,7 +311,8 @@ def import_preview(
             "Import preview source type is invalid.",
             status_code=422,
         )
-    source = _resolve_inbox_pdf(actual_runtime.resolved_inbox_root(), inbox_filename)
+    inbox_root = actual_runtime.resolved_inbox_root()
+    source = _resolve_inbox_pdf(inbox_root, inbox_filename)
     source_size = source.stat().st_size
     if source_size > MAX_IMPORT_BYTES:
         raise ChatToolError("import_pdf_too_large", "PDF exceeds the 200 MB import limit.", status_code=413)
@@ -338,6 +349,8 @@ def import_preview(
             document_type=str(classification.get("document_type") or "paper"),
             object_import_mode=str(classification.get("object_import_mode") or "full_document"),
             page_count=page_count,
+            note_sources=tuple(chat_import_catalog_service.note_sources(pdf=source, inbox_root=inbox_root)),
+            inbox_root=inbox_root,
             expires_at=time.monotonic() + IMPORT_CONFIRMATION_TTL_SECONDS,
         )
         with _TOKEN_LOCK:
@@ -360,6 +373,8 @@ def import_preview(
         "attachment_choices": [],
         "annotation_count": None,
         "child_note_count": None,
+        "note_count": len(record.note_sources) if token else len(chat_import_catalog_service.note_sources(pdf=source, inbox_root=inbox_root)),
+        "note_files": [item["relative_path"] for item in (record.note_sources if token else chat_import_catalog_service.note_sources(pdf=source, inbox_root=inbox_root))],
     }
 
 
@@ -872,6 +887,8 @@ def _commit_confirmed_import(
     record: ImportConfirmation,
     runtime: ChatToolRuntime,
 ) -> dict[str, Any]:
+    if runtime.commit_import is not None:
+        return runtime.commit_import(record=record, runtime=runtime)
     destination_dir = Path(runtime.data_dir) / "pdfs" / "chat_imports"
     destination_dir.mkdir(parents=True, exist_ok=True)
     safe_name = _managed_pdf_name(record)
@@ -896,7 +913,7 @@ def _commit_confirmed_import(
         import_job_id = str(preview["import_job_id"])
         if record.object_import_mode == "chaptered" and record.document_type in {"book", "thesis", "report"}:
             return commit_book_service.commit_book_from_staging(import_job_id)
-        return commit_paper_service.commit_paper_from_staging(import_job_id)
+        return commit_paper_service.commit_paper_from_staging(import_job_id, rebuild_legacy_vector_index=False)
     except Exception:
         if created_copy and destination.is_file():
             destination.unlink()
@@ -912,10 +929,15 @@ def _resolve_inbox_pdf(inbox_root: Path, filename: str | None) -> Path:
         )
     if filename is not None:
         cleaned = filename.strip()
-        if not _SAFE_FILENAME.fullmatch(cleaned) or Path(cleaned).name != cleaned:
+        path_value = Path(cleaned)
+        if path_value.is_absolute() or ".." in path_value.parts or not cleaned or any(part in {"", "."} for part in path_value.parts):
             raise ChatToolError("import_inbox_filename_invalid", "Inbox filename is invalid.", status_code=422)
         candidate = (inbox_root / cleaned).resolve(strict=False)
-        if candidate.parent != inbox_root or candidate.suffix.lower() != ".pdf" or not candidate.is_file():
+        try:
+            candidate.relative_to(inbox_root)
+        except ValueError:
+            raise ChatToolError("import_inbox_filename_invalid", "Inbox filename is invalid.", status_code=422)
+        if candidate.suffix.lower() != ".pdf" or not candidate.is_file():
             raise ChatToolError("import_inbox_pdf_not_found", "Inbox PDF was not found.", status_code=404)
         return candidate
     candidates = sorted(
@@ -986,6 +1008,15 @@ def _validate_import_source_unchanged(record: ImportConfirmation) -> None:
         or _sha256_file(record.source_path) != record.source_sha256
     ):
         raise ChatToolError("import_source_changed", "Inbox PDF changed after preview.", status_code=409)
+    root = record.inbox_root or record.source_path.parent
+    for source in record.note_sources:
+        path = (root / Path(str(source["relative_path"]))).resolve(strict=False)
+        try:
+            stat = path.stat()
+        except FileNotFoundError as exc:
+            raise ChatToolError("chat_import_bundle_changed", "Import notes changed after preview.", status_code=409) from exc
+        if stat.st_size != source["size_bytes"] or stat.st_mtime_ns != source["mtime_ns"] or _sha256_file(path) != source["sha256"]:
+            raise ChatToolError("chat_import_bundle_changed", "Import notes changed after preview.", status_code=409)
 
 
 def _managed_pdf_name(record: ImportConfirmation) -> str:

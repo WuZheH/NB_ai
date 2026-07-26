@@ -42,6 +42,7 @@ def list_library(payload: ListLibraryRequest, request: Request) -> dict[str, Any
     require_chat_adapter(request)
     return _call(
         chat_tool_service.list_library,
+        scope=payload.scope,
         query=payload.query,
         document_type=payload.document_type,
         status=payload.status,

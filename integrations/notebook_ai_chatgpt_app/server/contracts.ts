@@ -93,6 +93,7 @@ export interface LibraryItem {
 }
 
 export interface ListLibraryInput {
+  scope?: "imported" | "catalog";
   query?: string;
   document_type?: string;
   status: "active" | "archived" | "all";
@@ -104,6 +105,7 @@ export interface ListLibraryResponse {
   count: number;
   items: LibraryItem[];
   truncated: boolean;
+  scope?: "imported" | "catalog";
 }
 
 export interface ImportPreviewInput {
@@ -145,6 +147,8 @@ export interface ImportPreviewResponse {
   }>;
   annotation_count: number | null;
   child_note_count: number | null;
+  note_count?: number;
+  note_files?: string[];
 }
 
 export interface ImportDocumentInput {

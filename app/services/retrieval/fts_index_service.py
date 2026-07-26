@@ -512,6 +512,9 @@ def upsert_document_retrieval_fts(
     index_path: str | Path,
     manifest_path: str | Path,
     research_db_path: str | Path,
+    allow_production: bool = False,
+    expected_before_db_sha256: str | None = None,
+    expected_after_db_sha256: str | None = None,
 ) -> dict[str, Any]:
     if isinstance(document_id, bool) or not isinstance(document_id, int) or document_id <= 0:
         raise ValueError("document_id must be a positive integer")
@@ -519,11 +522,27 @@ def upsert_document_retrieval_fts(
     target_index = Path(index_path).resolve(strict=False)
     target_manifest = Path(manifest_path).resolve(strict=False)
     source_database = Path(research_db_path).resolve(strict=False)
-    if source_database == Path(DEFAULT_DB_PATH).resolve(strict=False):
-        raise ValueError("temp document FTS upsert forbids the production database")
-    if target_index == Path(DEFAULT_INDEX_PATH).resolve(strict=False):
+    production = source_database == Path(DEFAULT_DB_PATH).resolve(strict=False)
+    if production and not allow_production:
+        raise ValueError("production document FTS upsert requires explicit opt-in")
+    if not production and allow_production:
+        raise ValueError("production opt-in requires the production database")
+    if production:
+        if target_index != Path(DEFAULT_INDEX_PATH).resolve(strict=False) or target_manifest != Path(DEFAULT_MANIFEST_PATH).resolve(strict=False):
+            raise ValueError("production upsert requires default FTS targets")
+        if not expected_before_db_sha256 or not expected_after_db_sha256:
+            raise ValueError("production upsert requires before/after DB hashes")
+        manifest_probe = json.loads(target_manifest.read_text(encoding="utf-8"))
+        if str(manifest_probe.get("production_db_sha256", "")).lower() != expected_before_db_sha256.lower():
+            raise ValueError("production FTS manifest does not point to expected DB revision")
+        if sha256_file(source_database).lower() != expected_after_db_sha256.lower():
+            raise ValueError("production DB hash does not match expected after revision")
+        status_probe = get_index_status()
+        if status_probe.get("status") != "source_drift" or status_probe.get("reasons") != ["production_db_sha256_changed"]:
+            raise ValueError("production FTS upsert requires DB-only source drift")
+    if not production and target_index == Path(DEFAULT_INDEX_PATH).resolve(strict=False):
         raise ValueError("temp document FTS upsert forbids the production index")
-    if target_manifest == Path(DEFAULT_MANIFEST_PATH).resolve(strict=False):
+    if not production and target_manifest == Path(DEFAULT_MANIFEST_PATH).resolve(strict=False):
         raise ValueError("temp document FTS upsert forbids the production manifest")
     if not source_database.is_file():
         raise ValueError("research_db_path must identify an existing temp database")
@@ -534,11 +553,8 @@ def upsert_document_retrieval_fts(
 
     missing_zotero = source_database.with_name(".b5b1-zotero-snapshot-absent.sqlite")
     missing_notes = source_database.with_name(".b5b1-notes-absent")
-    registry = RetrievalSourceRegistry(
-        research_db_path=source_database,
-        zotero_snapshot_path=missing_zotero,
-        notes_root=missing_notes,
-    )
+    registry = RetrievalSourceRegistry() if production else RetrievalSourceRegistry(
+        research_db_path=source_database, zotero_snapshot_path=missing_zotero, notes_root=missing_notes)
     registry_result = registry.read(
         source_types=("pdf_chunk", "personal_note"),
         document_ids=(document_id,),

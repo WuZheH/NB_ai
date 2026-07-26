@@ -13,6 +13,7 @@ import {
 } from "./shared.js";
 
 export const listLibraryInputShape = {
+  scope: z.enum(["imported", "catalog"]).default("imported"),
   query: z.string().trim().max(256).optional(),
   document_type: z.string().trim().max(64).optional(),
   status: z.enum(["active", "archived", "all"]).default("active"),
@@ -21,14 +22,19 @@ export const listLibraryInputShape = {
 export const listLibraryInputSchema = z.object(listLibraryInputShape);
 
 const libraryItemSchema = z.object({
-  document_id: z.number().int().positive(),
+  document_id: z.number().int().positive().nullable(),
   title: z.string(),
   type: z.string(),
   imported_at: z.string(),
   chunk_count: z.number().int().nonnegative(),
   has_pdf: z.boolean(),
   duplicate_status: z.string(),
-  status: z.enum(["active", "archived"]),
+  status: z.string(),
+  kind: z.string().optional(),
+  import_ref: z.string().optional(),
+  relative_path: z.string().optional(),
+  note_count: z.number().int().nonnegative().optional(),
+  note_files: z.array(z.string()).optional(),
 });
 
 export const listLibraryOutputShape = {
@@ -71,7 +77,7 @@ export function registerListLibraryTool(server: McpServer, client: NotebookClien
     {
       title: "List the private Search library",
       description:
-        "List or title-filter the user's local Search library. Returns compact metadata only and never exposes local paths.",
+        "List imported Search documents, or scan the controlled import catalog with scope=catalog. Returns compact metadata only and never exposes absolute paths.",
       inputSchema: listLibraryInputShape,
       outputSchema: listLibraryOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,
