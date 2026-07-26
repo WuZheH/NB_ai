@@ -120,7 +120,7 @@ export interface ListLibraryResponse {
   count: number;
   items: LibraryItem[];
   truncated: boolean;
-  scope?: "imported" | "catalog";
+  scope: "imported" | "catalog";
 }
 
 export interface ImportPreviewInput {

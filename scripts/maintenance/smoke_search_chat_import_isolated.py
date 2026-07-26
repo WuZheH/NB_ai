@@ -43,6 +43,7 @@ def main() -> int:
     temp_manifest = data_dir / "search_index" / "retrieval_fts_v1_manifest.json"
     temp_vector_store = data_dir / "vector_store" / "lancedb"
     temp_vector_manifest = data_dir / "vector_store" / "manifest.json"
+    production_before = {"db": _sha(DEFAULT_DB_PATH), "fts": _sha(FTS_DB_PATH), "manifest": _sha(FTS_MANIFEST_PATH)}
     _clone_database_readonly(DEFAULT_DB_PATH, temp_db)
     with sqlite3.connect(temp_db) as connection:
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
@@ -59,9 +60,8 @@ def main() -> int:
     # The production primitive validates targets against its configured data
     # root. Keep application paths unchanged and scope this isolated fixture
     # to the explicit TEMP data root instead of redefining SEARCH_DATA_DIR.
-    fts_index_service.DATA_DIR = data_dir
     fts_index_service.build_retrieval_fts(
-        index_path=temp_fts, manifest_path=temp_manifest, registry=registry
+        index_path=temp_fts, manifest_path=temp_manifest, registry=registry, target_root=data_dir
     )
 
     def temp_body_commit(import_job_id: str, document_type: str) -> dict[str, Any]:
@@ -109,6 +109,7 @@ def main() -> int:
         document_count = int(connection.execute("SELECT COUNT(*) FROM documents WHERE id = ?", (document_id,)).fetchone()[0])
         chunk_count = int(connection.execute("SELECT COUNT(*) FROM knowledge_chunks WHERE document_id = ?", (document_id,)).fetchone()[0])
     final_status = chat_pdf_production_import_service._fts_status(runtime)
+    production_after = {"db": _sha(DEFAULT_DB_PATH), "fts": _sha(FTS_DB_PATH), "manifest": _sha(FTS_MANIFEST_PATH)}
     result = {
         "status": "ok",
         "document_id": document_id,
@@ -118,6 +119,9 @@ def main() -> int:
         "temp_fts_ready": final_status.get("ready"),
         "full_rebuild_performed": orchestrator_result.get("full_rebuild_performed", False),
         "production_path_used": False,
+        "production_db_unchanged": production_before["db"] == production_after["db"],
+        "production_fts_unchanged": production_before["fts"] == production_after["fts"],
+        "production_fts_manifest_unchanged": production_before["manifest"] == production_after["manifest"],
     }
     if (
         document_count != 1
@@ -125,10 +129,17 @@ def main() -> int:
         or result["temp_fts_status"] != "ready"
         or result["temp_fts_ready"] is not True
         or result["full_rebuild_performed"] is not False
+        or not result["production_db_unchanged"]
+        or not result["production_fts_unchanged"]
+        or not result["production_fts_manifest_unchanged"]
     ):
         raise RuntimeError("isolated_import_contract_failed")
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest().upper()
 
 
 def _clone_database_readonly(source: Path, destination: Path) -> None:

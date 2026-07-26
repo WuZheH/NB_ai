@@ -414,9 +414,18 @@ def test_default_chat_import_routes_to_production_orchestrator(tmp_path: Path, m
     calls = []
     monkeypatch.setattr(chat_pdf_production_import_service, "import_document_to_production", lambda **kwargs: calls.append(kwargs) or {"status": "completed", "document_id": 1, "title": "Fixture", "chunk_count": 1})
     monkeypatch.setattr(chat_tool_service, "_managed_pdf_name", lambda _record: "fixture.pdf")
-    with pytest.raises(chat_tool_service.ChatToolError, match="Production import runtime"):
-        chat_tool_service._commit_confirmed_import(record=record, runtime=chat_tool_service.ChatToolRuntime(db_path=tmp_path / "db.sqlite", data_dir=tmp_path / "data", inbox_root=tmp_path))
-    assert not calls
+    runtime = chat_tool_service.ChatToolRuntime(db_path=tmp_path / "db.sqlite", data_dir=tmp_path / "data", inbox_root=tmp_path)
+    monkeypatch.setattr(chat_tool_service, "DEFAULT_DB_PATH", runtime.db_path)
+    monkeypatch.setattr(chat_tool_service, "DATA_DIR", runtime.data_dir)
+    monkeypatch.setattr(chat_pdf_production_import_service, "DEFAULT_DB_PATH", runtime.db_path)
+    monkeypatch.setattr(chat_pdf_production_import_service, "DATA_DIR", runtime.data_dir)
+    monkeypatch.setattr(chat_pdf_production_import_service.ChatPdfImportRuntime, "production", classmethod(lambda cls: cls(
+        runtime.db_path, runtime.data_dir, tmp_path / "fts.db", tmp_path / "fts.json", tmp_path / "vectors", tmp_path / "vector.json", None, lambda *_: {})))
+    monkeypatch.setattr(chat_tool_service.import_preview_service, "create_import_preview", lambda *_args, **_kwargs: {"import_job_id": "job-1"})
+    result = chat_tool_service._commit_confirmed_import(record=record, runtime=runtime)
+    assert calls and calls[0]["allow_production"] is True
+    assert isinstance(calls[0]["runtime"], chat_pdf_production_import_service.ChatPdfImportRuntime)
+    assert result["status"] == "completed"
 
 
 def test_noncanonical_chat_tool_runtime_rejects_default_import_route(tmp_path: Path) -> None:

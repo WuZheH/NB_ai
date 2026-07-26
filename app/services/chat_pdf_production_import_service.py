@@ -107,7 +107,13 @@ def import_document_to_production(*, import_job_id: str, document_type: str, not
             ids = [f"chunk:{document_id}:{int(row[0])}" for row in connection.execute("SELECT id FROM knowledge_chunks WHERE document_id=? ORDER BY chunk_index,id", (document_id,))]
         vectors = vector_store_service.sync_affected_passage_embeddings(ids, dry_run=False, apply=True, source_db_path=None if production else actual.db_path, store_path=actual.vector_store_path, manifest_path=actual.vector_manifest_path)
         final_status = _fts_status(actual)
-        if final_status.get("status") != "ready" or not ids:
+        with sqlite3.connect(f"file:{actual.db_path.resolve().as_posix()}?mode=ro", uri=True) as verify_connection:
+            document_count = int(verify_connection.execute("SELECT COUNT(*) FROM documents WHERE id=?", (document_id,)).fetchone()[0])
+            chunk_count = int(verify_connection.execute("SELECT COUNT(*) FROM knowledge_chunks WHERE document_id=?", (document_id,)).fetchone()[0])
+        if (final_status.get("status") != "ready" or document_count != 1 or chunk_count <= 0
+                or vectors.get("scope") != "affected_source_ids_only"
+                or vectors.get("full_rebuild_allowed") is not False
+                or vectors.get("delete_orphans_allowed") is not False):
             raise RuntimeError("chat_import_final_verify_failed")
         return {"status": "completed", "document_id": document_id, "title": result.get("title", ""), "document_type": document_type, "chunk_count": result.get("chunk_count", 0), "note_count": notes["note_count"], "evidence_link_count": notes["evidence_link_count"], "fts_status": final_status.get("status"), "passage_vectors_upserted": vectors.get("upserted_count", 0), "full_rebuild_performed": False}
     except Exception:

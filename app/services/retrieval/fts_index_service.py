@@ -95,6 +95,32 @@ INSERT INTO {{table_name}} (
 ) VALUES (?, ?, ?, ?, ?, ?, ?)
 """
 
+_PERMISSION_RETRY_DELAYS = (0.10, 0.25, 0.50, 1.00, 2.00, 4.00, 8.00, 15.00)
+
+
+def _restore_file_verified(*, backup_path: Path, target_path: Path, expected_sha256: str, expected_size: int) -> None:
+    if not backup_path.is_file() or backup_path.stat().st_size != expected_size or sha256_file(backup_path).lower() != expected_sha256.lower():
+        raise RuntimeError("verified FTS backup invalid")
+    candidate = target_path.with_name(f".{target_path.name}.{uuid4().hex}.restore")
+    try:
+        shutil.copy2(backup_path, candidate)
+        if candidate.stat().st_size != expected_size or sha256_file(candidate).lower() != expected_sha256.lower():
+            raise RuntimeError("verified FTS restore candidate invalid")
+        for attempt in range(len(_PERMISSION_RETRY_DELAYS) + 1):
+            try:
+                os.replace(candidate, target_path)
+                break
+            except PermissionError:
+                if attempt >= len(_PERMISSION_RETRY_DELAYS):
+                    raise
+                time.sleep(_PERMISSION_RETRY_DELAYS[attempt])
+        if target_path.stat().st_size != expected_size or sha256_file(target_path).lower() != expected_sha256.lower():
+            raise RuntimeError("verified FTS restore target invalid")
+    except Exception:
+        if candidate.exists():
+            raise
+        raise
+
 _FTS_MAINTENANCE_LOCK = threading.RLock()
 
 
@@ -286,13 +312,14 @@ def build_retrieval_fts(
     manifest_path: str | Path | None = None,
     registry: RetrievalSourceRegistry | None = None,
     query_aliases_path: str | Path = DEFAULT_QUERY_ALIASES_PATH,
+    target_root: str | Path | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     target_index = Path(index_path) if index_path is not None else DEFAULT_INDEX_PATH
     target_manifest = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
     aliases_path = Path(query_aliases_path)
-    _assert_project_local(target_index)
-    _assert_project_local(target_manifest)
+    _assert_project_local(target_index, target_root=target_root)
+    _assert_project_local(target_manifest, target_root=target_root)
     target_index.parent.mkdir(parents=True, exist_ok=True)
     target_manifest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -572,6 +599,13 @@ def upsert_document_retrieval_fts(
         started = time.perf_counter()
         shutil.copy2(target_index, backup_index)
         shutil.copy2(target_manifest, backup_manifest)
+        index_before_sha = sha256_file(target_index)
+        index_before_size = target_index.stat().st_size
+        manifest_before_sha = sha256_file(target_manifest)
+        manifest_before_size = target_manifest.stat().st_size
+        index_committed = False
+        manifest_published = False
+        retain_backups = False
         connection: sqlite3.Connection | None = None
         try:
             connection = connect_existing_readwrite_sqlite(
@@ -650,6 +684,7 @@ def upsert_document_retrieval_fts(
                 )
             manifest_counts = _manifest_counts(connection)
             connection.commit()
+            index_committed = True
             connection.close()
             connection = None
             duration_ms = round((time.perf_counter() - started) * 1000, 3)
@@ -662,6 +697,7 @@ def upsert_document_retrieval_fts(
                 operation="upsert",
                 duration_ms=duration_ms,
             )
+            manifest_published = True
             if production:
                 final_status = get_index_status()
                 if final_status.get("status") != "ready" or final_status.get("ready") is not True:
@@ -670,12 +706,21 @@ def upsert_document_retrieval_fts(
             if connection is not None:
                 connection.rollback()
                 connection.close()
-            shutil.copyfile(backup_index, target_index)
-            shutil.copyfile(backup_manifest, target_manifest)
+            if production and index_committed:
+                try:
+                    _restore_file_verified(backup_path=backup_index, target_path=target_index, expected_sha256=index_before_sha, expected_size=index_before_size)
+                    _restore_file_verified(backup_path=backup_manifest, target_path=target_manifest, expected_sha256=manifest_before_sha, expected_size=manifest_before_size)
+                except Exception as restore_exc:
+                    retain_backups = True
+                    raise RuntimeError("production FTS document upsert rollback failed") from restore_exc
+            elif not production:
+                shutil.copyfile(backup_index, target_index)
+                shutil.copyfile(backup_manifest, target_manifest)
             raise
         finally:
-            backup_index.unlink(missing_ok=True)
-            backup_manifest.unlink(missing_ok=True)
+            if not retain_backups:
+                backup_index.unlink(missing_ok=True)
+                backup_manifest.unlink(missing_ok=True)
 
     source_counts = {
         source_type: sum(
@@ -984,7 +1029,8 @@ def _normalized_sha256(value: str, *, name: str) -> str:
     return normalized
 
 
-def _assert_project_local(path: Path) -> None:
+def _assert_project_local(path: Path, *, target_root: str | Path | None = None) -> None:
     resolved = path.resolve(strict=False)
-    if not resolved.is_relative_to(DATA_DIR.resolve()):
+    root = Path(target_root).resolve(strict=False) if target_root is not None else DATA_DIR.resolve()
+    if not resolved.is_relative_to(root):
         raise ValueError(f"retrieval index path must stay inside SEARCH_DATA_DIR: {path}")
