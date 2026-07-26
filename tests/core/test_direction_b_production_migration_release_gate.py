@@ -401,3 +401,153 @@ def test_restore_failure_is_explicit_hard_failure(
         _apply(database, backup)
     assert caught.value.production_restore_performed is False
     assert backup.exists()
+
+
+def test_post_commit_restore_retries_transient_permission_error(
+    production_target,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, backup = production_target
+    before = database.read_bytes()
+
+    real_validate = migration.validate
+    validation_calls = 0
+
+    def fail_second_validation(connection):
+        nonlocal validation_calls
+        validation_calls += 1
+        real_validate(connection)
+        if validation_calls == 2:
+            raise RuntimeError(
+                "post-commit validation failure"
+            )
+
+    real_replace = migration.os.replace
+    replace_calls = 0
+
+    def flaky_replace(source, target):
+        nonlocal replace_calls
+        replace_calls += 1
+
+        if replace_calls <= 2:
+            raise PermissionError(
+                "transient Windows replace lock"
+            )
+
+        return real_replace(source, target)
+
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(
+        migration,
+        "validate",
+        fail_second_validation,
+    )
+    monkeypatch.setattr(
+        migration.os,
+        "replace",
+        flaky_replace,
+    )
+    monkeypatch.setattr(
+        migration.time,
+        "sleep",
+        sleep_calls.append,
+    )
+
+    with pytest.raises(
+        migration.MigrationSafetyError
+    ) as caught:
+        _apply(database, backup)
+
+    assert (
+        caught.value.production_restore_performed
+        is True
+    )
+    assert replace_calls == 3
+    assert sleep_calls == [0.10, 0.25]
+    assert database.read_bytes() == before
+    assert backup.read_bytes() == before
+    assert not list(
+        database.parent.glob(
+            ".direction-b-restore-*.db"
+        )
+    )
+
+
+def test_post_commit_restore_persistent_permission_error_still_fails_closed(
+    production_target,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, backup = production_target
+    before = database.read_bytes()
+
+    real_validate = migration.validate
+    validation_calls = 0
+
+    def fail_second_validation(connection):
+        nonlocal validation_calls
+        validation_calls += 1
+        real_validate(connection)
+        if validation_calls == 2:
+            raise RuntimeError(
+                "post-commit validation failure"
+            )
+
+    replace_calls = 0
+
+    def always_locked_replace(_source, _target):
+        nonlocal replace_calls
+        replace_calls += 1
+        raise PermissionError(
+            "persistent Windows replace lock"
+        )
+
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(
+        migration,
+        "validate",
+        fail_second_validation,
+    )
+    monkeypatch.setattr(
+        migration.os,
+        "replace",
+        always_locked_replace,
+    )
+    monkeypatch.setattr(
+        migration.time,
+        "sleep",
+        sleep_calls.append,
+    )
+
+    with pytest.raises(
+        migration.MigrationSafetyError,
+        match="production migration rollback failed",
+    ) as caught:
+        _apply(database, backup)
+
+    assert (
+        caught.value.production_restore_performed
+        is False
+    )
+
+    assert replace_calls == (
+        len(
+            migration
+            ._RESTORE_REPLACE_RETRY_DELAYS_SECONDS
+        )
+        + 1
+    )
+
+    assert sleep_calls == list(
+        migration
+        ._RESTORE_REPLACE_RETRY_DELAYS_SECONDS
+    )
+
+    assert backup.read_bytes() == before
+
+    assert not list(
+        database.parent.glob(
+            ".direction-b-restore-*.db"
+        )
+    )

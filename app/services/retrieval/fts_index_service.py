@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import threading
@@ -94,6 +96,188 @@ INSERT INTO {{table_name}} (
 """
 
 _FTS_MAINTENANCE_LOCK = threading.RLock()
+
+
+def compute_retrieval_projection_sha256(
+    *,
+    registry: RetrievalSourceRegistry | None = None,
+) -> str:
+    source_registry = registry or RetrievalSourceRegistry()
+    registry_result = source_registry.read()
+    digest = hashlib.sha256()
+    for row_id, fragment in enumerate(
+        registry_result.fragments,
+        start=1,
+    ):
+        projection = {
+            "fragment_row": _fragment_row(row_id, fragment),
+            "fts_row": _fts_row(row_id, fragment),
+        }
+        digest.update(
+            json.dumps(
+                projection,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def rebind_retrieval_fts_after_schema_only_migration(
+    *,
+    expected_before_db_sha256: str,
+    expected_after_db_sha256: str,
+    expected_projection_sha256: str,
+    index_path: str | Path = DEFAULT_INDEX_PATH,
+    manifest_path: str | Path = DEFAULT_MANIFEST_PATH,
+    production_db_path: str | Path = DEFAULT_DB_PATH,
+    registry: RetrievalSourceRegistry | None = None,
+) -> dict[str, Any]:
+    before_hash = _normalized_sha256(
+        expected_before_db_sha256,
+        name="expected_before_db_sha256",
+    )
+    after_hash = _normalized_sha256(
+        expected_after_db_sha256,
+        name="expected_after_db_sha256",
+    )
+    projection_hash = _normalized_sha256(
+        expected_projection_sha256,
+        name="expected_projection_sha256",
+    )
+    target_index = Path(index_path)
+    target_manifest = Path(manifest_path)
+    source_database = Path(production_db_path)
+    for path, label in (
+        (source_database, "production database"),
+        (target_index, "retrieval index"),
+        (target_manifest, "retrieval manifest"),
+    ):
+        if not path.is_file():
+            raise FileNotFoundError(f"{label} does not exist: {path}")
+
+    actual_database_hash = sha256_file(source_database).lower()
+    if actual_database_hash != after_hash:
+        raise RuntimeError("current production database hash does not match")
+
+    manifest_before_bytes = target_manifest.read_bytes()
+    manifest = json.loads(manifest_before_bytes.decode("utf-8"))
+    if not isinstance(manifest, dict):
+        raise TypeError("retrieval manifest must contain a JSON object")
+    if str(manifest.get("production_db_sha256") or "").lower() != before_hash:
+        raise RuntimeError("retrieval manifest database hash does not match")
+
+    index_hash = sha256_file(target_index).lower()
+    if str(manifest.get("index_content_hash") or "").lower() != index_hash:
+        raise RuntimeError("retrieval index content hash does not match")
+    with closing(sqlite3.connect(f"file:{target_index.as_posix()}?mode=ro", uri=True)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("PRAGMA temp_store = MEMORY")
+        validation = validate_index_database(
+            connection,
+            expected_fragment_count=int(manifest["fragment_count"]),
+        )
+    if not validation["valid"]:
+        raise RuntimeError("retrieval index validation failed")
+
+    source_registry = registry or RetrievalSourceRegistry()
+    source_paths = {
+        "production_db_path": Path(source_registry.research_db_path),
+        "zotero_snapshot_path": Path(source_registry.zotero_snapshot_path),
+        "notes_root": Path(source_registry.notes_root),
+    }
+    current_sources = source_fingerprints(**source_paths)
+    for key in (
+        "zotero_snapshot_sha256",
+        "local_markdown_aggregate_hash",
+    ):
+        if str(manifest.get(key) or "").lower() != str(
+            current_sources.get(key) or ""
+        ).lower():
+            raise RuntimeError(f"{key} changed")
+
+    current_projection_hash = compute_retrieval_projection_sha256(
+        registry=source_registry
+    )
+    if current_projection_hash != projection_hash:
+        raise RuntimeError("retrieval source projection changed")
+
+    token = uuid4().hex
+    temporary_manifest = target_manifest.with_name(
+        f".{target_manifest.name}.{token}.tmp"
+    )
+    backup_manifest = target_manifest.with_name(
+        f".{target_manifest.name}.{token}.backup"
+    )
+    updated_manifest = dict(manifest)
+    updated_manifest.update(
+        {
+            "production_db_sha256": after_hash,
+            "last_schema_only_rebind_at": datetime.now(timezone.utc).isoformat(),
+            "last_schema_only_rebind_from_db_sha256": before_hash,
+            "last_schema_only_rebind_to_db_sha256": after_hash,
+            "last_schema_only_rebind_projection_sha256": projection_hash,
+        }
+    )
+    published = False
+    retain_backup = False
+    try:
+        shutil.copy2(target_manifest, backup_manifest)
+        temporary_manifest.write_text(
+            json.dumps(
+                updated_manifest,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_manifest, target_manifest)
+        published = True
+        status = get_index_status(
+            index_path=target_index,
+            manifest_path=target_manifest,
+            **source_paths,
+        )
+        if status.get("status") != "ready" or status.get("ready") is not True:
+            raise RuntimeError("rebound retrieval index is not ready")
+        if sha256_file(target_index).lower() != index_hash:
+            raise RuntimeError("retrieval index changed during manifest rebind")
+    except Exception:
+        if published:
+            try:
+                os.replace(backup_manifest, target_manifest)
+            except Exception as rollback_exc:
+                retain_backup = True
+                raise RuntimeError(
+                    "retrieval manifest rebind rollback failed"
+                ) from rollback_exc
+        raise
+    finally:
+        temporary_manifest.unlink(missing_ok=True)
+        if not retain_backup:
+            backup_manifest.unlink(missing_ok=True)
+
+    return {
+        "status": "ready",
+        "before_db_sha256": before_hash,
+        "after_db_sha256": after_hash,
+        "projection_sha256": projection_hash,
+        "index_content_hash": index_hash,
+        "manifest_sha256": sha256_file(target_manifest),
+        "index_write_performed": False,
+        "manifest_write_performed": True,
+        "full_rebuild_performed": False,
+        "source_projection_changed": False,
+        "production_db_write_performed": False,
+        "zotero_db_write_performed": False,
+        "vector_write_performed": False,
+        "llm_called": False,
+    }
 
 
 def build_retrieval_fts(
@@ -769,6 +953,13 @@ def _normalize_search_text(value: str) -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _normalized_sha256(value: str, *, name: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", normalized) is None:
+        raise ValueError(f"{name} must be a 64-character SHA256")
+    return normalized
 
 
 def _assert_project_local(path: Path) -> None:

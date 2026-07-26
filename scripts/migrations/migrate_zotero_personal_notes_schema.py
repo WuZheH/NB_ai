@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
 import re
 import shutil
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -317,6 +319,41 @@ def _create_verified_backup(
     return backup_sha256, source_size
 
 
+_RESTORE_REPLACE_RETRY_DELAYS_SECONDS = (
+    0.10,
+    0.25,
+    0.50,
+    1.00,
+    2.00,
+    4.00,
+    8.00,
+    15.00,
+)
+
+
+def _replace_restore_candidate_with_retry(
+    source: Path,
+    target: Path,
+) -> None:
+    for attempt in range(
+        len(_RESTORE_REPLACE_RETRY_DELAYS_SECONDS) + 1
+    ):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt >= len(
+                _RESTORE_REPLACE_RETRY_DELAYS_SECONDS
+            ):
+                raise
+
+            time.sleep(
+                _RESTORE_REPLACE_RETRY_DELAYS_SECONDS[
+                    attempt
+                ]
+            )
+
+
 def _restore_verified_backup(
     target: Path,
     backup: Path,
@@ -336,7 +373,10 @@ def _restore_verified_backup(
             raise MigrationSafetyError(
                 "production migration rollback failed"
             )
-        os.replace(restore_candidate, target)
+        _replace_restore_candidate_with_retry(
+            restore_candidate,
+            target,
+        )
         if (
             target.stat().st_size != expected_size
             or file_sha256(target) != expected_sha256
@@ -915,7 +955,13 @@ def migrate_database(
             "production_restore_performed": False,
         }
     except Exception as exc:
+        failure_message = str(exc)
+
         connection.close()
+        connection = None
+
+        exc.__traceback__ = None
+        gc.collect()
         if (
             production_target
             and committed
@@ -936,7 +982,7 @@ def migrate_database(
                     production_restore_performed=False,
                 ) from restore_exc
             raise MigrationSafetyError(
-                str(exc),
+                failure_message,
                 production_restore_performed=True,
             ) from exc
 
@@ -944,11 +990,12 @@ def migrate_database(
             exc.production_restore_performed = False
             raise
         raise MigrationSafetyError(
-            str(exc),
+            failure_message,
             production_restore_performed=False,
         ) from exc
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
 
 
 def main() -> None:
