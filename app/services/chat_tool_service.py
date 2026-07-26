@@ -911,9 +911,14 @@ def _commit_confirmed_import(
             }
         )
         import_job_id = str(preview["import_job_id"])
-        if record.object_import_mode == "chaptered" and record.document_type in {"book", "thesis", "report"}:
-            return commit_book_service.commit_book_from_staging(import_job_id)
-        return commit_paper_service.commit_paper_from_staging(import_job_id, rebuild_legacy_vector_index=False)
+        return chat_pdf_production_import_service.import_document_to_production(
+            import_job_id=import_job_id,
+            document_type=record.document_type,
+            note_files=[record.inbox_root / Path(item["relative_path"]) for item in record.note_sources] if record.inbox_root else [],
+            inbox_root=record.inbox_root,
+            allow_production=True,
+            runtime=runtime,
+        )
     except Exception:
         if created_copy and destination.is_file():
             destination.unlink()
@@ -1009,6 +1014,11 @@ def _validate_import_source_unchanged(record: ImportConfirmation) -> None:
     ):
         raise ChatToolError("import_source_changed", "Inbox PDF changed after preview.", status_code=409)
     root = record.inbox_root or record.source_path.parent
+    current_sources = tuple(chat_import_catalog_service.note_sources(pdf=record.source_path, inbox_root=root))
+    if current_sources != record.note_sources:
+        raise ChatToolError("chat_import_bundle_changed", "Import note bundle changed after preview.", status_code=409)
+    if not current_sources:
+        return
     for source in record.note_sources:
         path = (root / Path(str(source["relative_path"]))).resolve(strict=False)
         try:

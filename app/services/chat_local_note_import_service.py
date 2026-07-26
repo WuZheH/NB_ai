@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,7 @@ def import_local_notes(*, db_path: str | Path, document_id: int, note_files: lis
     connection.execute("PRAGMA foreign_keys=ON")
     note_ids: list[int] = []
     try:
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         for row in rows:
             is_markdown = row["path"].suffix.lower() == ".md"
             note_type = "local_note"
@@ -42,11 +45,16 @@ def import_local_notes(*, db_path: str | Path, document_id: int, note_files: lis
             cur = connection.execute(f"INSERT INTO personal_notes ({','.join(columns)}) VALUES ({placeholders})", values)
             note_id = int(cur.lastrowid)
             note_ids.append(note_id)
-            try:
-                connection.execute("INSERT INTO note_evidence_links (note_id, chunk_id, link_type, evidence_role, confidence, created_by, created_at) VALUES (?, NULL, ?, ?, ?, ?, CURRENT_TIMESTAMP)", (note_id, "document_context", "user_note", 1.0, "chat_catalog"))
-            except sqlite3.IntegrityError:
-                # Legacy schema requires chunk_id; leave the note usable and report no guessed link.
-                pass
+            connection.execute("""INSERT INTO note_evidence_links
+                (note_id, document_id, chunk_id, link_type, evidence_role, quote_text,
+                 confidence, created_by, created_at, pdf_page, page_label,
+                 source_locator_json, alignment_status, alignment_method,
+                 alignment_warnings_json, source_quote_hash)
+                VALUES (?, ?, NULL, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL)""",
+                (note_id, document_id, "document_context", "user_note", 1.0,
+                 "chat_catalog", now,
+                 json.dumps({"relative_path": row["path"].relative_to(inbox_root).as_posix(), "block_ordinal": rows.index(row)}, ensure_ascii=False),
+                 "document_only", "chat_catalog_bundle", "[]"))
         connection.commit()
     except Exception:
         connection.rollback()

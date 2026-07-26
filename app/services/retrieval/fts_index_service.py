@@ -530,7 +530,9 @@ def upsert_document_retrieval_fts(
     if production:
         if target_index != Path(DEFAULT_INDEX_PATH).resolve(strict=False) or target_manifest != Path(DEFAULT_MANIFEST_PATH).resolve(strict=False):
             raise ValueError("production upsert requires default FTS targets")
-        if not expected_before_db_sha256 or not expected_after_db_sha256:
+        if (not expected_before_db_sha256 or not expected_after_db_sha256
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_before_db_sha256)
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_after_db_sha256)):
             raise ValueError("production upsert requires before/after DB hashes")
         manifest_probe = json.loads(target_manifest.read_text(encoding="utf-8"))
         if str(manifest_probe.get("production_db_sha256", "")).lower() != expected_before_db_sha256.lower():
@@ -660,6 +662,10 @@ def upsert_document_retrieval_fts(
                 operation="upsert",
                 duration_ms=duration_ms,
             )
+            if production:
+                final_status = get_index_status()
+                if final_status.get("status") != "ready" or final_status.get("ready") is not True:
+                    raise RuntimeError(f"production FTS not ready after upsert: {final_status}")
         except Exception:
             if connection is not None:
                 connection.rollback()

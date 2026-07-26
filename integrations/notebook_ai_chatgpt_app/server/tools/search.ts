@@ -36,6 +36,8 @@ export const searchOutputShape = {
   warnings: z.array(z.string()),
 };
 
+// Research and literature questions search the private corpus before answering; rewriting and casual chat do not require search.
+
 function compactResult(result: NotebookResult, includeContext: boolean): Record<string, unknown> {
   return {
     fragment_id: result.fragment_id,
@@ -97,7 +99,7 @@ export function registerSearchTool(server: McpServer, client: NotebookClient): v
     {
       title: "Search private research evidence",
       description:
-        "Use this when the user asks about their papers, literature, research methods, PDF evidence, Zotero reading notes, or ideas recorded while reading. Use Search before answering claims about the user's corpus. Distinguish PDF source text from the user's Zotero notes, cite document title, page, and fragment_id, call fetch for full context, and do not claim the collection has no relevant material until this search returns no results.",
+        "For knowledge questions, research questions, literature claims, method explanations, comparisons, or questions about ideas the user may have encountered while reading, search the private corpus before answering. Do not rely on model memory when the user's corpus could contain relevant evidence. Pure rewriting, translation, formatting, and casual conversation do not require a corpus search. Distinguish PDF source text from user notes, cite document title and page, and call fetch for full context.",
       inputSchema: searchInputShape,
       outputSchema: searchOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,

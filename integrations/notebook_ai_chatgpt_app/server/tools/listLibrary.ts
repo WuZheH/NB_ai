@@ -21,7 +21,7 @@ export const listLibraryInputShape = {
 };
 export const listLibraryInputSchema = z.object(listLibraryInputShape);
 
-const libraryItemSchema = z.object({
+const importedLibraryItemSchema = z.object({
   document_id: z.number().int().positive().nullable(),
   title: z.string(),
   type: z.string(),
@@ -36,11 +36,17 @@ const libraryItemSchema = z.object({
   note_count: z.number().int().nonnegative().optional(),
   note_files: z.array(z.string()).optional(),
 });
+const catalogLibraryItemSchema = z.object({
+  kind: z.literal("catalog"), document_id: z.null(), title: z.string(), type: z.literal("pdf"), has_pdf: z.literal(true),
+  import_ref: z.string(), file_name: z.string(), relative_path: z.string(), note_count: z.number().int().nonnegative(), note_files: z.array(z.string()),
+  status: z.literal("available"), duplicate_status: z.string(),
+});
 
 export const listLibraryOutputShape = {
   status: z.literal("ok"),
+  scope: z.enum(["imported", "catalog"]),
   count: z.number().int().nonnegative(),
-  items: z.array(libraryItemSchema),
+  items: z.array(z.union([importedLibraryItemSchema, catalogLibraryItemSchema])),
   truncated: z.boolean(),
 };
 
@@ -51,6 +57,7 @@ export async function runListLibraryTool(client: NotebookClient, rawInput: unkno
     const response = await client.listLibrary(input);
     const structuredContent = {
       status: "ok" as const,
+      scope: response.scope ?? input.scope ?? "imported",
       count: response.items.length,
       items: response.items,
       truncated: response.truncated,
