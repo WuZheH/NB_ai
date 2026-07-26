@@ -849,6 +849,7 @@ def _commit_confirmed_zotero_import(
                     record.preview_token
                 ),
                 db_path=runtime.db_path,
+                data_dir=runtime.data_dir,
                 body_importer=(
                     runtime.zotero_body_importer
                 ),

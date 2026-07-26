@@ -6,12 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from app.core.paths import DEFAULT_DB_PATH
+from app.core.paths import DATA_DIR, DEFAULT_DB_PATH
 from app.services import (
     chat_tool_service,
+    vector_store_service,
     zotero_direction_b_import_service,
     zotero_selected_book_preview_service,
 )
+from app.services.retrieval import fts_index_service
 from scripts.migrations import (
     migrate_zotero_personal_notes_schema
     as migration,
@@ -23,6 +25,54 @@ def reset_chat_state():
     chat_tool_service.reset_chat_tool_state_for_tests()
     yield
     chat_tool_service.reset_chat_tool_state_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def isolate_b4_derived_primitives(monkeypatch):
+    monkeypatch.setattr(
+        fts_index_service,
+        "upsert_document_retrieval_fts",
+        lambda **_kwargs: {
+            "status": "ready",
+            "full_rebuild_performed": False,
+            "production_db_write_performed": False,
+        },
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "sync_affected_passage_embeddings",
+        lambda *_args, **_kwargs: {
+            "scope": "affected_source_ids_only",
+            "full_rebuild_allowed": False,
+            "delete_orphans_allowed": False,
+            "lancedb_writes_performed": False,
+        },
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "sync_document_note_embeddings",
+        lambda *_args, **_kwargs: {
+            "scope": "document_only",
+            "full_rebuild_performed": False,
+            "orphan_delete_performed": False,
+            "lancedb_writes_performed": False,
+        },
+    )
+
+
+def make_temp_data_dir(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    search_index = root / "search_index"
+    search_index.mkdir(parents=True, exist_ok=True)
+    fts_index_service._build_database(
+        search_index / "retrieval_fts_v1.db",
+        [],
+    )
+    (search_index / "retrieval_fts_v1_manifest.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    return root
 
 
 def make_temp_db(
@@ -361,7 +411,7 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
         chat_tool_service
         .ChatToolRuntime(
             db_path=db_path,
-            data_dir=tmp_path / "data",
+            data_dir=make_temp_data_dir(tmp_path / "data"),
             zotero_body_importer=(
                 body_importer
             ),
@@ -630,7 +680,7 @@ def test_source_drift_is_rejected_before_body_import(
         chat_tool_service
         .ChatToolRuntime(
             db_path=db_path,
-            data_dir=tmp_path / "data",
+            data_dir=make_temp_data_dir(tmp_path / "data"),
             zotero_body_importer=(
                 forbidden_body
             ),
@@ -713,7 +763,7 @@ def test_body_failure_restores_temp_database(
         chat_tool_service
         .ChatToolRuntime(
             db_path=db_path,
-            data_dir=tmp_path / "data",
+            data_dir=make_temp_data_dir(tmp_path / "data"),
             zotero_body_importer=(
                 failing_body
             ),
@@ -859,6 +909,7 @@ def test_production_is_blocked_before_preview_or_body(
             .commit_selected_book_import_to_temp_db(
                 preview_token="unused",
                 db_path=DEFAULT_DB_PATH,
+                data_dir=DATA_DIR,
                 body_importer=forbidden_body,
             )
         )
@@ -1004,7 +1055,7 @@ def test_duplicate_appearing_after_confirmation_blocks_body(
         chat_tool_service
         .ChatToolRuntime(
             db_path=db_path,
-            data_dir=tmp_path / "data",
+            data_dir=make_temp_data_dir(tmp_path / "data"),
             zotero_body_importer=(
                 forbidden_body
             ),
@@ -1570,7 +1621,7 @@ def test_default_core_body_importer_is_used_without_runtime_override(
         chat_tool_service
         .ChatToolRuntime(
             db_path=db_path,
-            data_dir=tmp_path / "data",
+            data_dir=make_temp_data_dir(tmp_path / "data"),
             # Intentionally NO
             # zotero_body_importer override.
         )
