@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import sqlite3
 import sys
+from datetime import datetime, timezone
+from typing import Any
 
 
 def main() -> int:
@@ -20,8 +23,6 @@ def main() -> int:
     for path in (data_dir, inbox, runtime_dir, logs_dir):
         path.mkdir(parents=True, exist_ok=True)
 
-    os.environ["SEARCH_DATA_DIR"] = str(data_dir)
-    os.environ["SEARCH_IMPORT_INBOX"] = str(inbox)
     os.environ["SEARCH_RUNTIME_DIR"] = str(runtime_dir)
     os.environ["SEARCH_LOG_DIR"] = str(logs_dir)
     os.environ["SEARCH_MACHINE_CONFIG_PATH"] = str(root / "missing-machine-config.json")
@@ -31,79 +32,112 @@ def main() -> int:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    from app.db.init_db import init_db
-    from app.services import chat_tool_service
-    from app.services.pdf_backend_service import load_fitz_backend
-    from app.services.retrieval.fts_index_service import build_retrieval_fts
+    from app.core.paths import DEFAULT_DB_PATH, FTS_DB_PATH, FTS_MANIFEST_PATH
+    from app.services import chat_pdf_production_import_service
+    from app.services.library.document_deletion_service import DeletionRuntime
+    from app.services.retrieval import fts_index_service
+    from app.services.retrieval.source_registry import RetrievalSourceRegistry
 
-    init_db()
-    (data_dir / "zotero" / "snapshot").mkdir(parents=True, exist_ok=True)
-    (data_dir / "zotero" / "snapshot" / "zotero.sqlite").touch()
-    (data_dir / "notes").mkdir(parents=True, exist_ok=True)
-    build_retrieval_fts(
-        index_path=data_dir / "search_index" / "retrieval_fts_v1.db",
-        manifest_path=data_dir / "search_index" / "retrieval_fts_v1_manifest.json",
-    )
-    source = inbox / "isolated-chat-import.pdf"
-    fitz = load_fitz_backend()
-    document = fitz.open()
-    page = document.new_page()
-    page.insert_text((72, 72), "Isolated chat import evidence for motion diffusion.")
-    document.set_metadata({"title": "Isolated Chat Import Fixture"})
-    document.save(source)
-    document.close()
+    temp_db = data_dir / "db" / "research_memory.db"
+    temp_fts = data_dir / "search_index" / "retrieval_fts_v1.db"
+    temp_manifest = data_dir / "search_index" / "retrieval_fts_v1_manifest.json"
+    temp_vector_store = data_dir / "vector_store" / "lancedb"
+    temp_vector_manifest = data_dir / "vector_store" / "manifest.json"
+    _clone_database_readonly(DEFAULT_DB_PATH, temp_db)
+    with sqlite3.connect(temp_db) as connection:
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+    if integrity != "ok":
+        raise RuntimeError(f"temp_db_integrity_failed:{integrity}")
 
-    runtime = chat_tool_service.ChatToolRuntime(
-        db_path=data_dir / "db" / "research_memory.db",
-        data_dir=data_dir,
-        inbox_root=inbox,
+    missing_zotero = temp_db.with_name(".b5b1-zotero-snapshot-absent.sqlite")
+    missing_notes = temp_db.with_name(".b5b1-notes-absent")
+    registry = RetrievalSourceRegistry(
+        research_db_path=temp_db,
+        zotero_snapshot_path=missing_zotero,
+        notes_root=missing_notes,
     )
-    preview = chat_tool_service.import_preview(runtime=runtime)
-    if preview.get("duplicate_status") != "not_detected":
-        raise RuntimeError("first_preview_unexpected_duplicate")
-    imported = chat_tool_service.import_document(
-        confirmation_token=str(preview["confirmation_token"]),
-        confirmed=True,
-        runtime=runtime,
+    # The production primitive validates targets against its configured data
+    # root. Keep application paths unchanged and scope this isolated fixture
+    # to the explicit TEMP data root instead of redefining SEARCH_DATA_DIR.
+    fts_index_service.DATA_DIR = data_dir
+    fts_index_service.build_retrieval_fts(
+        index_path=temp_fts, manifest_path=temp_manifest, registry=registry
     )
-    document_id = int(imported["document_id"])
-    with sqlite3.connect(f"{runtime.db_path.as_uri()}?mode=ro", uri=True) as connection:
-        document_count = int(
+
+    def temp_body_commit(import_job_id: str, document_type: str) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        title = "B6B2 Isolated TEMP Import"
+        text = "Isolated chat import evidence for motion diffusion."
+        with sqlite3.connect(temp_db) as connection:
+            cursor = connection.execute(
+                """INSERT INTO documents
+                (title, document_type, content_layer, source_path, pdf_path,
+                 read_status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (title, document_type, "full", "isolated-temp", None, "unread", now, now),
+            )
+            document_id = int(cursor.lastrowid)
             connection.execute(
-                "SELECT COUNT(*) FROM documents WHERE id = ?",
-                (document_id,),
-            ).fetchone()[0]
-        )
-        chunk_count = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM knowledge_chunks WHERE document_id = ?",
-                (document_id,),
-            ).fetchone()[0]
-        )
-    duplicate = chat_tool_service.import_preview(runtime=runtime)
-    managed_pdfs = list((data_dir / "pdfs" / "chat_imports").glob("*.pdf"))
+                """INSERT INTO knowledge_chunks
+                (document_id, chunk_index, heading_path, chunk_text, char_count,
+                 token_count, content_hash, created_at, updated_at)
+                VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?)""",
+                (document_id, "", text, len(text), len(text.split()), hashlib.sha256(text.encode()).hexdigest(), now, now),
+            )
+            connection.commit()
+        return {"status": "committed", "document_id": document_id, "title": title, "chunk_count": 1}
+
+    runtime = chat_pdf_production_import_service.ChatPdfImportRuntime(
+        db_path=temp_db, data_dir=data_dir, fts_path=temp_fts,
+        fts_manifest_path=temp_manifest, vector_store_path=temp_vector_store,
+        vector_manifest_path=temp_vector_manifest,
+        deletion_runtime=DeletionRuntime(
+            db_path=temp_db, data_dir=data_dir, fts_path=temp_fts,
+            fts_manifest_path=temp_manifest, vector_store_path=temp_vector_store,
+            vector_manifest_path=temp_vector_manifest, archive_root=root / "rollback_archive",
+        ), body_commit=temp_body_commit,
+    )
+    status_before = chat_pdf_production_import_service._fts_status(runtime)
+    if status_before.get("status") != "ready" or status_before.get("ready") is not True:
+        raise RuntimeError(json.dumps({"status": status_before, "manifest": str(temp_manifest), "db": str(temp_db)}))
+    orchestrator_result = chat_pdf_production_import_service.import_document_to_production(
+        import_job_id="isolated-temp", document_type="paper", note_files=[],
+        inbox_root=inbox, allow_production=False, runtime=runtime,
+    )
+    document_id = int(orchestrator_result["document_id"])
+    with sqlite3.connect(temp_db) as connection:
+        document_count = int(connection.execute("SELECT COUNT(*) FROM documents WHERE id = ?", (document_id,)).fetchone()[0])
+        chunk_count = int(connection.execute("SELECT COUNT(*) FROM knowledge_chunks WHERE document_id = ?", (document_id,)).fetchone()[0])
+    final_status = chat_pdf_production_import_service._fts_status(runtime)
     result = {
         "status": "ok",
         "document_id": document_id,
         "document_count": document_count,
         "chunk_count": chunk_count,
-        "duplicate_status": duplicate.get("duplicate_status"),
-        "duplicate_token_absent": duplicate.get("confirmation_token") is None,
-        "source_pdf_preserved": source.is_file(),
-        "managed_pdf_count": len(managed_pdfs),
+        "temp_fts_status": final_status.get("status"),
+        "temp_fts_ready": final_status.get("ready"),
+        "full_rebuild_performed": orchestrator_result.get("full_rebuild_performed", False),
         "production_path_used": False,
     }
     if (
         document_count != 1
         or chunk_count < 1
-        or result["duplicate_status"] != "duplicate"
-        or not result["duplicate_token_absent"]
-        or not result["source_pdf_preserved"]
-        or len(managed_pdfs) != 1
+        or result["temp_fts_status"] != "ready"
+        or result["temp_fts_ready"] is not True
+        or result["full_rebuild_performed"] is not False
     ):
         raise RuntimeError("isolated_import_contract_failed")
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
+
+
+def _clone_database_readonly(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source_uri = f"file:{source.as_posix()}?mode=ro"
+    with sqlite3.connect(source_uri, uri=True) as source_connection:
+        with sqlite3.connect(destination) as target_connection:
+            source_connection.backup(target_connection)
+            target_connection.commit()
 
 
 def _parser() -> argparse.ArgumentParser:

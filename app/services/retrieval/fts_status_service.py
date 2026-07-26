@@ -230,7 +230,11 @@ def source_fingerprints(
 ) -> dict[str, str]:
     return {
         "production_db_sha256": sha256_file(production_db_path),
-        "zotero_snapshot_sha256": sha256_file(zotero_snapshot_path),
+        "zotero_snapshot_sha256": (
+            sha256_file(zotero_snapshot_path)
+            if Path(zotero_snapshot_path).is_file()
+            else hashlib.sha256(b"").hexdigest()
+        ),
         "local_markdown_aggregate_hash": aggregate_markdown_hash(notes_root),
     }
 
