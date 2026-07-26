@@ -33,6 +33,7 @@ def main() -> int:
         sys.path.insert(0, str(project_root))
 
     from app.core.paths import DEFAULT_DB_PATH, FTS_DB_PATH, FTS_MANIFEST_PATH
+    from app.services.vector_store_service import MANIFEST_PATH
     from app.services import chat_pdf_production_import_service
     from app.services.library.document_deletion_service import DeletionRuntime
     from app.services.retrieval import fts_index_service
@@ -43,7 +44,7 @@ def main() -> int:
     temp_manifest = data_dir / "search_index" / "retrieval_fts_v1_manifest.json"
     temp_vector_store = data_dir / "vector_store" / "lancedb"
     temp_vector_manifest = data_dir / "vector_store" / "manifest.json"
-    production_before = {"db": _sha(DEFAULT_DB_PATH), "fts": _sha(FTS_DB_PATH), "manifest": _sha(FTS_MANIFEST_PATH)}
+    production_before = {"db": _sha(DEFAULT_DB_PATH), "fts": _sha(FTS_DB_PATH), "manifest": _sha(FTS_MANIFEST_PATH), "vector_manifest": _sha_optional(MANIFEST_PATH)}
     _clone_database_readonly(DEFAULT_DB_PATH, temp_db)
     with sqlite3.connect(temp_db) as connection:
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
@@ -97,6 +98,8 @@ def main() -> int:
             vector_manifest_path=temp_vector_manifest, archive_root=root / "rollback_archive",
         ), body_commit=temp_body_commit,
     )
+    if chat_pdf_production_import_service._is_production_runtime(runtime):
+        raise RuntimeError("isolated_runtime_resolved_as_production")
     status_before = chat_pdf_production_import_service._fts_status(runtime)
     if status_before.get("status") != "ready" or status_before.get("ready") is not True:
         raise RuntimeError(json.dumps({"status": status_before, "manifest": str(temp_manifest), "db": str(temp_db)}))
@@ -109,7 +112,7 @@ def main() -> int:
         document_count = int(connection.execute("SELECT COUNT(*) FROM documents WHERE id = ?", (document_id,)).fetchone()[0])
         chunk_count = int(connection.execute("SELECT COUNT(*) FROM knowledge_chunks WHERE document_id = ?", (document_id,)).fetchone()[0])
     final_status = chat_pdf_production_import_service._fts_status(runtime)
-    production_after = {"db": _sha(DEFAULT_DB_PATH), "fts": _sha(FTS_DB_PATH), "manifest": _sha(FTS_MANIFEST_PATH)}
+    production_after = {"db": _sha(DEFAULT_DB_PATH), "fts": _sha(FTS_DB_PATH), "manifest": _sha(FTS_MANIFEST_PATH), "vector_manifest": _sha_optional(MANIFEST_PATH)}
     result = {
         "status": "ok",
         "document_id": document_id,
@@ -122,6 +125,7 @@ def main() -> int:
         "production_db_unchanged": production_before["db"] == production_after["db"],
         "production_fts_unchanged": production_before["fts"] == production_after["fts"],
         "production_fts_manifest_unchanged": production_before["manifest"] == production_after["manifest"],
+        "production_vector_manifest_unchanged": production_before["vector_manifest"] == production_after["vector_manifest"],
     }
     if (
         document_count != 1
@@ -132,6 +136,7 @@ def main() -> int:
         or not result["production_db_unchanged"]
         or not result["production_fts_unchanged"]
         or not result["production_fts_manifest_unchanged"]
+        or not result["production_vector_manifest_unchanged"]
     ):
         raise RuntimeError("isolated_import_contract_failed")
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
@@ -140,6 +145,10 @@ def main() -> int:
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest().upper()
+
+
+def _sha_optional(path: Path) -> str | None:
+    return _sha(path) if path.is_file() else None
 
 
 def _clone_database_readonly(source: Path, destination: Path) -> None:
