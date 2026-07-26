@@ -34,10 +34,12 @@ EMBEDDING_MODEL = local_embedding_service.MODEL_NAME
 EMBEDDING_MODEL_PATH = str(local_embedding_service.DEFAULT_MODEL_PATH)
 PASSAGE_PROFILE_VERSION = "passage_profile_v1"
 OBJECT_PROFILE_VERSION = "object_profile_v1"
+NOTE_PROFILE_VERSION = "note_profile_v1"
 VECTOR_STORE_ROOT = VECTOR_STORE_DIR
 MANIFEST_PATH = VECTOR_STORE_ROOT / "vector_manifest.json"
 PASSAGE_TABLE = "passage_embeddings"
 OBJECT_TABLE = "object_embeddings"
+NOTE_TABLE = "note_embeddings"
 SOURCE_TYPES = {"passage", "object", "note", "inspiration", "relation"}
 LIFECYCLE_FIELDS = {
     "vector_id",
@@ -99,6 +101,33 @@ OBJECT_EXPECTED_RECORD_FIELDS = {
     "object_profile_text",
     "text_for_embedding",
     "profile_hash",
+    "embedding_model",
+    "embedding_model_path",
+    "embedding_dim",
+    "profile_version",
+    "created_at",
+    "updated_at",
+    "vector",
+}
+NOTE_EXPECTED_RECORD_FIELDS = {
+    "vector_id",
+    "source_type",
+    "source_id",
+    "source_hash",
+    "note_id",
+    "document_id",
+    "note_type",
+    "title",
+    "note_text",
+    "summary",
+    "selected_text",
+    "source_comment",
+    "source_record_kind",
+    "source_identity",
+    "source_missing",
+    "pdf_page",
+    "page_label",
+    "text_for_embedding",
     "embedding_model",
     "embedding_model_path",
     "embedding_dim",
@@ -465,6 +494,180 @@ def make_object_source_id(object_key: str) -> str:
     return f"object:{str(object_key).strip()}"
 
 
+def make_note_source_id(note_id: int) -> str:
+    return f"note:{int(note_id)}"
+
+
+def collect_personal_note_sources(
+    *,
+    document_id: int,
+    source_db_path: str | Path,
+) -> list[dict[str, Any]]:
+    if isinstance(document_id, bool) or not isinstance(document_id, int) or document_id <= 0:
+        raise ValueError("document_id must be a positive integer")
+    database = Path(source_db_path).resolve(strict=False)
+    if not database.is_file():
+        raise ValueError("source_db_path must identify an existing SQLite database")
+    with connect_readonly_sqlite(
+        database,
+        resolve_strict=True,
+        row_factory=sqlite3.Row,
+        query_only=True,
+        temp_store="MEMORY",
+    ) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                id,
+                document_id,
+                note_type,
+                title,
+                content,
+                summary,
+                content_hash,
+                selected_text,
+                source_comment,
+                source_record_kind,
+                source_identity,
+                source_content_hash,
+                source_missing,
+                pdf_page,
+                page_label,
+                updated_at
+            FROM personal_notes
+            WHERE document_id = ?
+            ORDER BY id
+            """,
+            (document_id,),
+        ).fetchall()
+    sources = []
+    for row in rows:
+        note = dict(row)
+        note_id = int(note["id"])
+        source_id = make_note_source_id(note_id)
+        sources.append(
+            {
+                "source_type": "note",
+                "source_id": source_id,
+                "vector_id": source_id,
+                "source_hash": _personal_note_source_hash(note),
+                "profile_version": NOTE_PROFILE_VERSION,
+                "embedding_model": EMBEDDING_MODEL,
+                "note": note,
+            }
+        )
+    return sources
+
+
+def build_note_record(
+    source: dict[str, Any],
+    *,
+    model: Any,
+    model_path: str | None = None,
+) -> dict[str, Any]:
+    text_for_embedding = _note_text_for_embedding(source["note"])
+    vector = local_embedding_service._encode_text(model, text_for_embedding)
+    return _note_record_from_parts(
+        source=source,
+        text_for_embedding=text_for_embedding,
+        vector=vector,
+        model_path=model_path,
+    )
+
+
+def build_note_schema_record(
+    source: dict[str, Any],
+    *,
+    model_path: str | None = None,
+) -> dict[str, Any]:
+    return _note_record_from_parts(
+        source=source,
+        text_for_embedding=_note_text_for_embedding(source["note"]),
+        vector=[0.0] * _expected_embedding_dim(),
+        model_path=model_path,
+    )
+
+
+def _note_record_from_parts(
+    *,
+    source: dict[str, Any],
+    text_for_embedding: str,
+    vector: list[float],
+    model_path: str | None,
+) -> dict[str, Any]:
+    note = source["note"]
+    source_id = str(source["source_id"])
+    now = _utc_now()
+    return {
+        "vector_id": source_id,
+        "source_type": "note",
+        "source_id": source_id,
+        "source_hash": str(source["source_hash"]),
+        "note_id": int(note["id"]),
+        "document_id": int(note["document_id"]),
+        "note_type": str(note.get("note_type") or ""),
+        "title": str(note.get("title") or ""),
+        "note_text": str(note.get("content") or ""),
+        "summary": str(note.get("summary") or ""),
+        "selected_text": str(note.get("selected_text") or ""),
+        "source_comment": str(note.get("source_comment") or ""),
+        "source_record_kind": str(note.get("source_record_kind") or ""),
+        "source_identity": str(note.get("source_identity") or ""),
+        "source_missing": bool(note.get("source_missing")),
+        "pdf_page": _safe_int(note.get("pdf_page")),
+        "page_label": str(note.get("page_label") or ""),
+        "text_for_embedding": text_for_embedding,
+        "embedding_model": EMBEDDING_MODEL,
+        "embedding_model_path": model_path or _active_embedding_model_path(),
+        "embedding_dim": len(vector),
+        "profile_version": NOTE_PROFILE_VERSION,
+        "created_at": now,
+        "updated_at": now,
+        "vector": vector,
+    }
+
+
+def _note_text_for_embedding(note: dict[str, Any]) -> str:
+    parts = []
+    for label, field in (
+        ("Title", "title"),
+        ("Note", "content"),
+        ("Selected evidence", "selected_text"),
+        ("Summary", "summary"),
+    ):
+        value = str(note.get(field) or "").strip()
+        if value:
+            parts.append(f"{label}: {value}")
+    return "\n".join(parts)
+
+
+def _personal_note_source_hash(note: dict[str, Any]) -> str:
+    fields = (
+        "note_type",
+        "title",
+        "content",
+        "summary",
+        "selected_text",
+        "source_comment",
+        "source_record_kind",
+        "source_identity",
+        "source_missing",
+        "pdf_page",
+        "page_label",
+    )
+    normalized = {
+        field: (
+            bool(note.get(field))
+            if field == "source_missing"
+            else str(note.get(field) or "").strip()
+        )
+        for field in fields
+    }
+    return compute_source_hash(
+        json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+
+
 def collect_passage_sources(
     limit: int | None = None,
     source_ids: list[str] | None = None,
@@ -497,6 +700,135 @@ def collect_passage_sources(
             "chunk": chunk,
         })
     return sources
+
+
+def sync_document_note_embeddings(
+    document_id: int,
+    *,
+    dry_run: bool = True,
+    apply: bool = False,
+    source_db_path: str | Path,
+    store_path: Path,
+    manifest_path: Path,
+) -> dict[str, Any]:
+    if dry_run == apply:
+        raise ValueError("specify exactly one of dry_run or apply for note sync")
+    if isinstance(document_id, bool) or not isinstance(document_id, int) or document_id <= 0:
+        raise ValueError("document_id must be a positive integer")
+    source_database = Path(source_db_path).resolve(strict=False)
+    actual_store_path = Path(store_path).resolve(strict=False)
+    actual_manifest_path = Path(manifest_path).resolve(strict=False)
+    if not source_database.is_file():
+        raise ValueError("source_db_path must identify an existing temp database")
+    if source_database == Path(DEFAULT_DB_PATH).resolve(strict=False):
+        raise ValueError("note sync forbids the production database")
+    if actual_store_path == Path(LANCEDB_DIR).resolve(strict=False):
+        raise ValueError("note sync forbids the production vector store")
+    if actual_manifest_path == Path(MANIFEST_PATH).resolve(strict=False):
+        raise ValueError("note sync forbids the production vector manifest")
+
+    sources = collect_personal_note_sources(
+        document_id=document_id,
+        source_db_path=source_database,
+    )
+    source_ids = [str(source["source_id"]) for source in sources]
+    existing_by_id: dict[str, dict[str, Any]] = {}
+    db = None
+    if actual_store_path.exists():
+        db = (
+            _connect_existing_vector_store(actual_store_path)
+            if dry_run
+            else open_vector_store(actual_store_path)
+        )
+        existing_by_id = _existing_records_by_source_ids(
+            db,
+            NOTE_TABLE,
+            source_ids,
+        ) if source_ids else {}
+
+    inserted_sources = []
+    updated_sources = []
+    skipped_sources = []
+    for source in sources:
+        current = existing_by_id.get(str(source["source_id"]))
+        if current is None:
+            inserted_sources.append(source)
+        elif _record_stale(current, source):
+            updated_sources.append(source)
+        else:
+            skipped_sources.append(source)
+    changed_sources = [*inserted_sources, *updated_sources]
+
+    note_count = (
+        int(db.open_table(NOTE_TABLE).count_rows())
+        if db is not None and NOTE_TABLE in _table_names(db)
+        else 0
+    )
+    writes_performed = False
+    if apply:
+        if db is None:
+            db = open_vector_store(actual_store_path)
+        table_exists = NOTE_TABLE in _table_names(db)
+        if table_exists:
+            missing_fields = NOTE_EXPECTED_RECORD_FIELDS - _table_schema_fields(
+                db,
+                NOTE_TABLE,
+            )
+            if missing_fields:
+                raise VectorStoreSchemaMismatch(
+                    "document note apply forbids schema rebuild; missing fields: "
+                    + ", ".join(sorted(missing_fields))
+                )
+        model = local_embedding_service._load_model({}) if changed_sources else None
+        records = [
+            build_note_record(source, model=model)
+            for source in changed_sources
+        ]
+        if records:
+            if table_exists:
+                table = db.open_table(NOTE_TABLE)
+                _delete_vector_ids(
+                    table,
+                    [str(source["source_id"]) for source in changed_sources],
+                )
+                table.add(records)
+            else:
+                db.create_table(NOTE_TABLE, data=records, mode="create")
+            writes_performed = True
+        table_names = _table_names(db)
+        note_records = _existing_records(db, NOTE_TABLE)
+        note_count = (
+            int(db.open_table(NOTE_TABLE).count_rows())
+            if NOTE_TABLE in table_names
+            else 0
+        )
+        current_manifest = get_vector_manifest(actual_manifest_path) or {}
+        embedding_dim = (
+            _embedding_dim(note_records)
+            or int(current_manifest.get("embedding_dim") or 0)
+        )
+        _updated_manifest(
+            manifest_path=actual_manifest_path,
+            embedding_dim=embedding_dim,
+            note_count=note_count,
+        )
+
+    return {
+        "kind": "notes",
+        "scope": "document_only",
+        "document_id": document_id,
+        "dry_run": dry_run,
+        "apply": apply,
+        "source_count": len(sources),
+        "inserted_count": len(inserted_sources) if apply else 0,
+        "updated_count": len(updated_sources) if apply else 0,
+        "skipped_count": len(skipped_sources),
+        "note_count": note_count,
+        "full_rebuild_performed": False,
+        "orphan_delete_performed": False,
+        "lancedb_writes_performed": writes_performed,
+        "production_data_modified": False,
+    }
 
 
 def collect_object_sources(limit: int | None = None) -> list[dict[str, Any]]:
@@ -1461,6 +1793,7 @@ def _updated_manifest(
     embedding_dim: int,
     passage_count: int | None = None,
     object_count: int | None = None,
+    note_count: int | None = None,
 ) -> dict[str, Any]:
     current = get_vector_manifest(manifest_path) or {}
     manifest = {
@@ -1470,14 +1803,18 @@ def _updated_manifest(
         "embedding_dim": embedding_dim or current.get("embedding_dim"),
         "passage_profile_version": PASSAGE_PROFILE_VERSION,
         "object_profile_version": OBJECT_PROFILE_VERSION,
+        "note_profile_version": NOTE_PROFILE_VERSION,
         "passage_count": current.get("passage_count", 0),
         "object_count": current.get("object_count", 0),
+        "note_count": current.get("note_count", 0),
         "created_at": current.get("created_at") or _utc_now(),
     }
     if passage_count is not None:
         manifest["passage_count"] = passage_count
     if object_count is not None:
         manifest["object_count"] = object_count
+    if note_count is not None:
+        manifest["note_count"] = note_count
     return write_vector_manifest(manifest, manifest_path)
 
 
