@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import re
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -12,7 +17,16 @@ DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "db" / "research_memory.db"
 
 
 class MigrationSafetyError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        production_restore_performed: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.production_restore_performed = bool(
+            production_restore_performed
+        )
 
 
 REQUIRED_TABLES = {
@@ -192,6 +206,149 @@ def resolved(path: str | Path) -> Path:
 
 def is_production_database(path: str | Path) -> bool:
     return resolved(path) == resolved(DEFAULT_DB_PATH)
+
+
+def file_sha256(path: str | Path) -> str:
+    hasher = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(block)
+    return hasher.hexdigest().upper()
+
+
+def production_backup_root() -> Path:
+    return resolved(DEFAULT_DB_PATH).parent.parent / "backups" / "direction_b"
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _production_sidecars(path: Path) -> tuple[Path, ...]:
+    return tuple(
+        Path(f"{path}{suffix}")
+        for suffix in ("-wal", "-shm", "-journal")
+    )
+
+
+def _validate_production_apply_gate(
+    path: Path,
+    *,
+    allow_production: bool,
+    expected_sha256: str | None,
+    backup_path: str | Path | None,
+) -> tuple[str, Path]:
+    if not allow_production:
+        raise MigrationSafetyError(
+            "Production schema migration requires "
+            "--allow-production."
+        )
+
+    expected = str(expected_sha256 or "").strip().upper()
+    if re.fullmatch(r"[0-9A-F]{64}", expected) is None:
+        raise MigrationSafetyError(
+            "Production schema migration requires a "
+            "64-character expected SHA256."
+        )
+
+    if backup_path is None:
+        raise MigrationSafetyError(
+            "Production schema migration requires an "
+            "explicit backup path."
+        )
+
+    backup = resolved(backup_path)
+    if backup == path:
+        raise MigrationSafetyError(
+            "Production backup path cannot equal the database path."
+        )
+    if backup.exists():
+        raise MigrationSafetyError(
+            "Production backup path already exists."
+        )
+
+    allowed_root = production_backup_root()
+    if not _is_within(backup, allowed_root):
+        raise MigrationSafetyError(
+            "Production backup must be under "
+            "data/backups/direction_b."
+        )
+
+    existing_sidecars = [
+        sidecar
+        for sidecar in _production_sidecars(path)
+        if sidecar.exists()
+    ]
+    if existing_sidecars:
+        raise MigrationSafetyError(
+            "Production database sidecar exists; migration refused."
+        )
+
+    current_sha256 = file_sha256(path)
+    if current_sha256 != expected:
+        raise MigrationSafetyError(
+            "Production database SHA256 does not match the expected value."
+        )
+
+    return expected, backup
+
+
+def _create_verified_backup(
+    source: Path,
+    backup: Path,
+    *,
+    expected_sha256: str,
+) -> tuple[str, int]:
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, backup)
+    backup_sha256 = file_sha256(backup)
+    source_size = source.stat().st_size
+    if (
+        backup_sha256 != expected_sha256
+        or backup.stat().st_size != source_size
+    ):
+        raise MigrationSafetyError(
+            "Production database backup verification failed."
+        )
+    return backup_sha256, source_size
+
+
+def _restore_verified_backup(
+    target: Path,
+    backup: Path,
+    *,
+    expected_sha256: str,
+    expected_size: int,
+) -> None:
+    restore_candidate = target.with_name(
+        f".direction-b-restore-{uuid4().hex[:8]}.db"
+    )
+    try:
+        shutil.copy2(backup, restore_candidate)
+        if (
+            restore_candidate.stat().st_size != expected_size
+            or file_sha256(restore_candidate) != expected_sha256
+        ):
+            raise MigrationSafetyError(
+                "production migration rollback failed"
+            )
+        os.replace(restore_candidate, target)
+        if (
+            target.stat().st_size != expected_size
+            or file_sha256(target) != expected_sha256
+        ):
+            raise MigrationSafetyError(
+                "production migration rollback failed"
+            )
+    except Exception as exc:
+        restore_candidate.unlink(missing_ok=True)
+        raise MigrationSafetyError(
+            "production migration rollback failed"
+        ) from exc
 
 
 def connect_database(
@@ -612,38 +769,63 @@ def migrate_database(
     db_path: str | Path,
     *,
     dry_run: bool,
+    allow_production: bool = False,
+    expected_sha256: str | None = None,
+    backup_path: str | Path | None = None,
 ) -> dict[str, Any]:
     path = resolved(db_path)
-
-    # Critical B1 safety boundary:
-    # reject production APPLY before sqlite3.connect().
-    if not dry_run and is_production_database(path):
-        raise MigrationSafetyError(
-            "Production schema migration is "
-            "intentionally blocked in B1."
-        )
+    production_target = is_production_database(path)
 
     if not path.is_file():
         raise FileNotFoundError(
             f"Database not found: {path}"
         )
 
-    with connect_database(
+    before_sha256 = file_sha256(path)
+    verified_backup: Path | None = None
+    backup_sha256: str | None = None
+    backup_size: int | None = None
+
+    if not dry_run and production_target:
+        expected, verified_backup = _validate_production_apply_gate(
+            path,
+            allow_production=allow_production,
+            expected_sha256=expected_sha256,
+            backup_path=backup_path,
+        )
+        backup_sha256, backup_size = _create_verified_backup(
+            path,
+            verified_backup,
+            expected_sha256=expected,
+        )
+
+    connection = connect_database(
         path,
         read_only=dry_run,
-    ) as connection:
+    )
+    committed = False
+    try:
         operations = plan_migration(
             connection
         )
 
         if dry_run:
+            connection.close()
             return {
                 "status": "dry_run",
                 "database": str(path),
                 "operations": operations,
                 "applied": [],
                 "applied_count": 0,
+                "remaining_operations": operations,
+                "production_target": production_target,
                 "production_write_performed": False,
+                "before_sha256": before_sha256,
+                "after_sha256": before_sha256,
+                "backup_path": None,
+                "backup_sha256": None,
+                "backup_verified": False,
+                "production_restore_performed": False,
             }
 
         original_fk = int(
@@ -688,6 +870,7 @@ def migrate_database(
             validate(connection)
 
             connection.commit()
+            committed = True
 
         except Exception:
             connection.rollback()
@@ -699,6 +882,7 @@ def migrate_database(
                 + ("ON" if original_fk else "OFF")
             )
 
+        validate(connection)
         remaining = plan_migration(
             connection
         )
@@ -709,6 +893,7 @@ def migrate_database(
                 f"{remaining}"
             )
 
+        after_sha256 = file_sha256(path)
         return {
             "status": "applied",
             "database": str(path),
@@ -716,8 +901,54 @@ def migrate_database(
             "applied": applied,
             "applied_count": len(applied),
             "remaining_operations": remaining,
-            "production_write_performed": False,
+            "production_target": production_target,
+            "production_write_performed": production_target,
+            "before_sha256": before_sha256,
+            "after_sha256": after_sha256,
+            "backup_path": (
+                str(verified_backup)
+                if verified_backup is not None
+                else None
+            ),
+            "backup_sha256": backup_sha256,
+            "backup_verified": backup_sha256 == before_sha256,
+            "production_restore_performed": False,
         }
+    except Exception as exc:
+        connection.close()
+        if (
+            production_target
+            and committed
+            and verified_backup is not None
+            and backup_sha256 is not None
+            and backup_size is not None
+        ):
+            try:
+                _restore_verified_backup(
+                    path,
+                    verified_backup,
+                    expected_sha256=backup_sha256,
+                    expected_size=backup_size,
+                )
+            except Exception as restore_exc:
+                raise MigrationSafetyError(
+                    "production migration rollback failed",
+                    production_restore_performed=False,
+                ) from restore_exc
+            raise MigrationSafetyError(
+                str(exc),
+                production_restore_performed=True,
+            ) from exc
+
+        if isinstance(exc, MigrationSafetyError):
+            exc.production_restore_performed = False
+            raise
+        raise MigrationSafetyError(
+            str(exc),
+            production_restore_performed=False,
+        ) from exc
+    finally:
+        connection.close()
 
 
 def main() -> None:
@@ -746,11 +977,25 @@ def main() -> None:
         action="store_true",
     )
 
+    parser.add_argument(
+        "--allow-production",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--expected-sha256",
+    )
+    parser.add_argument(
+        "--backup-path",
+    )
+
     args = parser.parse_args()
 
     result = migrate_database(
         args.db_path,
         dry_run=bool(args.dry_run),
+        allow_production=bool(args.allow_production),
+        expected_sha256=args.expected_sha256,
+        backup_path=args.backup_path,
     )
 
     print(
