@@ -7,13 +7,16 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import undefer
 
-from app.core.paths import LANCEDB_DIR, VECTOR_STORE_DIR
+from app.core.database import connect_readonly_sqlite
+from app.core.paths import DEFAULT_DB_PATH, LANCEDB_DIR, VECTOR_STORE_DIR
 from app.db.session import SessionLocal
 from app.models import BookChapter, Document, KnowledgeChunk
 from app.runtime.machine_config import (
@@ -462,9 +465,22 @@ def make_object_source_id(object_key: str) -> str:
     return f"object:{str(object_key).strip()}"
 
 
-def collect_passage_sources(limit: int | None = None, source_ids: list[str] | None = None) -> list[dict[str, Any]]:
+def collect_passage_sources(
+    limit: int | None = None,
+    source_ids: list[str] | None = None,
+    source_db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
     sources = []
-    for document, chunk in _passage_source_rows(limit=limit, source_ids=source_ids):
+    rows = (
+        _passage_source_rows_from_sqlite(
+            source_db_path,
+            source_ids=source_ids,
+            limit=limit,
+        )
+        if source_db_path is not None
+        else _passage_source_rows(limit=limit, source_ids=source_ids)
+    )
+    for document, chunk in rows:
         passage_text = _compact_text(chunk.chunk_text)
         source_id = make_passage_source_id(document.id, chunk.id)
         source_hash = compute_source_hash(
@@ -544,11 +560,27 @@ def sync_affected_passage_embeddings(
     apply: bool = False,
     store_path: Path | None = None,
     manifest_path: Path | None = None,
+    source_db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if dry_run == apply:
         raise ValueError("specify exactly one of dry_run or apply for affected passage sync")
+    if apply and source_db_path is not None:
+        source_database = Path(source_db_path).resolve(strict=False)
+        if source_database == Path(DEFAULT_DB_PATH).resolve(strict=False):
+            raise ValueError("explicit-source affected apply forbids the production database")
+        if store_path is None or Path(store_path).resolve(strict=False) == Path(
+            LANCEDB_DIR
+        ).resolve(strict=False):
+            raise ValueError("explicit-source affected apply requires a temp vector store")
+        if manifest_path is None or Path(manifest_path).resolve(strict=False) == Path(
+            MANIFEST_PATH
+        ).resolve(strict=False):
+            raise ValueError("explicit-source affected apply requires a temp vector manifest")
     requested = _validated_passage_source_ids(source_ids)
-    sources = collect_passage_sources(source_ids=requested)
+    sources = collect_passage_sources(
+        source_ids=requested,
+        source_db_path=source_db_path,
+    )
     source_by_id = {source["source_id"]: source for source in sources}
     actual_store_path = Path(store_path or LANCEDB_DIR)
     existing_by_id: dict[str, dict[str, Any]] = {}
@@ -613,6 +645,30 @@ def sync_affected_passage_embeddings(
                 table.add(records)
             else:
                 db.create_table(PASSAGE_TABLE, data=records, mode="create")
+        if source_db_path is not None:
+            table_names = _table_names(db)
+            passage_records = _existing_records(db, PASSAGE_TABLE)
+            passage_count = (
+                int(db.open_table(PASSAGE_TABLE).count_rows())
+                if PASSAGE_TABLE in table_names
+                else 0
+            )
+            object_count = (
+                int(db.open_table(OBJECT_TABLE).count_rows())
+                if OBJECT_TABLE in table_names
+                else 0
+            )
+            current_manifest = get_vector_manifest(Path(manifest_path)) or {}
+            embedding_dim = (
+                _embedding_dim(passage_records)
+                or int(current_manifest.get("embedding_dim") or 0)
+            )
+            _updated_manifest(
+                manifest_path=Path(manifest_path),
+                embedding_dim=embedding_dim,
+                passage_count=passage_count,
+                object_count=object_count,
+            )
     return {
         "kind": "passages",
         "scope": "affected_source_ids_only",
@@ -966,6 +1022,100 @@ def _passage_source_rows(
     if limit is not None:
         return filtered[: max(0, int(limit))]
     return filtered
+
+
+def _passage_source_rows_from_sqlite(
+    db_path: str | Path,
+    *,
+    source_ids: list[str] | None = None,
+    limit: int | None = None,
+) -> list[tuple[SimpleNamespace, SimpleNamespace]]:
+    database = Path(db_path).resolve(strict=False)
+    if not database.is_file():
+        raise ValueError("source_db_path must identify an existing SQLite database")
+    requested = set(source_ids or [])
+    scoped_ids = [_parse_passage_source_id(source_id) for source_id in requested]
+    status_placeholders = ",".join("?" for _ in READ_LIBRARY_STATUSES)
+    scope_clause = ""
+    params: list[Any] = [*READ_LIBRARY_STATUSES]
+    if scoped_ids:
+        scope_clause = " AND (" + " OR ".join(
+            "(documents.id = ? AND chunks.id = ?)" for _ in scoped_ids
+        ) + ")"
+        for document_id, chunk_id in scoped_ids:
+            params.extend((document_id, chunk_id))
+    query = f"""
+        SELECT
+            documents.id AS document_id,
+            documents.title AS document_title,
+            documents.document_type,
+            documents.object_import_mode,
+            documents.read_status,
+            chunks.id AS chunk_id,
+            chunks.document_id AS chunk_document_id,
+            chunks.chunk_index,
+            chunks.heading_path,
+            chunks.chunk_text,
+            chunks.content_hash,
+            chunks.pdf_page_start,
+            chunks.pdf_page_end,
+            chunks.chapter_id,
+            chunks.updated_at,
+            chapters.title AS chapter_title
+        FROM documents
+        JOIN knowledge_chunks AS chunks
+          ON chunks.document_id = documents.id
+        LEFT JOIN book_chapters AS chapters
+          ON chapters.id = chunks.chapter_id
+        WHERE documents.read_status IN ({status_placeholders})
+        {scope_clause}
+        ORDER BY documents.id, chunks.chunk_index, chunks.id
+    """
+    with connect_readonly_sqlite(
+        database,
+        resolve_strict=True,
+        row_factory=sqlite3.Row,
+        query_only=True,
+        temp_store="MEMORY",
+    ) as connection:
+        rows = connection.execute(query, tuple(params)).fetchall()
+
+    result: list[tuple[SimpleNamespace, SimpleNamespace]] = []
+    for row in rows:
+        data = dict(row)
+        chunk_text = _compact_text(data.get("chunk_text"))
+        if not chunk_text or is_metadata_chunk_text(data.get("chunk_text")):
+            continue
+        source_id = make_passage_source_id(
+            int(data["document_id"]),
+            int(data["chunk_id"]),
+        )
+        if requested and source_id not in requested:
+            continue
+        document = SimpleNamespace(
+            id=int(data["document_id"]),
+            title=str(data.get("document_title") or ""),
+            document_type=str(data.get("document_type") or ""),
+            object_import_mode=data.get("object_import_mode"),
+            read_status=data.get("read_status"),
+        )
+        chunk = SimpleNamespace(
+            id=int(data["chunk_id"]),
+            document_id=int(data["chunk_document_id"]),
+            chunk_index=int(data.get("chunk_index") or 0),
+            heading_path=str(data.get("heading_path") or ""),
+            chunk_text=data.get("chunk_text"),
+            content_hash=data.get("content_hash"),
+            pdf_page_start=data.get("pdf_page_start"),
+            pdf_page_end=data.get("pdf_page_end"),
+            chapter_id=data.get("chapter_id"),
+            updated_at=data.get("updated_at"),
+            _vector_chapter_title=str(data.get("chapter_title") or ""),
+        )
+        result.append((document, chunk))
+    if limit is not None:
+        return result[: max(0, int(limit))]
+    return result
 
 
 def _validated_passage_source_ids(source_ids: list[str]) -> list[str]:

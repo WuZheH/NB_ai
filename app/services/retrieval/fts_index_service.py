@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import threading
 import time
@@ -13,7 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.database import connect_existing_readwrite_sqlite
-from app.core.paths import DATA_DIR
+from app.core.paths import DATA_DIR, DEFAULT_DB_PATH
 from app.schemas.retrieval_fragment import RetrievalFragment
 from app.services.retrieval.fts_schema import (
     INDEX_SCHEMA_VERSION,
@@ -321,6 +322,180 @@ def cleanup_document_retrieval_fts(
     }
 
 
+def upsert_document_retrieval_fts(
+    *,
+    document_id: int,
+    index_path: str | Path,
+    manifest_path: str | Path,
+    research_db_path: str | Path,
+) -> dict[str, Any]:
+    if isinstance(document_id, bool) or not isinstance(document_id, int) or document_id <= 0:
+        raise ValueError("document_id must be a positive integer")
+
+    target_index = Path(index_path).resolve(strict=False)
+    target_manifest = Path(manifest_path).resolve(strict=False)
+    source_database = Path(research_db_path).resolve(strict=False)
+    if source_database == Path(DEFAULT_DB_PATH).resolve(strict=False):
+        raise ValueError("temp document FTS upsert forbids the production database")
+    if target_index == Path(DEFAULT_INDEX_PATH).resolve(strict=False):
+        raise ValueError("temp document FTS upsert forbids the production index")
+    if target_manifest == Path(DEFAULT_MANIFEST_PATH).resolve(strict=False):
+        raise ValueError("temp document FTS upsert forbids the production manifest")
+    if not source_database.is_file():
+        raise ValueError("research_db_path must identify an existing temp database")
+    if not target_index.is_file():
+        raise ValueError("index_path must identify an existing temp index")
+    if not target_manifest.is_file():
+        raise ValueError("manifest_path must identify an existing temp manifest")
+
+    missing_zotero = source_database.with_name(".b5b1-zotero-snapshot-absent.sqlite")
+    missing_notes = source_database.with_name(".b5b1-notes-absent")
+    registry = RetrievalSourceRegistry(
+        research_db_path=source_database,
+        zotero_snapshot_path=missing_zotero,
+        notes_root=missing_notes,
+    )
+    registry_result = registry.read(
+        source_types=("pdf_chunk", "personal_note"),
+        document_ids=(document_id,),
+    )
+    fragments = list(registry_result.fragments)
+
+    token = uuid4().hex
+    backup_index = target_index.with_name(f".{target_index.name}.{token}.backup")
+    backup_manifest = target_manifest.with_name(
+        f".{target_manifest.name}.{token}.backup"
+    )
+    with _FTS_MAINTENANCE_LOCK:
+        started = time.perf_counter()
+        shutil.copy2(target_index, backup_index)
+        shutil.copy2(target_manifest, backup_manifest)
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = connect_existing_readwrite_sqlite(
+                target_index,
+                resolve_strict=True,
+                timeout=30.0,
+                row_factory=sqlite3.Row,
+                temp_store="MEMORY",
+                isolation_level=None,
+            )
+            connection.execute("PRAGMA busy_timeout = 30000")
+            connection.execute("BEGIN IMMEDIATE")
+            row_ids = [
+                int(row[0])
+                for row in connection.execute(
+                    f"SELECT row_id FROM {ORDINARY_TABLE} "
+                    "WHERE document_id = ? ORDER BY row_id",
+                    (document_id,),
+                )
+            ]
+            connection.execute(
+                f"DELETE FROM {UNICODE_FTS_TABLE} WHERE rowid IN "
+                f"(SELECT row_id FROM {ORDINARY_TABLE} WHERE document_id = ?)",
+                (document_id,),
+            )
+            connection.execute(
+                f"DELETE FROM {TRIGRAM_FTS_TABLE} WHERE rowid IN "
+                f"(SELECT row_id FROM {ORDINARY_TABLE} WHERE document_id = ?)",
+                (document_id,),
+            )
+            connection.execute(
+                f"DELETE FROM {ORDINARY_TABLE} WHERE document_id = ?",
+                (document_id,),
+            )
+            next_row_id = int(
+                connection.execute(
+                    f"SELECT COALESCE(MAX(row_id), 0) + 1 FROM {ORDINARY_TABLE}"
+                ).fetchone()[0]
+            )
+            fragment_rows = [
+                _fragment_row(next_row_id + offset, fragment)
+                for offset, fragment in enumerate(fragments)
+            ]
+            fts_rows = [
+                _fts_row(next_row_id + offset, fragment)
+                for offset, fragment in enumerate(fragments)
+            ]
+            connection.executemany(_INSERT_FRAGMENT_SQL, fragment_rows)
+            connection.executemany(
+                _INSERT_FTS_SQL.format(table_name=UNICODE_FTS_TABLE),
+                fts_rows,
+            )
+            connection.executemany(
+                _INSERT_FTS_SQL.format(table_name=TRIGRAM_FTS_TABLE),
+                fts_rows,
+            )
+            fragment_count = int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM {ORDINARY_TABLE}"
+                ).fetchone()[0]
+            )
+            connection.execute(
+                """
+                INSERT INTO index_metadata (key, value) VALUES ('fragment_count', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (str(fragment_count),),
+            )
+            validation = validate_index_database(
+                connection,
+                expected_fragment_count=fragment_count,
+            )
+            if not validation["valid"]:
+                raise RuntimeError(
+                    f"retrieval index document upsert validation failed: {validation}"
+                )
+            manifest_counts = _manifest_counts(connection)
+            connection.commit()
+            connection.close()
+            connection = None
+            duration_ms = round((time.perf_counter() - started) * 1000, 3)
+            manifest = _refresh_manifest_after_document_change(
+                manifest_path=target_manifest,
+                index_path=target_index,
+                production_db_path=source_database,
+                fragment_count=fragment_count,
+                manifest_counts=manifest_counts,
+                operation="upsert",
+                duration_ms=duration_ms,
+            )
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+                connection.close()
+            shutil.copyfile(backup_index, target_index)
+            shutil.copyfile(backup_manifest, target_manifest)
+            raise
+        finally:
+            backup_index.unlink(missing_ok=True)
+            backup_manifest.unlink(missing_ok=True)
+
+    source_counts = {
+        source_type: sum(
+            1 for fragment in fragments if fragment.source_type == source_type
+        )
+        for source_type in ("pdf_chunk", "personal_note")
+    }
+    return {
+        "status": "ready",
+        "document_id": document_id,
+        "removed_fragment_rows": len(row_ids),
+        "inserted_fragment_rows": len(fragments),
+        "pdf_chunk_rows": source_counts["pdf_chunk"],
+        "personal_note_rows": source_counts["personal_note"],
+        "fragment_count": fragment_count,
+        "index_content_hash": manifest["index_content_hash"],
+        "manifest_sha256": sha256_file(target_manifest),
+        "validation": validation,
+        "full_rebuild_performed": False,
+        "production_db_write_performed": False,
+        "zotero_db_write_performed": False,
+        "vector_write_performed": False,
+        "llm_called": False,
+    }
+
+
 def _manifest_counts(connection: sqlite3.Connection) -> dict[str, Any]:
     source_type_counts = {
         str(row[0]): int(row[1])
@@ -362,6 +537,29 @@ def _refresh_manifest_after_cleanup(
     manifest_counts: dict[str, Any],
     duration_ms: float,
 ) -> dict[str, Any]:
+    return _refresh_manifest_after_document_change(
+        manifest_path=manifest_path,
+        index_path=index_path,
+        production_db_path=production_db_path,
+        fragment_count=fragment_count,
+        manifest_counts=manifest_counts,
+        operation="cleanup",
+        duration_ms=duration_ms,
+    )
+
+
+def _refresh_manifest_after_document_change(
+    *,
+    manifest_path: Path,
+    index_path: Path,
+    production_db_path: Path,
+    fragment_count: int,
+    manifest_counts: dict[str, Any],
+    operation: str,
+    duration_ms: float,
+) -> dict[str, Any]:
+    if operation not in {"cleanup", "upsert"}:
+        raise ValueError("unsupported document manifest operation")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(manifest, dict):
         raise TypeError("retrieval manifest must contain a JSON object")
@@ -374,8 +572,8 @@ def _refresh_manifest_after_cleanup(
             "duplicate_group_count": manifest_counts["duplicate_group_count"],
             "index_content_hash": sha256_file(index_path),
             "index_file_bytes": index_path.stat().st_size,
-            "last_document_cleanup_at": datetime.now(timezone.utc).isoformat(),
-            "last_document_cleanup_duration_ms": duration_ms,
+            f"last_document_{operation}_at": datetime.now(timezone.utc).isoformat(),
+            f"last_document_{operation}_duration_ms": duration_ms,
         }
     )
     temporary_manifest = manifest_path.with_name(
