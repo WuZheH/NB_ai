@@ -76,12 +76,19 @@ def test_production_upsert_restore_permission_paths(tmp_path, monkeypatch, persi
             if persistent or len(calls)==1: raise PermissionError("locked")
         return real(src,dst)
     monkeypatch.setattr(fts_index_service.os,"replace",replace); monkeypatch.setattr(fts_index_service.time,"sleep",lambda _:None)
-    with pytest.raises((RuntimeError, PermissionError)):
+    expected = "production FTS document upsert rollback failed" if persistent else "production FTS not ready after upsert"
+    with pytest.raises(RuntimeError, match=expected):
         fts_index_service.upsert_document_retrieval_fts(document_id=1,index_path=index,manifest_path=manifest,research_db_path=db,allow_production=True,expected_before_db_sha256=before,expected_after_db_sha256=before)
     if persistent:
-        assert len(list(tmp_path.glob("*.backup"))) >= 2
+        backups = list(tmp_path.glob("*.backup"))
+        assert len(backups) >= 2
+        payloads = [path.read_bytes() for path in backups]
+        assert ib in payloads
+        assert mb in payloads
     else:
-        assert len(calls) >= 2 and index.read_bytes()==ib and manifest.read_bytes()==mb
+        assert len(calls) >= 2
+        assert index.read_bytes() == ib
+        assert manifest.read_bytes() == mb
 
 @pytest.mark.parametrize("suffix", [".db", ".json", ".manifest"])
 def test_restore_file_verified_preserves_exact_bytes(tmp_path: Path, suffix: str):
