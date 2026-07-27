@@ -195,7 +195,7 @@ def get_notebook_fragments(
     if not ordered_ids:
         return []
 
-    if registry is None:
+    if registry is None and document_ids is None:
         cached = _cached_notebook_fragments(ordered_ids)
         if len(cached) == len(ordered_ids):
             return [cached[value] for value in ordered_ids]

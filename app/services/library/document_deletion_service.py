@@ -23,9 +23,12 @@ from app.core.paths import (
     LANCEDB_DIR,
     PDFS_DIR,
 )
+from app.domains.retrieval import fragment_repository, note_vector_index
+from app.domains.retrieval.result_contracts import NOTE_SOURCE_TYPES
 from app.schemas.library_deletion import DeletionOptions
 from app.services import vector_store_service
 from app.services.retrieval.fts_index_service import cleanup_document_retrieval_fts
+from app.services.retrieval.source_registry import RetrievalSourceRegistry
 
 
 PREVIEW_TTL_SECONDS = 5 * 60
@@ -179,6 +182,7 @@ class PreviewRecord:
 class CleanupState:
     fts: dict[str, Any] = field(default_factory=dict)
     vectors: dict[str, Any] = field(default_factory=dict)
+    note_vectors: dict[str, Any] = field(default_factory=dict)
     files: dict[str, Any] = field(default_factory=dict)
     orphan_scan: dict[str, Any] = field(default_factory=dict)
     errors: list[dict[str, str]] = field(default_factory=list)
@@ -305,6 +309,7 @@ def delete_document(
             "document_id": plan.document_id,
             "database": db_result,
             "vectors": cleanup.vectors,
+            "note_vectors": cleanup.note_vectors,
             "files": cleanup.files,
             "fts": cleanup.fts,
             "orphan_scan": cleanup.orphan_scan,
@@ -980,6 +985,17 @@ def _run_post_commit_cleanup(plan: InternalDeletionPlan, *, runtime: DeletionRun
         state.errors.append(_cleanup_error("vector_cleanup_failed", exc))
         state.vectors = {"status": "failed", "error_code": "vector_cleanup_failed"}
     try:
+        state.note_vectors = _sync_note_vectors_after_document_delete(
+            plan,
+            runtime=runtime,
+        )
+    except Exception as exc:
+        state.errors.append(_cleanup_error("note_vector_cleanup_failed", exc))
+        state.note_vectors = {
+            "status": "failed",
+            "error_code": "note_vector_cleanup_failed",
+        }
+    try:
         state.files = _cleanup_files(plan)
     except Exception as exc:
         state.errors.append(_cleanup_error("file_cleanup_failed", exc))
@@ -997,6 +1013,66 @@ def _run_post_commit_cleanup(plan: InternalDeletionPlan, *, runtime: DeletionRun
         state.errors.append(_cleanup_error("deletion_orphan_scan_failed", exc))
         state.orphan_scan = {"ok": False, "error_code": "deletion_orphan_scan_failed"}
     return state
+
+
+def _sync_note_vectors_after_document_delete(
+    plan: InternalDeletionPlan,
+    *,
+    runtime: DeletionRuntime,
+) -> dict[str, Any]:
+    data_dir = Path(runtime.data_dir).resolve(strict=False)
+    index_dir = data_dir / "vector_store" / "zotero_user_notes_v1"
+    manifest_path = index_dir / note_vector_index.MANIFEST_NAME
+
+    if not manifest_path.is_file():
+        return {
+            "status": "not_present",
+            "document_id": plan.document_id,
+            "removed_document_entries": 0,
+            "stale_document_entries": 0,
+            "vector_write_performed": False,
+        }
+
+    before = note_vector_index.inspect_zotero_note_vector_document_impact(
+        plan.document_id,
+        index_dir=index_dir,
+    )
+
+    registry = RetrievalSourceRegistry(
+        research_db_path=runtime.db_path,
+        zotero_snapshot_path=data_dir / "zotero" / "snapshot" / "zotero.sqlite",
+        notes_root=data_dir / "notes",
+        project_root=data_dir.parent,
+    )
+    fragments = fragment_repository.list_notebook_fragments(
+        source_types=NOTE_SOURCE_TYPES,
+        registry=registry,
+    )
+
+    result = note_vector_index.sync_zotero_note_vectors(
+        index_dir=index_dir,
+        fragments=fragments,
+    )
+
+    after = note_vector_index.inspect_zotero_note_vector_document_impact(
+        plan.document_id,
+        index_dir=index_dir,
+    )
+    stale = int(after.get("document_entry_count") or 0)
+    if stale:
+        raise RuntimeError(
+            f"note vector index still contains {stale} entries for deleted document"
+        )
+
+    return {
+        **result,
+        "document_id": plan.document_id,
+        "removed_document_entries": max(
+            0,
+            int(before.get("document_entry_count") or 0) - stale,
+        ),
+        "stale_document_entries": stale,
+    }
 
 
 def _cleanup_files(plan: InternalDeletionPlan) -> dict[str, Any]:
@@ -1053,7 +1129,32 @@ def _orphan_scan(plan: InternalDeletionPlan, *, runtime: DeletionRuntime) -> dic
         vector_orphans = int(impact.get("passage_vector_count") or 0) + int(impact.get("object_vector_count") or 0)
     except Exception:
         vector_orphans = -1
-    checks.update({"fts_rows": fts_remaining, "orphan_vectors": vector_orphans})
+
+    note_vector_orphans = 0
+    try:
+        note_vector_impact = (
+            note_vector_index.inspect_zotero_note_vector_document_impact(
+                plan.document_id,
+                index_dir=(
+                    Path(runtime.data_dir).resolve(strict=False)
+                    / "vector_store"
+                    / "zotero_user_notes_v1"
+                ),
+            )
+        )
+        note_vector_orphans = int(
+            note_vector_impact.get("document_entry_count") or 0
+        )
+    except Exception:
+        note_vector_orphans = -1
+
+    checks.update(
+        {
+            "fts_rows": fts_remaining,
+            "orphan_vectors": vector_orphans,
+            "orphan_note_vectors": note_vector_orphans,
+        }
+    )
     return {"ok": all(value == 0 for value in checks.values()), **checks}
 
 
@@ -1196,6 +1297,12 @@ def _audit_payload(
         "database_deleted_rows": int(db_result.get("deleted_rows") or 0),
         "database_detached_rows": int(db_result.get("detached_rows") or 0),
         "vector_deleted_rows": int(cleanup.vectors.get("deleted_passage_vectors") or 0) + int(cleanup.vectors.get("deleted_object_vectors") or 0),
+        "note_vector_removed_document_entries": int(
+            cleanup.note_vectors.get("removed_document_entries") or 0
+        ),
+        "note_vector_metadata_updated_entries": int(
+            cleanup.note_vectors.get("metadata_updated_count") or 0
+        ),
         "files_removed": int(cleanup.files.get("removed_files") or 0),
         "preserved_notes": int(db_result.get("counts", {}).get("personal_notes_detached") or 0) + int(db_result.get("counts", {}).get("zotero_notes_detached") or 0),
         "preserved_pdfs": 0 if plan.deletion_options.get("delete_managed_pdf") else 1,

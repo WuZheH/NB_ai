@@ -27,6 +27,7 @@ from app.services import local_embedding_service
 
 INDEX_SCHEMA_VERSION = "zotero_user_notes_vector_index.v1"
 PASSAGE_TEMPLATE_VERSION = "user_note_selected_source_context.v1"
+FRAGMENT_SNAPSHOT_VERSION = "notebook_fragment_snapshot.v1"
 MANIFEST_NAME = "manifest.json"
 DEFAULT_RECALL_LIMIT = 30
 NORMALIZE_EMBEDDINGS = True
@@ -106,10 +107,21 @@ def sync_zotero_note_vectors(
     recomputed = 0
     added = 0
     updated = 0
+    metadata_updated = 0
     for fragment in current:
         passage_text = build_note_passage_text(fragment)
         vector_content_hash = _vector_content_hash(fragment, passage_text)
+        fragment_payload = fragment.model_dump(mode="json")
+        fragment_snapshot_hash = _fragment_snapshot_hash(fragment_payload)
         previous = previous_by_id.get(fragment.fragment_id)
+        previous_snapshot_hash = (
+            _entry_fragment_snapshot_hash(previous)
+            if previous is not None
+            else None
+        )
+        if previous is not None and previous_snapshot_hash != fragment_snapshot_hash:
+            metadata_updated += 1
+
         can_reuse = bool(
             not force
             and template_compatible
@@ -132,6 +144,7 @@ def sync_zotero_note_vectors(
                 added += 1
             else:
                 updated += 1
+
         entries.append(
             {
                 "fragment_id": fragment.fragment_id,
@@ -139,8 +152,9 @@ def sync_zotero_note_vectors(
                 "document_id": fragment.document_id,
                 "content_hash": fragment.content_hash,
                 "vector_content_hash": vector_content_hash,
+                "fragment_snapshot_hash": fragment_snapshot_hash,
                 "passage_text": passage_text,
-                "fragment": fragment.model_dump(mode="json"),
+                "fragment": fragment_payload,
                 "embedding": embedding,
             }
         )
@@ -155,7 +169,10 @@ def sync_zotero_note_vectors(
         not force
         and previous_manifest
         and recomputed == 0
+        and metadata_updated == 0
         and removed == 0
+        and previous_manifest.get("fragment_snapshot_version")
+        == FRAGMENT_SNAPSHOT_VERSION
         and previous_manifest.get("content_hash") == content_hash
         and int(previous_manifest.get("count") or 0) == len(entries)
     ):
@@ -165,6 +182,7 @@ def sync_zotero_note_vectors(
             "recomputed_count": 0,
             "added_count": 0,
             "updated_count": 0,
+            "metadata_updated_count": 0,
             "removed_count": 0,
             "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
             "vector_write_performed": False,
@@ -180,6 +198,7 @@ def sync_zotero_note_vectors(
         "normalization": NORMALIZE_EMBEDDINGS,
         "batch_size": ENCODE_BATCH_SIZE,
         "passage_template": PASSAGE_TEMPLATE_VERSION,
+        "fragment_snapshot_version": FRAGMENT_SNAPSHOT_VERSION,
         "content_hash": content_hash,
         "count": len(entries),
         "built_at": created_at,
@@ -198,6 +217,7 @@ def sync_zotero_note_vectors(
         "source_types": list(NOTE_SOURCE_TYPES),
         "excluded_origin_kinds": list(EXCLUDED_NOTE_ORIGIN_KINDS),
         "passage_template": PASSAGE_TEMPLATE_VERSION,
+        "fragment_snapshot_version": FRAGMENT_SNAPSHOT_VERSION,
         "count": len(entries),
         "content_hash": content_hash,
         "index_file": generation_name,
@@ -232,6 +252,7 @@ def sync_zotero_note_vectors(
         "recomputed_count": recomputed,
         "added_count": added,
         "updated_count": updated,
+        "metadata_updated_count": metadata_updated,
         "removed_count": removed,
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
         "vector_write_performed": True,
@@ -259,6 +280,43 @@ def get_zotero_note_vector_status(
         "status": "ready",
         "validated_count": len(entries),
         "index_dir": str(root),
+        "read_only": True,
+    }
+
+
+def inspect_zotero_note_vector_document_impact(
+    document_id: int,
+    *,
+    index_dir: str | Path = ZOTERO_NOTE_VECTOR_DIR,
+) -> dict[str, Any]:
+    if isinstance(document_id, bool) or not isinstance(document_id, int) or document_id <= 0:
+        raise ValueError("document_id must be a positive integer")
+
+    root = Path(index_dir)
+    if not (root / MANIFEST_NAME).is_file():
+        return {
+            "status": "not_present",
+            "document_id": document_id,
+            "document_entry_count": 0,
+            "fragment_ids": [],
+            "read_only": True,
+        }
+
+    _manifest, entries = _load_existing(root, required=True)
+    matches = [
+        entry
+        for entry in entries
+        if entry.get("document_id") == document_id
+    ]
+    return {
+        "status": "ready",
+        "document_id": document_id,
+        "document_entry_count": len(matches),
+        "fragment_ids": [
+            str(entry.get("fragment_id") or "")
+            for entry in matches
+            if entry.get("fragment_id")
+        ],
         "read_only": True,
     }
 
@@ -425,14 +483,65 @@ def _validate_loaded_index(
     if any(len(entry.get("embedding") or []) != dimension for entry in entries):
         raise ValueError("note index vector dimension mismatch")
 
+    snapshot_version = manifest.get("fragment_snapshot_version")
+    if snapshot_version not in {None, FRAGMENT_SNAPSHOT_VERSION}:
+        raise ValueError("unsupported fragment snapshot version")
+    if payload.get("fragment_snapshot_version") != snapshot_version:
+        raise ValueError("fragment snapshot version mismatch")
+    if snapshot_version == FRAGMENT_SNAPSHOT_VERSION:
+        for entry in entries:
+            fragment_payload = entry.get("fragment")
+            if not isinstance(fragment_payload, dict):
+                raise ValueError("note index fragment snapshot missing")
+            if entry.get("fragment_snapshot_hash") != _fragment_snapshot_hash(
+                fragment_payload
+            ):
+                raise ValueError("note index fragment snapshot hash mismatch")
+
+
+def _fragment_snapshot_hash(fragment: NotebookFragment | dict[str, Any]) -> str:
+    payload = (
+        fragment.model_dump(mode="json")
+        if isinstance(fragment, NotebookFragment)
+        else dict(fragment)
+    )
+    serialized = json.dumps(
+        {
+            "version": FRAGMENT_SNAPSHOT_VERSION,
+            "fragment": payload,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def _entry_fragment_snapshot_hash(entry: dict[str, Any]) -> str | None:
+    stored = entry.get("fragment_snapshot_hash")
+    if isinstance(stored, str) and stored:
+        return stored
+    fragment_payload = entry.get("fragment")
+    if not isinstance(fragment_payload, dict):
+        return None
+    return _fragment_snapshot_hash(fragment_payload)
+
 
 def _aggregate_content_hash(entries: list[dict[str, Any]]) -> str:
     digest = hashlib.sha256()
     for entry in entries:
+        snapshot_hash = str(
+            entry.get("fragment_snapshot_hash")
+            or _fragment_snapshot_hash(entry["fragment"])
+        )
         digest.update(
-            f"{entry['fragment_id']}|{entry['vector_content_hash']}|{PASSAGE_TEMPLATE_VERSION}\n".encode(
-                "utf-8"
-            )
+            (
+                f"{entry['fragment_id']}|"
+                f"{entry['vector_content_hash']}|"
+                f"{snapshot_hash}|"
+                f"{PASSAGE_TEMPLATE_VERSION}|"
+                f"{FRAGMENT_SNAPSHOT_VERSION}\n"
+            ).encode("utf-8")
         )
     return digest.hexdigest()
 
