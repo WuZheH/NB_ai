@@ -1096,44 +1096,84 @@ def test_duplicate_appearing_after_confirmation_blocks_body(
         ).fetchone()[0] == 0
 
 
-def test_chat_bridge_blocks_production_before_preview(
-    monkeypatch,
-):
+def test_chat_bridge_allows_production_preview_registration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production_db = tmp_path / "production.db"
+    production_db.write_bytes(b"fixture")
+
+    # Treat the isolated fixture as the canonical production DB for
+    # this test. No real production data is touched.
+    monkeypatch.setattr(
+        chat_tool_service,
+        "DEFAULT_DB_PATH",
+        production_db,
+    )
+
     calls = {
         "preview": 0,
     }
 
-    def forbidden_preview(
-        *_args,
+    def ready_preview(
+        preview_token,
+        *,
+        expected_db_path=None,
         **_kwargs,
     ):
         calls["preview"] += 1
-        raise AssertionError(
-            "preview must not resolve"
+
+        assert preview_token == "production-preview"
+        assert Path(expected_db_path).resolve(
+            strict=False
+        ) == production_db.resolve(
+            strict=False
         )
+
+        return {
+            "status": "ready",
+            "zotero_item": {
+                "zotero_item_key": "BOOKKEY1",
+                "title": "Production Preview Book",
+                "item_type": "book",
+            },
+            "selected_attachment": {
+                "zotero_attachment_key": "PDFKEY1",
+                "page_count": 12,
+            },
+            "annotation_count": 1,
+            "child_note_count": 2,
+            "duplicate_check": {
+                "duplicate_found": False,
+            },
+        }
 
     monkeypatch.setattr(
         zotero_selected_book_preview_service,
         "resolve_selected_book_preview_token",
-        forbidden_preview,
+        ready_preview,
     )
 
-    with pytest.raises(
-        chat_tool_service.ChatToolError
-    ) as error:
-        (
-            chat_tool_service
-            .register_zotero_selected_book_import_preview(
-                preview_token="unused",
-            )
+    result = (
+        chat_tool_service
+        .register_zotero_selected_book_import_preview(
+            preview_token="production-preview",
+            runtime=chat_tool_service.ChatToolRuntime(
+                db_path=production_db,
+                data_dir=tmp_path / "production-data",
+            ),
         )
-
-    assert error.value.error_code == (
-        "zotero_direction_b_"
-        "production_not_enabled"
     )
 
-    assert calls["preview"] == 0
+    assert calls["preview"] == 1
+    assert result["status"] == "ok"
+    assert result["document_type"] == "book"
+    assert result["duplicate_status"] == "not_detected"
+    assert result["confirmation_token"]
+    assert (
+        result["confirmation_expires_in_seconds"]
+        == chat_tool_service.IMPORT_CONFIRMATION_TTL_SECONDS
+    )
 
 
 def test_preview_token_is_bound_to_target_database(
@@ -1361,41 +1401,85 @@ def test_public_chat_zotero_temp_preview_registers_chat_confirmation(
     assert "internal-b2-token" not in str(result)
 
 
-def test_public_chat_zotero_production_and_duplicate_do_not_register(
+def test_public_chat_zotero_production_registers_and_duplicate_does_not(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registrations: list[dict] = []
+
     previews = [
         _public_chat_zotero_ready_preview(),
         _public_chat_zotero_ready_preview(
             duplicate=True,
-            existing_documents=[{"document_id": 17, "pdf_path": r"C:\private.pdf"}],
+            existing_documents=[
+                {
+                    "document_id": 17,
+                    "pdf_path": r"C:\private.pdf",
+                }
+            ],
         ),
     ]
+
     monkeypatch.setattr(
         zotero_selected_book_preview_service,
         "build_selected_book_preview",
         lambda **_kwargs: previews.pop(0),
     )
+
+    def register_preview(**kwargs):
+        registrations.append(kwargs)
+        return {
+            "status": "ok",
+            "source_type": "zotero_selected_book",
+            "title": "Selected Test Book",
+            "document_type": "book",
+            "estimated_pages": 12,
+            "annotation_count": 1,
+            "child_note_count": 1,
+            "duplicate_status": "not_detected",
+            "confirmation_token": "chat-confirmation-token",
+            "confirmation_expires_in_seconds": 600,
+        }
+
     monkeypatch.setattr(
         chat_tool_service,
         "register_zotero_selected_book_import_preview",
-        lambda **kwargs: registrations.append(kwargs),
+        register_preview,
     )
+
+    production_runtime = chat_tool_service.ChatToolRuntime(
+        db_path=DEFAULT_DB_PATH,
+        data_dir=tmp_path / "production-data",
+    )
+
     production = chat_tool_service.import_preview(
         source_type="zotero_selected_book",
         zotero_item_key="ABCD1234",
-        runtime=chat_tool_service.ChatToolRuntime(
-            db_path=DEFAULT_DB_PATH,
-            data_dir=tmp_path / "production-data",
-        ),
+        runtime=production_runtime,
     )
-    assert production["confirmation_token"] is None
-    assert "zotero_direction_b_production_not_enabled" in production["warnings"]
+
+    assert production["confirmation_token"] == (
+        "chat-confirmation-token"
+    )
+    assert production[
+        "confirmation_expires_in_seconds"
+    ] == 600
+    assert (
+        "zotero_direction_b_production_not_enabled"
+        not in production["warnings"]
+    )
+
+    assert len(registrations) == 1
+    assert registrations[0]["preview_token"] == (
+        "internal-b2-token"
+    )
+    assert registrations[0]["runtime"] is (
+        production_runtime
+    )
 
     database = tmp_path / "research.db"
     database.write_bytes(b"fixture")
+
     duplicate = chat_tool_service.import_preview(
         source_type="zotero_selected_book",
         zotero_item_key="ABCD1234",
@@ -1404,10 +1488,13 @@ def test_public_chat_zotero_production_and_duplicate_do_not_register(
             data_dir=tmp_path / "data",
         ),
     )
+
     assert duplicate["duplicate_status"] == "duplicate"
     assert duplicate["existing_document_id"] == 17
     assert duplicate["confirmation_token"] is None
-    assert registrations == []
+
+    # Duplicate protection returns before confirmation registration.
+    assert len(registrations) == 1
     assert "private.pdf" not in str(duplicate)
 
 

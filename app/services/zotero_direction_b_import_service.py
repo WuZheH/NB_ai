@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import json
+import hashlib
 import shutil
 import sqlite3
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -43,27 +46,57 @@ class DirectionBSelectedBookImportError(RuntimeError):
         self.details = details or {}
 
 
-def commit_selected_book_import_to_temp_db(
+@dataclass(frozen=True)
+class SelectedBookImportRuntime:
+    db_path: Path
+    data_dir: Path
+    fts_index_path: Path
+    fts_manifest_path: Path
+    vector_store_path: Path
+    vector_manifest_path: Path
+    persistence_scope: str
+
+
+def _make_temp_runtime(db_path: str | Path, data_dir: str | Path) -> SelectedBookImportRuntime:
+    root = Path(data_dir).resolve(strict=False)
+    return SelectedBookImportRuntime(
+        db_path=Path(db_path).resolve(strict=False),
+        data_dir=root,
+        fts_index_path=root / "search_index" / "retrieval_fts_v1.db",
+        fts_manifest_path=root / "search_index" / "retrieval_fts_v1_manifest.json",
+        vector_store_path=root / "vector_store" / "lancedb",
+        vector_manifest_path=root / "vector_store" / "vector_manifest.json",
+        persistence_scope="tempdb",
+    )
+
+
+def _production_runtime() -> SelectedBookImportRuntime:
+    return SelectedBookImportRuntime(
+        db_path=Path(DEFAULT_DB_PATH).resolve(strict=False),
+        data_dir=Path(DATA_DIR).resolve(strict=False),
+        fts_index_path=Path(DEFAULT_INDEX_PATH).resolve(strict=False),
+        fts_manifest_path=Path(DEFAULT_MANIFEST_PATH).resolve(strict=False),
+        vector_store_path=Path(LANCEDB_DIR).resolve(strict=False),
+        vector_manifest_path=Path(vector_store_service.MANIFEST_PATH).resolve(strict=False),
+        persistence_scope="production",
+    )
+
+
+def _commit_selected_book_import(
     *,
     preview_token: str,
-    db_path: str | Path,
-    data_dir: str | Path,
+    runtime: SelectedBookImportRuntime,
     body_importer: Callable[..., dict[str, Any]] | None = None,
     now_ts: float | None = None,
 ) -> dict[str, Any]:
-    path = Path(
-        db_path
-    ).resolve(strict=False)
+    path = runtime.db_path
+    data_root = runtime.data_dir
+    fts_index_path = runtime.fts_index_path
+    fts_manifest_path = runtime.fts_manifest_path
+    vector_store_path = runtime.vector_store_path
+    vector_manifest_path = runtime.vector_manifest_path
 
-    data_root = Path(data_dir).resolve(strict=False)
-    fts_index_path = data_root / "search_index" / "retrieval_fts_v1.db"
-    fts_manifest_path = (
-        data_root / "search_index" / "retrieval_fts_v1_manifest.json"
-    )
-    vector_store_path = data_root / "vector_store" / "lancedb"
-    vector_manifest_path = data_root / "vector_store" / "vector_manifest.json"
-
-    if (
+    if runtime.persistence_scope != "production" and (
         path == Path(DEFAULT_DB_PATH).resolve(strict=False)
         or data_root == Path(DATA_DIR).resolve(strict=False)
         or fts_index_path.resolve(strict=False)
@@ -254,16 +287,19 @@ def commit_selected_book_import_to_temp_db(
         )
 
         try:
-            note_result = (
+            note_commit = (
                 zotero_direction_b_commit_service
-                .commit_selected_book_preview_to_temp_db(
+                .commit_selected_book_preview_to_production
+                if runtime.persistence_scope == "production"
+                else zotero_direction_b_commit_service
+                .commit_selected_book_preview_to_temp_db
+            )
+            note_result = note_commit(
                     preview_token=preview_token,
                     document_id=document_id,
-                    db_path=path,
+                    **({} if runtime.persistence_scope == "production" else {"db_path": path}),
                     now_ts=now_ts,
-                )
             )
-
         except (
             zotero_direction_b_commit_service
             .DirectionBCommitError
@@ -286,12 +322,26 @@ def commit_selected_book_import_to_temp_db(
                 details=exc.details,
             ) from exc
 
+        post_write_snapshot = path
+        if runtime.persistence_scope == "production":
+            post_write_snapshot = staging_root / "source_snapshot" / path.name
+            post_write_snapshot.parent.mkdir(parents=True, exist_ok=True)
+            after_db_sha256 = _sha256_file(path)
+            after_db_size = path.stat().st_size
+            shutil.copy2(path, post_write_snapshot)
+            if _sha256_file(post_write_snapshot) != after_db_sha256 or post_write_snapshot.stat().st_size != after_db_size:
+                raise DirectionBSelectedBookImportError(
+                    code="zotero_direction_b_post_write_snapshot_invalid",
+                    message="Post-write database snapshot verification failed.",
+                    status_code=500,
+                )
+
         try:
             fts_sync = fts_index_service.upsert_document_retrieval_fts(
                 document_id=document_id,
                 index_path=staging_fts_index,
                 manifest_path=staging_fts_manifest,
-                research_db_path=path,
+                research_db_path=post_write_snapshot,
             )
             if (
                 fts_sync.get("full_rebuild_performed") is not False
@@ -314,7 +364,7 @@ def commit_selected_book_import_to_temp_db(
                         passage_source_ids,
                         dry_run=False,
                         apply=True,
-                        source_db_path=path,
+                        source_db_path=post_write_snapshot,
                         store_path=staging_vector_store,
                         manifest_path=staging_vector_manifest,
                     )
@@ -338,7 +388,7 @@ def commit_selected_book_import_to_temp_db(
                         document_id,
                         dry_run=False,
                         apply=True,
-                        source_db_path=path,
+                        source_db_path=post_write_snapshot,
                         store_path=staging_vector_store,
                         manifest_path=staging_vector_manifest,
                     )
@@ -444,8 +494,8 @@ def commit_selected_book_import_to_temp_db(
                 if body_importer is None
                 else "runtime_override"
             ),
-            "persistence_scope": "tempdb",
-            "production_data_modified": False,
+        "persistence_scope": runtime.persistence_scope,
+            "production_data_modified": runtime.persistence_scope == "production",
             "production_schema_migrated": False,
             "zotero_db_write_performed": False,
             "vector_store_write_performed": bool(
@@ -491,8 +541,7 @@ def commit_selected_book_import_to_temp_db(
                 "import_failed"
             ),
             message=(
-                "Direction-B selected-book "
-                "import failed."
+                    "Direction-B selected-book import failed."
             ),
             status_code=500,
         ) from exc
@@ -503,6 +552,43 @@ def commit_selected_book_import_to_temp_db(
         )
         _remove_generated_tree(staging_root)
         _remove_generated_tree(derived_rollback_root)
+
+
+def commit_selected_book_import_to_temp_db(
+    *,
+    preview_token: str,
+    db_path: str | Path,
+    data_dir: str | Path,
+    body_importer: Callable[..., dict[str, Any]] | None = None,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    runtime = _make_temp_runtime(db_path, data_dir)
+    if runtime.db_path == Path(DEFAULT_DB_PATH).resolve(strict=False):
+        raise DirectionBSelectedBookImportError(
+            code="zotero_direction_b_production_not_enabled",
+            message="Direction-B selected-book import is not enabled for production.",
+            status_code=503,
+        )
+    return _commit_selected_book_import(
+        preview_token=preview_token,
+        runtime=runtime,
+        body_importer=body_importer,
+        now_ts=now_ts,
+    )
+
+
+def commit_selected_book_import_to_production(
+    *,
+    preview_token: str,
+    body_importer: Callable[..., dict[str, Any]] | None = None,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    return _commit_selected_book_import(
+        preview_token=preview_token,
+        runtime=_production_runtime(),
+        body_importer=body_importer,
+        now_ts=now_ts,
+    )
 
 
 def _prepare_derived_staging(
@@ -936,6 +1022,14 @@ def _assert_no_live_sidecars(
             ),
             status_code=409,
         )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _sqlite_sidecars(

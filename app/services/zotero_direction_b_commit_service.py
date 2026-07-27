@@ -125,28 +125,15 @@ SOURCE_OWNED_COLUMNS = (
 )
 
 
-def commit_selected_book_preview_to_temp_db(
+def _commit_selected_book_preview(
     *,
     preview_token: str,
     document_id: int,
     db_path: str | Path,
+    persistence_scope: str,
     now_ts: float | None = None,
 ) -> dict[str, Any]:
     path = Path(db_path).resolve(strict=False)
-
-    # B3 safety boundary:
-    # production is rejected before preview resolution
-    # and before sqlite3.connect().
-    if path == Path(DEFAULT_DB_PATH).resolve(
-        strict=False
-    ):
-        raise DirectionBCommitError(
-            code="production_db_blocked",
-            message=(
-                "B3 is temp-database only. "
-                "Production persistence is blocked."
-            ),
-        )
 
     if not path.is_file():
         raise DirectionBCommitError(
@@ -178,7 +165,7 @@ def commit_selected_book_preview_to_temp_db(
     target_document_id = int(document_id)
     timestamp = _now_iso(now_ts)
 
-    with _open_temp_rw(path) as connection:
+    with _open_rw(path) as connection:
         _assert_direction_b_schema(connection)
         _assert_document_exists(
             connection,
@@ -325,7 +312,7 @@ def commit_selected_book_preview_to_temp_db(
 
     return {
         "status": "committed",
-        "persistence_scope": "tempdb",
+        "persistence_scope": persistence_scope,
         "database": str(path),
         "document_id": target_document_id,
         "zotero_item_key": (
@@ -358,7 +345,7 @@ def commit_selected_book_preview_to_temp_db(
         "db_write_performed": bool(
             write_performed
         ),
-        "production_data_modified": False,
+        "production_data_modified": bool(write_performed and persistence_scope == "production"),
         "production_schema_migrated": False,
         "zotero_db_write_performed": False,
         "vector_store_write_performed": False,
@@ -367,23 +354,49 @@ def commit_selected_book_preview_to_temp_db(
     }
 
 
-def _open_temp_rw(
+def commit_selected_book_preview_to_temp_db(
+    *,
+    preview_token: str,
+    document_id: int,
+    db_path: str | Path,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    path = Path(db_path).resolve(strict=False)
+    if path == Path(DEFAULT_DB_PATH).resolve(strict=False):
+        raise DirectionBCommitError(
+            code="production_db_blocked",
+            message="B3 is temp-database only. Production persistence is blocked.",
+        )
+    return _commit_selected_book_preview(
+        preview_token=preview_token,
+        document_id=document_id,
+        db_path=path,
+        persistence_scope="tempdb",
+        now_ts=now_ts,
+    )
+
+
+def commit_selected_book_preview_to_production(
+    *,
+    preview_token: str,
+    document_id: int,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    return _commit_selected_book_preview(
+        preview_token=preview_token,
+        document_id=document_id,
+        db_path=Path(DEFAULT_DB_PATH).resolve(strict=False),
+        persistence_scope="production",
+        now_ts=now_ts,
+    )
+
+
+def _open_rw(
     path: Path,
 ) -> sqlite3.Connection:
     resolved = path.resolve(
         strict=False
     )
-
-    if resolved == Path(
-        DEFAULT_DB_PATH
-    ).resolve(strict=False):
-        raise DirectionBCommitError(
-            code="production_db_blocked",
-            message=(
-                "Production database opening "
-                "is blocked in B3."
-            ),
-        )
 
     connection = sqlite3.connect(
         (

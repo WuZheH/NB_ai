@@ -403,7 +403,7 @@ def _import_zotero_selected_book_preview(
             zotero_item_key=item_key,
             zotero_attachment_key=attachment_key,
             db_path=runtime.db_path,
-            issue_token=temporary_target,
+            issue_token=True,
         )
     except zotero_selected_book_preview_service.ZoteroSelectedBookPreviewError as exc:
         raise ChatToolError(
@@ -482,17 +482,6 @@ def _import_zotero_selected_book_preview(
         base["duplicate_status"] = "duplicate"
         base["existing_document_id"] = unique_document_id
         return base
-    if not temporary_target:
-        base["warnings"] = list(
-            dict.fromkeys(
-                [
-                    *base["warnings"],
-                    "zotero_direction_b_production_not_enabled",
-                ]
-            )
-        )
-        return base
-
     preview_token = str(preview.get("preview_token") or "")
     if not preview_token:
         raise ChatToolError(
@@ -544,25 +533,6 @@ def register_zotero_selected_book_import_preview(
     target_db_path = Path(
         actual_runtime.db_path
     ).resolve(strict=False)
-
-    # B4 remains temp-only. Do not ask the
-    # user to confirm an operation that the
-    # backend is not allowed to perform.
-    if target_db_path == Path(
-        DEFAULT_DB_PATH
-    ).resolve(strict=False):
-        raise ChatToolError(
-            (
-                "zotero_direction_b_"
-                "production_not_enabled"
-            ),
-            (
-                "Direction-B selected-book "
-                "import is not enabled for "
-                "production."
-            ),
-            status_code=503,
-        )
 
     if not target_db_path.is_file():
         raise ChatToolError(
@@ -860,6 +830,15 @@ def _commit_confirmed_zotero_import(
     runtime: ChatToolRuntime,
 ) -> dict[str, Any]:
     try:
+        canonical = (
+            Path(runtime.db_path).resolve(strict=False) == Path(DEFAULT_DB_PATH).resolve(strict=False)
+            and Path(runtime.data_dir).resolve(strict=False) == Path(DATA_DIR).resolve(strict=False)
+        )
+        if canonical:
+            return zotero_direction_b_import_service.commit_selected_book_import_to_production(
+                preview_token=record.preview_token,
+                body_importer=runtime.zotero_body_importer,
+            )
         return (
             zotero_direction_b_import_service
             .commit_selected_book_import_to_temp_db(
