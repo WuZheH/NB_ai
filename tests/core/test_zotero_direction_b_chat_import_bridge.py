@@ -2368,3 +2368,103 @@ def test_production_derived_rollback_failure_restores_db_and_retains_backup(
         zotero_direction_b_import_service._remove_generated_tree(
             child
         )
+
+def test_production_cleanup_failure_does_not_mask_success(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=True,
+    )
+
+    real_remove = (
+        zotero_direction_b_import_service
+        ._remove_generated_tree
+    )
+
+    def flaky_remove(path):
+        candidate = Path(path)
+
+        if ".direction_b_index_staging" in str(candidate):
+            raise PermissionError(
+                "forced staging cleanup failure"
+            )
+
+        return real_remove(candidate)
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_remove_generated_tree",
+        flaky_remove,
+    )
+
+    result = (
+        zotero_direction_b_import_service
+        .commit_selected_book_import_to_production(
+            preview_token="p" * 40,
+            body_importer=body_importer,
+        )
+    )
+
+    assert result["status"] == "committed"
+
+    with sqlite3.connect(
+        fixture["db_path"]
+    ) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM documents"
+        ).fetchone()[0] == 1
+
+
+def test_cleanup_failure_does_not_mask_production_db_rollback_failure(
+    tmp_path,
+    monkeypatch,
+):
+    _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=False,
+    )
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_restore_rollback_copy",
+        lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(
+                RuntimeError(
+                    "forced database rollback failure"
+                )
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_remove_generated_tree",
+        lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(
+                PermissionError(
+                    "forced cleanup failure"
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(
+        zotero_direction_b_import_service
+        .DirectionBSelectedBookImportError
+    ) as error:
+        (
+            zotero_direction_b_import_service
+            .commit_selected_book_import_to_production(
+                preview_token="p" * 40,
+                body_importer=body_importer,
+            )
+        )
+
+    assert error.value.code == (
+        "zotero_direction_b_"
+        "production_db_rollback_failed"
+    )

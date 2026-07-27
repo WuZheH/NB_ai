@@ -703,14 +703,22 @@ def _commit_selected_book_import_locked(
 
     finally:
         if not retain_db_rollback:
-            rollback_snapshot.path.unlink(
-                missing_ok=True
-            )
+            try:
+                rollback_snapshot.path.unlink(
+                    missing_ok=True
+                )
+            except Exception:
+                # Cleanup failure must never change the
+                # committed/rollback result. Leaving a
+                # verified recovery artifact is fail-safe.
+                pass
 
-        _remove_generated_tree(staging_root)
+        _best_effort_remove_generated_tree(
+            staging_root
+        )
 
         if not retain_derived_rollback:
-            _remove_generated_tree(
+            _best_effort_remove_generated_tree(
                 derived_rollback_root
             )
 
@@ -1035,6 +1043,19 @@ def _restore_file(path: Path, backup: Path, *, existed: bool) -> None:
         shutil.copy2(backup, path)
     else:
         path.unlink(missing_ok=True)
+
+def _best_effort_remove_generated_tree(
+    path: Path,
+) -> bool:
+    try:
+        _remove_generated_tree(path)
+    except Exception:
+        # Staging/rollback cleanup is secondary to
+        # the already-decided import/rollback result.
+        # Leave the artifact for later inspection.
+        return False
+
+    return True
 
 
 def _remove_generated_tree(path: Path) -> None:
