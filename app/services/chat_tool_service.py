@@ -84,6 +84,11 @@ class ImportConfirmation:
 class ZoteroImportConfirmation:
     preview_token: str
     target_db_path: Path
+    target_data_dir: Path
+    zotero_item_key: str
+    zotero_attachment_key: str
+    item_type: str
+    source_revision_fingerprint: str
     title: str
     document_type: str
     page_count: int
@@ -396,8 +401,8 @@ def _import_zotero_selected_book_preview(
             status_code=422,
         )
 
-    target_db = Path(runtime.db_path).resolve(strict=False)
-    temporary_target = target_db != Path(DEFAULT_DB_PATH).resolve(strict=False)
+    _zotero_runtime_is_production(runtime)
+
     try:
         preview = zotero_selected_book_preview_service.build_selected_book_preview(
             zotero_item_key=item_key,
@@ -413,8 +418,24 @@ def _import_zotero_selected_book_preview(
             details=_safe_zotero_error_details(exc.details),
         ) from exc
 
-    item = preview.get("zotero_item") if isinstance(preview.get("zotero_item"), dict) else {}
-    choices = preview.get("attachment_choices") if isinstance(preview.get("attachment_choices"), list) else []
+    item = (
+        preview.get("zotero_item")
+        if isinstance(preview.get("zotero_item"), dict)
+        else {}
+    )
+    item_type = str(item.get("item_type") or "").strip()
+    if item_type != "book":
+        raise ChatToolError(
+            "zotero_import_preview_contract_invalid",
+            "Selected-book preview did not return a validated Zotero book.",
+            status_code=500,
+        )
+
+    choices = (
+        preview.get("attachment_choices")
+        if isinstance(preview.get("attachment_choices"), list)
+        else []
+    )
     safe_choices = [
         {
             key: choice.get(key)
@@ -431,26 +452,33 @@ def _import_zotero_selected_book_preview(
         for choice in choices
         if isinstance(choice, dict)
     ]
+
     base = {
         "status": "ok",
         "source_type": "zotero_selected_book",
         "filename": None,
         "title": str(item.get("title") or ""),
+        "item_type": item_type,
         "pdf_sha256": None,
         "duplicate_status": "not_evaluated",
         "existing_document_id": None,
         "estimated_pages": None,
         "estimated_chunks": None,
-        "document_type": str(item.get("item_type") or "book"),
-        "warnings": [str(value) for value in preview.get("warnings") or []][:8],
+        "document_type": "book",
+        "warnings": [
+            str(value)
+            for value in preview.get("warnings") or []
+        ][:8],
         "confirmation_token": None,
         "confirmation_expires_in_seconds": None,
         "attachment_choices": safe_choices,
         "annotation_count": preview.get("annotation_count"),
         "child_note_count": preview.get("child_note_count"),
     }
+
     if preview.get("status") == "attachment_choice_required":
         return base
+
     if preview.get("status") != "ready":
         raise ChatToolError(
             "zotero_import_preview_not_ready",
@@ -458,14 +486,30 @@ def _import_zotero_selected_book_preview(
             status_code=409,
         )
 
-    selected = preview.get("selected_attachment") if isinstance(preview.get("selected_attachment"), dict) else {}
-    duplicate = preview.get("duplicate_check") if isinstance(preview.get("duplicate_check"), dict) else {}
+    selected = (
+        preview.get("selected_attachment")
+        if isinstance(preview.get("selected_attachment"), dict)
+        else {}
+    )
+    duplicate = (
+        preview.get("duplicate_check")
+        if isinstance(preview.get("duplicate_check"), dict)
+        else {}
+    )
     existing = duplicate.get("existing_documents")
     unique_document_id = None
-    if isinstance(existing, list) and len(existing) == 1 and isinstance(existing[0], dict):
-        candidate = existing[0].get("document_id", existing[0].get("id"))
+    if (
+        isinstance(existing, list)
+        and len(existing) == 1
+        and isinstance(existing[0], dict)
+    ):
+        candidate = existing[0].get(
+            "document_id",
+            existing[0].get("id"),
+        )
         if isinstance(candidate, int):
             unique_document_id = candidate
+
     base.update(
         {
             "filename": str(selected.get("file_name") or "") or None,
@@ -473,15 +517,20 @@ def _import_zotero_selected_book_preview(
             "estimated_pages": selected.get("page_count"),
             "estimated_chunks": (
                 max(1, int(selected["page_count"]) * 3)
-                if isinstance(selected.get("page_count"), int) and selected["page_count"] > 0
+                if (
+                    isinstance(selected.get("page_count"), int)
+                    and selected["page_count"] > 0
+                )
                 else None
             ),
         }
     )
+
     if bool(duplicate.get("duplicate_found")):
         base["duplicate_status"] = "duplicate"
         base["existing_document_id"] = unique_document_id
         return base
+
     preview_token = str(preview.get("preview_token") or "")
     if not preview_token:
         raise ChatToolError(
@@ -489,11 +538,14 @@ def _import_zotero_selected_book_preview(
             "The Zotero selected-book preview did not issue a confirmation token.",
             status_code=503,
         )
+
     confirmation = register_zotero_selected_book_import_preview(
         preview_token=preview_token,
         runtime=runtime,
     )
-    base["duplicate_status"] = str(confirmation.get("duplicate_status") or "not_detected")
+    base["duplicate_status"] = str(
+        confirmation.get("duplicate_status") or "not_detected"
+    )
     base["confirmation_token"] = confirmation.get("confirmation_token")
     base["confirmation_expires_in_seconds"] = confirmation.get(
         "confirmation_expires_in_seconds"
@@ -520,30 +572,48 @@ def _safe_zotero_error_details(value: Any) -> Any:
     return value
 
 
+
+def _zotero_runtime_is_production(
+    runtime: ChatToolRuntime,
+) -> bool:
+    runtime_db = Path(runtime.db_path).resolve(strict=False)
+    runtime_data = Path(runtime.data_dir).resolve(strict=False)
+    canonical_db = Path(DEFAULT_DB_PATH).resolve(strict=False)
+    canonical_data = Path(DATA_DIR).resolve(strict=False)
+
+    db_is_production = runtime_db == canonical_db
+    data_is_production = runtime_data == canonical_data
+
+    if db_is_production != data_is_production:
+        raise ChatToolError(
+            "zotero_import_runtime_target_mismatch",
+            "The Zotero import runtime mixes production and non-production targets.",
+            status_code=409,
+        )
+
+    return db_is_production
+
+
 def register_zotero_selected_book_import_preview(
     *,
     preview_token: str,
     runtime: ChatToolRuntime | None = None,
 ) -> dict[str, Any]:
-    actual_runtime = (
-        runtime
-        or ChatToolRuntime()
-    )
+    actual_runtime = runtime or ChatToolRuntime()
 
     target_db_path = Path(
         actual_runtime.db_path
     ).resolve(strict=False)
+    target_data_dir = Path(
+        actual_runtime.data_dir
+    ).resolve(strict=False)
+
+    _zotero_runtime_is_production(actual_runtime)
 
     if not target_db_path.is_file():
         raise ChatToolError(
-            (
-                "zotero_direction_b_"
-                "target_db_missing"
-            ),
-            (
-                "Direction-B target database "
-                "does not exist."
-            ),
+            "zotero_direction_b_target_db_missing",
+            "Direction-B target database does not exist.",
             status_code=503,
         )
 
@@ -552,9 +622,7 @@ def register_zotero_selected_book_import_preview(
             zotero_selected_book_preview_service
             .resolve_selected_book_preview_token(
                 preview_token,
-                expected_db_path=(
-                    target_db_path
-                ),
+                expected_db_path=target_db_path,
             )
         )
     except (
@@ -565,55 +633,64 @@ def register_zotero_selected_book_import_preview(
             exc.code,
             exc.message,
             status_code=exc.status_code,
-            details=exc.details,
+            details=_safe_zotero_error_details(exc.details),
         ) from exc
 
     if preview.get("status") != "ready":
         raise ChatToolError(
             "zotero_import_preview_not_ready",
-            (
-                "The Zotero selected-book "
-                "preview is not ready."
-            ),
+            "The Zotero selected-book preview is not ready.",
             status_code=409,
         )
 
+    item = (
+        preview.get("zotero_item")
+        if isinstance(preview.get("zotero_item"), dict)
+        else {}
+    )
     selected = (
-        preview.get(
-            "selected_attachment"
-        )
-        or {}
+        preview.get("selected_attachment")
+        if isinstance(preview.get("selected_attachment"), dict)
+        else {}
+    )
+    source_revision = (
+        preview.get("source_revision")
+        if isinstance(preview.get("source_revision"), dict)
+        else {}
     )
 
-    duplicate = (
-        preview.get(
-            "duplicate_check"
-        )
-        or {}
-    )
+    item_type = str(item.get("item_type") or "").strip()
+    item_key = str(item.get("zotero_item_key") or "").strip()
+    attachment_key = str(
+        selected.get("zotero_attachment_key") or ""
+    ).strip()
+    source_revision_fingerprint = str(
+        source_revision.get("fingerprint") or ""
+    ).strip()
 
-    # B4 intentionally does NOT infer the
-    # existing target from Zotero item/attachment
-    # keys alone. Those keys are library-scoped.
-    # Until body provenance is library-aware,
-    # any duplicate requires explicit resolution
-    # in a later stage.
-    if bool(
-        duplicate.get(
-            "duplicate_found"
-        )
+    if (
+        item_type != "book"
+        or not item_key
+        or not attachment_key
+        or not source_revision_fingerprint
     ):
         raise ChatToolError(
+            "zotero_import_preview_contract_invalid",
+            "Selected-book preview metadata is incomplete.",
+            status_code=500,
+        )
+
+    duplicate = (
+        preview.get("duplicate_check")
+        if isinstance(preview.get("duplicate_check"), dict)
+        else {}
+    )
+    if bool(duplicate.get("duplicate_found")):
+        raise ChatToolError(
+            "zotero_import_duplicate_requires_review",
             (
-                "zotero_import_duplicate_"
-                "requires_review"
-            ),
-            (
-                "The selected Zotero book "
-                "already matches existing "
-                "library data. B4 will not "
-                "create another book body or "
-                "guess an existing target."
+                "The selected Zotero book already matches existing "
+                "library data. Search will not create another book body."
             ),
             status_code=409,
         )
@@ -621,45 +698,19 @@ def register_zotero_selected_book_import_preview(
     token = secrets.token_urlsafe(32)
 
     record = ZoteroImportConfirmation(
-        preview_token=str(
-            preview_token
-        ),
-        target_db_path=(
-            target_db_path
-        ),
-        title=str(
-            (
-                preview.get(
-                    "zotero_item"
-                )
-                or {}
-            ).get(
-                "title"
-            )
-            or ""
-        ),
+        preview_token=str(preview_token),
+        target_db_path=target_db_path,
+        target_data_dir=target_data_dir,
+        zotero_item_key=item_key,
+        zotero_attachment_key=attachment_key,
+        item_type=item_type,
+        source_revision_fingerprint=source_revision_fingerprint,
+        title=str(item.get("title") or ""),
         document_type="book",
-        page_count=int(
-            selected.get(
-                "page_count"
-            )
-            or 0
-        ),
-        annotation_count=int(
-            preview.get(
-                "annotation_count"
-            )
-            or 0
-        ),
-        child_note_count=int(
-            preview.get(
-                "child_note_count"
-            )
-            or 0
-        ),
-        duplicate_status=(
-            "not_detected"
-        ),
+        page_count=int(selected.get("page_count") or 0),
+        annotation_count=int(preview.get("annotation_count") or 0),
+        child_note_count=int(preview.get("child_note_count") or 0),
+        duplicate_status="not_detected",
         expires_at=(
             time.monotonic()
             + IMPORT_CONFIRMATION_TTL_SECONDS
@@ -668,32 +719,20 @@ def register_zotero_selected_book_import_preview(
 
     with _TOKEN_LOCK:
         _purge_expired_tokens()
-
         _IMPORT_CONFIRMATIONS[
             _token_digest(token)
         ] = record
 
     return {
         "status": "ok",
-        "source_type": (
-            "zotero_selected_book"
-        ),
+        "source_type": "zotero_selected_book",
         "title": record.title,
-        "document_type": (
-            record.document_type
-        ),
-        "estimated_pages": (
-            record.page_count
-        ),
-        "annotation_count": (
-            record.annotation_count
-        ),
-        "child_note_count": (
-            record.child_note_count
-        ),
-        "duplicate_status": (
-            record.duplicate_status
-        ),
+        "item_type": record.item_type,
+        "document_type": record.document_type,
+        "estimated_pages": record.page_count,
+        "annotation_count": record.annotation_count,
+        "child_note_count": record.child_note_count,
+        "duplicate_status": record.duplicate_status,
         "confirmation_token": token,
         "confirmation_expires_in_seconds": (
             IMPORT_CONFIRMATION_TTL_SECONDS
@@ -734,9 +773,13 @@ def import_document(
         runtime_db = Path(
             actual_runtime.db_path
         ).resolve(strict=False)
+        runtime_data = Path(
+            actual_runtime.data_dir
+        ).resolve(strict=False)
 
-        if runtime_db != (
-            record.target_db_path
+        if (
+            runtime_db != record.target_db_path
+            or runtime_data != record.target_data_dir
         ):
             raise ChatToolError(
                 "zotero_import_target_changed",
@@ -830,26 +873,24 @@ def _commit_confirmed_zotero_import(
     runtime: ChatToolRuntime,
 ) -> dict[str, Any]:
     try:
-        canonical = (
-            Path(runtime.db_path).resolve(strict=False) == Path(DEFAULT_DB_PATH).resolve(strict=False)
-            and Path(runtime.data_dir).resolve(strict=False) == Path(DATA_DIR).resolve(strict=False)
-        )
-        if canonical:
-            return zotero_direction_b_import_service.commit_selected_book_import_to_production(
-                preview_token=record.preview_token,
-                body_importer=runtime.zotero_body_importer,
+        production = _zotero_runtime_is_production(runtime)
+
+        if production:
+            return (
+                zotero_direction_b_import_service
+                .commit_selected_book_import_to_production(
+                    preview_token=record.preview_token,
+                    body_importer=runtime.zotero_body_importer,
+                )
             )
+
         return (
             zotero_direction_b_import_service
             .commit_selected_book_import_to_temp_db(
-                preview_token=(
-                    record.preview_token
-                ),
+                preview_token=record.preview_token,
                 db_path=runtime.db_path,
                 data_dir=runtime.data_dir,
-                body_importer=(
-                    runtime.zotero_body_importer
-                ),
+                body_importer=runtime.zotero_body_importer,
             )
         )
     except (

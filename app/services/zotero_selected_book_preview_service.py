@@ -144,6 +144,7 @@ def build_selected_book_preview(
             "zotero_item_key": item_key,
             "library_id": int(parent["library_id"] or 0),
             "title": str(parent["title"] or ""),
+            "item_type": str(parent["item_type"]),
             "date_added": parent["date_added"],
             "date_modified": parent["date_modified"],
             "version": parent["version"],

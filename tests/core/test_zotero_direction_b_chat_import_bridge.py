@@ -205,6 +205,7 @@ def preview_payload():
             ),
             "library_id": 1,
             "title": "Selected Book",
+            "item_type": "book",
         },
         "selected_attachment": {
             "zotero_attachment_key": (
@@ -286,6 +287,9 @@ def preview_payload():
         ],
         "duplicate_check": {
             "duplicate_found": False,
+        },
+        "source_revision": {
+            "fingerprint": "f" * 64,
         },
         "warnings": [],
     }
@@ -1105,10 +1109,17 @@ def test_chat_bridge_allows_production_preview_registration(
 
     # Treat the isolated fixture as the canonical production DB for
     # this test. No real production data is touched.
+    production_data = tmp_path / "production-data"
+
     monkeypatch.setattr(
         chat_tool_service,
         "DEFAULT_DB_PATH",
         production_db,
+    )
+    monkeypatch.setattr(
+        chat_tool_service,
+        "DATA_DIR",
+        production_data,
     )
 
     calls = {
@@ -1146,6 +1157,9 @@ def test_chat_bridge_allows_production_preview_registration(
             "duplicate_check": {
                 "duplicate_found": False,
             },
+            "source_revision": {
+                "fingerprint": "d" * 64,
+            },
         }
 
     monkeypatch.setattr(
@@ -1160,7 +1174,7 @@ def test_chat_bridge_allows_production_preview_registration(
             preview_token="production-preview",
             runtime=chat_tool_service.ChatToolRuntime(
                 db_path=production_db,
-                data_dir=tmp_path / "production-data",
+                data_dir=production_data,
             ),
         )
     )
@@ -1249,7 +1263,11 @@ def _public_chat_zotero_ready_preview(
 ) -> dict:
     return {
         "status": "ready",
-        "zotero_item": {"title": "Selected Zotero Book"},
+        "zotero_item": {
+            "zotero_item_key": "ABCD1234",
+            "title": "Selected Zotero Book",
+            "item_type": "book",
+        },
         "attachment_choices": [
             {
                 "zotero_attachment_key": "EFGH5678",
@@ -1279,6 +1297,9 @@ def _public_chat_zotero_ready_preview(
             "existing_documents": existing_documents or [],
         },
         "warnings": [],
+        "source_revision": {
+            "fingerprint": "e" * 64,
+        },
         "preview_token": "internal-b2-token",
     }
 
@@ -1295,7 +1316,11 @@ def test_public_chat_zotero_preview_forwards_keys_and_sanitizes_choices(
         calls.append(kwargs)
         return {
             "status": "attachment_choice_required",
-            "zotero_item": {"title": "Choose a PDF"},
+            "zotero_item": {
+                "zotero_item_key": "ABCD1234",
+                "title": "Choose a PDF",
+                "item_type": "book",
+            },
             "attachment_choices": [
                 {
                     "zotero_attachment_key": "ATTACH01",
@@ -1405,8 +1430,22 @@ def test_public_chat_zotero_production_registers_and_duplicate_does_not(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registrations: list[dict] = []
+    production_db = tmp_path / "production.db"
+    production_db.write_bytes(b"fixture")
+    production_data = tmp_path / "production-data"
 
+    monkeypatch.setattr(
+        chat_tool_service,
+        "DEFAULT_DB_PATH",
+        production_db,
+    )
+    monkeypatch.setattr(
+        chat_tool_service,
+        "DATA_DIR",
+        production_data,
+    )
+
+    registrations: list[dict] = []
     previews = [
         _public_chat_zotero_ready_preview(),
         _public_chat_zotero_ready_preview(
@@ -1431,11 +1470,12 @@ def test_public_chat_zotero_production_registers_and_duplicate_does_not(
         return {
             "status": "ok",
             "source_type": "zotero_selected_book",
-            "title": "Selected Test Book",
+            "title": "Selected Zotero Book",
+            "item_type": "book",
             "document_type": "book",
             "estimated_pages": 12,
-            "annotation_count": 1,
-            "child_note_count": 1,
+            "annotation_count": 4,
+            "child_note_count": 2,
             "duplicate_status": "not_detected",
             "confirmation_token": "chat-confirmation-token",
             "confirmation_expires_in_seconds": 600,
@@ -1448,8 +1488,8 @@ def test_public_chat_zotero_production_registers_and_duplicate_does_not(
     )
 
     production_runtime = chat_tool_service.ChatToolRuntime(
-        db_path=DEFAULT_DB_PATH,
-        data_dir=tmp_path / "production-data",
+        db_path=production_db,
+        data_dir=production_data,
     )
 
     production = chat_tool_service.import_preview(
@@ -1458,24 +1498,12 @@ def test_public_chat_zotero_production_registers_and_duplicate_does_not(
         runtime=production_runtime,
     )
 
+    assert production["item_type"] == "book"
+    assert production["document_type"] == "book"
     assert production["confirmation_token"] == (
         "chat-confirmation-token"
     )
-    assert production[
-        "confirmation_expires_in_seconds"
-    ] == 600
-    assert (
-        "zotero_direction_b_production_not_enabled"
-        not in production["warnings"]
-    )
-
     assert len(registrations) == 1
-    assert registrations[0]["preview_token"] == (
-        "internal-b2-token"
-    )
-    assert registrations[0]["runtime"] is (
-        production_runtime
-    )
 
     database = tmp_path / "research.db"
     database.write_bytes(b"fixture")
@@ -1492,8 +1520,6 @@ def test_public_chat_zotero_production_registers_and_duplicate_does_not(
     assert duplicate["duplicate_status"] == "duplicate"
     assert duplicate["existing_document_id"] == 17
     assert duplicate["confirmation_token"] is None
-
-    # Duplicate protection returns before confirmation registration.
     assert len(registrations) == 1
     assert "private.pdf" not in str(duplicate)
 
@@ -1924,4 +1950,421 @@ def test_internal_pdf_source_hash_guard(
         (
             zotero_selected_book_preview_service
             ._clear_preview_cache_for_tests()
+        )
+
+def test_confirmation_is_bound_to_target_data_dir(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = make_temp_db(
+        tmp_path / "db"
+    )
+    install_constant_preview(monkeypatch)
+
+    runtime_one = chat_tool_service.ChatToolRuntime(
+        db_path=db_path,
+        data_dir=tmp_path / "data-one",
+    )
+    runtime_two = chat_tool_service.ChatToolRuntime(
+        db_path=db_path,
+        data_dir=tmp_path / "data-two",
+        zotero_body_importer=body_importer,
+    )
+
+    bridge = (
+        chat_tool_service
+        .register_zotero_selected_book_import_preview(
+            preview_token="p" * 40,
+            runtime=runtime_one,
+        )
+    )
+
+    with pytest.raises(
+        chat_tool_service.ChatToolError
+    ) as error:
+        chat_tool_service.import_document(
+            confirmation_token=bridge[
+                "confirmation_token"
+            ],
+            confirmed=True,
+            runtime=runtime_two,
+        )
+
+    assert error.value.error_code == (
+        "zotero_import_target_changed"
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM documents"
+        ).fetchone()[0] == 0
+
+
+def _install_production_shaped_runtime(
+    tmp_path,
+    monkeypatch,
+    *,
+    fts_ready: bool,
+):
+    db_path = make_temp_db(
+        tmp_path / "production-db"
+    )
+    data_dir = make_temp_data_dir(
+        tmp_path / "production-data"
+    )
+
+    install_constant_preview(monkeypatch)
+
+    fts_path = (
+        data_dir
+        / "search_index"
+        / "retrieval_fts_v1.db"
+    )
+    fts_manifest = (
+        data_dir
+        / "search_index"
+        / "retrieval_fts_v1_manifest.json"
+    )
+    vector_store = (
+        data_dir
+        / "vector_store"
+        / "lancedb"
+    )
+    vector_manifest = (
+        data_dir
+        / "vector_store"
+        / "vector_manifest.json"
+    )
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "DEFAULT_DB_PATH",
+        db_path,
+    )
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "DATA_DIR",
+        data_dir,
+    )
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "DEFAULT_INDEX_PATH",
+        fts_path,
+    )
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "DEFAULT_MANIFEST_PATH",
+        fts_manifest,
+    )
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "LANCEDB_DIR",
+        vector_store,
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "MANIFEST_PATH",
+        vector_manifest,
+    )
+    monkeypatch.setattr(
+        zotero_direction_b_import_service
+        .zotero_direction_b_commit_service,
+        "DEFAULT_DB_PATH",
+        db_path,
+    )
+
+    observed = {
+        "fts_source": None,
+        "passage_source": None,
+        "note_source": None,
+    }
+
+    def fts_sync(
+        *,
+        research_db_path,
+        index_path,
+        manifest_path,
+        **_kwargs,
+    ):
+        source = Path(
+            research_db_path
+        ).resolve(strict=False)
+        observed["fts_source"] = source
+
+        target_index = Path(index_path)
+        target_index.write_bytes(
+            target_index.read_bytes()
+            + b"\nC4-production-staged"
+        )
+
+        digest = hashlib.sha256(
+            source.read_bytes()
+        ).hexdigest()
+
+        Path(manifest_path).write_text(
+            '{"production_db_sha256":"'
+            + digest
+            + '"}\n',
+            encoding="utf-8",
+        )
+
+        return {
+            "status": "ready",
+            "full_rebuild_performed": False,
+            "production_db_write_performed": False,
+        }
+
+    def passage_sync(
+        *_args,
+        source_db_path,
+        **_kwargs,
+    ):
+        observed["passage_source"] = Path(
+            source_db_path
+        ).resolve(strict=False)
+        return {
+            "scope": "affected_source_ids_only",
+            "full_rebuild_allowed": False,
+            "delete_orphans_allowed": False,
+            "lancedb_writes_performed": False,
+        }
+
+    def note_sync(
+        *_args,
+        source_db_path,
+        **_kwargs,
+    ):
+        observed["note_source"] = Path(
+            source_db_path
+        ).resolve(strict=False)
+        return {
+            "scope": "document_only",
+            "full_rebuild_performed": False,
+            "orphan_delete_performed": False,
+            "lancedb_writes_performed": False,
+        }
+
+    monkeypatch.setattr(
+        fts_index_service,
+        "upsert_document_retrieval_fts",
+        fts_sync,
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "sync_affected_passage_embeddings",
+        passage_sync,
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "sync_document_note_embeddings",
+        note_sync,
+    )
+    monkeypatch.setattr(
+        zotero_direction_b_import_service
+        .fts_status_service,
+        "get_index_status",
+        lambda **_kwargs: {
+            "status": (
+                "ready"
+                if fts_ready
+                else "source_drift"
+            ),
+            "ready": fts_ready,
+        },
+    )
+
+    return {
+        "db_path": db_path,
+        "data_dir": data_dir,
+        "fts_path": fts_path,
+        "fts_manifest": fts_manifest,
+        "observed": observed,
+    }
+
+
+def test_production_shaped_import_uses_post_write_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=True,
+    )
+
+    result = (
+        zotero_direction_b_import_service
+        .commit_selected_book_import_to_production(
+            preview_token="p" * 40,
+            body_importer=body_importer,
+        )
+    )
+
+    db_path = fixture["db_path"].resolve(
+        strict=False
+    )
+    observed = fixture["observed"]
+
+    assert result["status"] == "committed"
+    assert result["persistence_scope"] == "production"
+    assert result["production_data_modified"] is True
+
+    assert observed["fts_source"] != db_path
+    assert observed["passage_source"] != db_path
+    assert observed["note_source"] != db_path
+
+    assert observed["fts_source"] == (
+        observed["passage_source"]
+    )
+    assert observed["fts_source"] == (
+        observed["note_source"]
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM documents"
+        ).fetchone()[0] == 1
+
+
+def test_production_final_verify_failure_restores_db_and_derived_exactly(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=False,
+    )
+
+    db_path = fixture["db_path"]
+    fts_path = fixture["fts_path"]
+    manifest_path = fixture["fts_manifest"]
+
+    before_db = db_path.read_bytes()
+    before_fts = fts_path.read_bytes()
+    before_manifest = manifest_path.read_bytes()
+
+    with pytest.raises(
+        zotero_direction_b_import_service
+        .DirectionBSelectedBookImportError
+    ) as error:
+        (
+            zotero_direction_b_import_service
+            .commit_selected_book_import_to_production(
+                preview_token="p" * 40,
+                body_importer=body_importer,
+            )
+        )
+
+    assert error.value.code == (
+        "zotero_direction_b_"
+        "production_final_verify_failed"
+    )
+
+    assert db_path.read_bytes() == before_db
+    assert fts_path.read_bytes() == before_fts
+    assert manifest_path.read_bytes() == before_manifest
+
+
+def test_production_db_rollback_failure_has_priority_and_retains_backup(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=False,
+    )
+    db_path = fixture["db_path"]
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_restore_rollback_copy",
+        lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(
+                RuntimeError("forced db restore failure")
+            )
+        ),
+    )
+
+    with pytest.raises(
+        zotero_direction_b_import_service
+        .DirectionBSelectedBookImportError
+    ) as error:
+        (
+            zotero_direction_b_import_service
+            .commit_selected_book_import_to_production(
+                preview_token="p" * 40,
+                body_importer=body_importer,
+            )
+        )
+
+    assert error.value.code == (
+        "zotero_direction_b_"
+        "production_db_rollback_failed"
+    )
+
+    retained = list(
+        db_path.parent.glob(
+            f".{db_path.name}."
+            "direction-b-rollback-*.sqlite"
+        )
+    )
+    assert retained
+
+    for item in retained:
+        item.unlink()
+
+
+def test_production_derived_rollback_failure_restores_db_and_retains_backup(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=False,
+    )
+    db_path = fixture["db_path"]
+    before_db = db_path.read_bytes()
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_restore_derived_artifacts",
+        lambda **_kwargs: (
+            (_ for _ in ()).throw(
+                RuntimeError(
+                    "forced derived restore failure"
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(
+        zotero_direction_b_import_service
+        .DirectionBSelectedBookImportError
+    ) as error:
+        (
+            zotero_direction_b_import_service
+            .commit_selected_book_import_to_production(
+                preview_token="p" * 40,
+                body_importer=body_importer,
+            )
+        )
+
+    assert error.value.code == (
+        "zotero_direction_b_"
+        "production_derived_rollback_failed"
+    )
+    assert db_path.read_bytes() == before_db
+
+    rollback_root = (
+        fixture["data_dir"]
+        / ".direction_b_index_rollback"
+    )
+    assert rollback_root.is_dir()
+
+    for child in rollback_root.iterdir():
+        zotero_direction_b_import_service._remove_generated_tree(
+            child
         )

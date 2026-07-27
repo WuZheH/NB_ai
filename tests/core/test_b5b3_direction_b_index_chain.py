@@ -142,6 +142,7 @@ def _preview() -> dict:
             "zotero_item_key": "BOOKKEY1",
             "library_id": 1,
             "title": "Selected Book",
+            "item_type": "book",
         },
         "selected_attachment": {
             "zotero_attachment_key": "PDFKEY1",

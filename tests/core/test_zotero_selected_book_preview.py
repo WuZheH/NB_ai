@@ -432,6 +432,7 @@ def test_single_pdf_preview_is_ready_and_preserves_note_semantics(
 
     assert result["status"] == "ready"
     assert result["zotero_item"]["title"] == "Selected Test Book"
+    assert result["zotero_item"]["item_type"] == "book"
 
     assert (
         result["selected_attachment"][
@@ -743,3 +744,44 @@ def test_unknown_attachment_is_rejected(
         exc_info.value.code
         == "attachment_not_owned_by_item"
     )
+
+def test_non_book_parent_is_rejected_with_real_item_type(
+    tmp_path,
+):
+    env = make_environment(tmp_path)
+
+    with sqlite3.connect(
+        env["snapshot"]
+    ) as connection:
+        connection.execute(
+            (
+                "INSERT INTO itemTypes("
+                "itemTypeID, typeName"
+                ") VALUES (99, 'journalArticle')"
+            )
+        )
+        connection.execute(
+            (
+                "UPDATE items "
+                "SET itemTypeID = 99 "
+                "WHERE key = 'BOOKKEY1'"
+            )
+        )
+        connection.commit()
+
+    with pytest.raises(
+        service.ZoteroSelectedBookPreviewError
+    ) as exc_info:
+        service.build_selected_book_preview(
+            zotero_item_key="BOOKKEY1",
+            snapshot_path=env["snapshot"],
+            db_path=env["research_db"],
+            config=env["config"],
+        )
+
+    assert exc_info.value.code == (
+        "zotero_item_type_unsupported"
+    )
+    assert exc_info.value.details[
+        "item_type"
+    ] == "journalArticle"
