@@ -60,6 +60,11 @@ def make_environment(
                 synced INTEGER
             );
 
+            CREATE TABLE itemTypes (
+                itemTypeID INTEGER PRIMARY KEY,
+                typeName TEXT NOT NULL
+            );
+
             CREATE TABLE itemAttachments (
                 itemID INTEGER PRIMARY KEY,
                 parentItemID INTEGER,
@@ -106,6 +111,9 @@ def make_environment(
             INSERT INTO fields(fieldID, fieldName)
             VALUES (1, 'title')
             """
+        )
+        connection.execute(
+            "INSERT INTO itemTypes(itemTypeID, typeName) VALUES (1, 'book'), (2, 'attachment')"
         )
 
         connection.execute(

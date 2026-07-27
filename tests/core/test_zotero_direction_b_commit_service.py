@@ -268,6 +268,11 @@ def make_zotero_environment(
                 synced INTEGER
             );
 
+            CREATE TABLE itemTypes (
+                itemTypeID INTEGER PRIMARY KEY,
+                typeName TEXT NOT NULL
+            );
+
             CREATE TABLE itemAttachments (
                 itemID INTEGER PRIMARY KEY,
                 parentItemID INTEGER,
@@ -309,6 +314,9 @@ def make_zotero_environment(
             """
         )
 
+        connection.execute(
+            "INSERT INTO itemTypes(itemTypeID, typeName) VALUES (1, 'book'), (2, 'attachment')"
+        )
         connection.execute(
             """
             INSERT INTO fields(

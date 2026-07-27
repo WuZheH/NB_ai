@@ -441,7 +441,7 @@ def _import_zotero_selected_book_preview(
         "existing_document_id": None,
         "estimated_pages": None,
         "estimated_chunks": None,
-        "document_type": "book",
+        "document_type": str(item.get("item_type") or "book"),
         "warnings": [str(value) for value in preview.get("warnings") or []][:8],
         "confirmation_token": None,
         "confirmation_expires_in_seconds": None,

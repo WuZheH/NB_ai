@@ -711,6 +711,7 @@ def _read_parent_item(
             item.dateAdded AS date_added,
             item.dateModified AS date_modified,
             item.version AS version,
+            COALESCE(item_types.typeName, 'unknown') AS item_type,
             title_value.value AS title
         FROM items AS item
         LEFT JOIN deletedItems AS deleted
@@ -725,6 +726,8 @@ def _read_parent_item(
             )
         LEFT JOIN itemDataValues AS title_value
             ON title_value.valueID = title_data.valueID
+        LEFT JOIN itemTypes AS item_types
+            ON item_types.itemTypeID = item.itemTypeID
         WHERE item.key = ?
           AND deleted.itemID IS NULL
         ORDER BY
@@ -763,7 +766,18 @@ def _read_parent_item(
             },
         )
 
-    return dict(rows[0])
+    parent = dict(rows[0])
+    if str(parent.get("item_type") or "unknown") != "book":
+        raise ZoteroSelectedBookPreviewError(
+            status_code=422,
+            code="zotero_item_type_unsupported",
+            message="Only Zotero book items can use selected-book import.",
+            details={
+                "zotero_item_key": item_key,
+                "item_type": str(parent.get("item_type") or "unknown"),
+            },
+        )
+    return parent
 
 
 def _read_pdf_attachments(
@@ -1114,6 +1128,7 @@ def _build_source_revision(
                 "date_modified"
             ],
             "version": parent["version"],
+            "item_type": str(parent.get("item_type") or "unknown"),
         },
         "attachment": {
             "zotero_attachment_key": attachment[
