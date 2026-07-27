@@ -65,7 +65,9 @@ def test_bad_vector_final_contract_rolls_back(tmp_path, seams, monkeypatch):
     runtime, db = _runtime(tmp_path, _seed_body(tmp_path/"db.sqlite")); calls=[]; monkeypatch.setattr("app.services.chat_pdf_production_import_service._rollback_document", _rollback(db,calls))
     monkeypatch.setattr("app.services.chat_pdf_production_import_service.vector_store_service.sync_affected_passage_embeddings", lambda *a,**k: {"scope":"wrong_scope","full_rebuild_allowed":False,"delete_orphans_allowed":False,"upserted_count":0})
     with pytest.raises(RuntimeError, match="chat_import_final_verify_failed"): import_document_to_production(import_job_id="x", document_type="paper", runtime=runtime)
-    with sqlite3.connect(db) as c: assert c.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+    with sqlite3.connect(db) as c:
+        assert c.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+        assert c.execute("SELECT COUNT(*) FROM knowledge_chunks").fetchone()[0] == 0
     assert len(calls)==1
 
 def test_final_fts_status_failure_after_body_rolls_back(tmp_path, seams, monkeypatch):
@@ -73,7 +75,9 @@ def test_final_fts_status_failure_after_body_rolls_back(tmp_path, seams, monkeyp
     states=iter(({"status":"ready","ready":True},{"status":"broken","ready":False}))
     monkeypatch.setattr("app.services.chat_pdf_production_import_service._fts_status", lambda _r: next(states))
     with pytest.raises(RuntimeError, match="chat_import_final_verify_failed"): import_document_to_production(import_job_id="x", document_type="paper", runtime=runtime)
-    with sqlite3.connect(db) as c: assert c.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+    with sqlite3.connect(db) as c:
+        assert c.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+        assert c.execute("SELECT COUNT(*) FROM knowledge_chunks").fetchone()[0] == 0
     assert len(calls)==1
 
 def test_body_write_then_raise_rolls_back(tmp_path, seams, monkeypatch):

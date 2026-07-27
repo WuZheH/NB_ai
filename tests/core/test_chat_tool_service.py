@@ -419,8 +419,9 @@ def test_default_chat_import_routes_to_production_orchestrator(tmp_path: Path, m
     monkeypatch.setattr(chat_tool_service, "_resolve_chat_pdf_import_runtime", lambda _runtime: sentinel)
     monkeypatch.setattr(chat_tool_service.import_preview_service, "create_import_preview", lambda *_args, **_kwargs: {"import_job_id": "job-1"})
     result = chat_tool_service._commit_confirmed_import(record=record, runtime=runtime)
-    assert calls and calls[0]["allow_production"] is True
-    assert isinstance(calls[0]["runtime"], chat_pdf_production_import_service.ChatPdfImportRuntime)
+    assert len(calls) == 1
+    assert calls[0]["allow_production"] is True
+    assert calls[0]["runtime"] is sentinel
     assert result["status"] == "completed"
 
 def test_canonical_runtime_resolver_uses_real_constants():
