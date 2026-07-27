@@ -257,6 +257,13 @@ def delete_preview(
         "safe_to_delete": bool(preview.get("whether_safe_to_delete")),
         "pdf_preserved": True,
         "notes_preserved": True,
+        "search_review_artifact_count": int(
+            preview.get("search_review_artifact_count") or 0
+        ),
+        "warnings": [
+            str(value)
+            for value in preview.get("warnings") or []
+        ][:8],
         "blockers": blockers,
         "confirmation_token": token,
         "confirmation_expires_in_seconds": DELETE_CONFIRMATION_TTL_SECONDS,

@@ -95,6 +95,10 @@ def test_delete_tools_keep_internal_revision_and_require_confirmation(
             "preview_token": "p" * 40,
             "document_revision": "r" * 64,
             "whether_safe_to_delete": True,
+            "search_review_artifact_count": 2,
+            "warnings": [
+                "search_review_artifacts_will_be_deleted",
+            ],
             "deletion_blockers": [],
         }
 
@@ -115,6 +119,12 @@ def test_delete_tools_keep_internal_revision_and_require_confirmation(
     )
     result = chat_tool_service.delete_preview(7, runtime=runtime)
     assert result["safe_to_delete"] is True
+    assert result["search_review_artifact_count"] == 2
+    assert result["warnings"] == [
+        "search_review_artifacts_will_be_deleted"
+    ]
+    assert result["pdf_preserved"] is True
+    assert result["notes_preserved"] is True
     assert (
         result["confirmation_expires_in_seconds"]
         == document_deletion_service.PREVIEW_TTL_SECONDS

@@ -54,7 +54,9 @@ KNOWN_REFERENCE_TABLES = {
     "library_archive_states",
     "markdown_nodes",
     "mechanism_draft_candidates",
+    "note_classification_review_items",
     "note_classification_reviews",
+    "note_correction_review_items",
     "note_correction_reviews",
     "note_evidence_links",
     "object_candidate_draft_review_items",
@@ -79,6 +81,10 @@ REVIEW_TABLES = (
     "object_candidate_human_reviews",
     "object_candidate_draft_review_items",
     "object_candidate_human_review_items",
+)
+NOTE_REVIEW_CHILD_TABLES = (
+    ("note_correction_review_items", "note_correction_reviews"),
+    ("note_classification_review_items", "note_classification_reviews"),
 )
 DERIVED_DOCUMENT_TABLES = (
     "ocr_first_candidate_corrections",
@@ -580,6 +586,13 @@ def _prepare_preview(
             object_ids,
         )
         review_count = _review_artifact_count(connection, document_id)
+        review_delete_count = sum(
+            len(rows)
+            for rows in _review_artifact_rows(
+                connection,
+                document_id,
+            ).values()
+        )
         user_object_comment_count = sum(
             1 for row in objects if str(row["user_comment"] or "").strip()
         )
@@ -654,6 +667,11 @@ def _prepare_preview(
         for value in (
             "personal_notes_will_be_detached" if personal_note_count else "",
             "zotero_notes_will_be_detached" if zotero_note_count else "",
+            (
+                "search_review_artifacts_will_be_deleted"
+                if review_delete_count
+                else ""
+            ),
             "shared_objects_will_be_preserved" if shared_keys else "",
             "managed_pdf_preserved_by_default" if managed_pdf else "external_pdf_preserved",
             fts_warning,
@@ -671,6 +689,7 @@ def _prepare_preview(
         "personal_note_count": personal_note_count,
         "zotero_note_count": zotero_note_count,
         "review_count": review_count,
+        "review_delete_count": review_delete_count,
         "database_impact_fingerprint": _database_impact_fingerprint(
             connection_path=db_path,
             document_id=document_id,
@@ -684,7 +703,11 @@ def _prepare_preview(
         "options": options,
     }
     document_revision = _hash_json(revision_material)
-    estimated_deleted_rows = sum(row_counts.values()) + 1
+    estimated_deleted_rows = (
+        sum(row_counts.values())
+        + review_delete_count
+        + 1
+    )
     estimated_detached_rows = personal_note_count + zotero_note_count + row_counts.get("knowledge_relations", 0)
     archive_root = runtime.resolved_archive_root()
     public = {
@@ -709,6 +732,7 @@ def _prepare_preview(
         "evidence_link_count": row_counts.get("note_evidence_links", 0) + row_counts.get("knowledge_relations", 0) + row_counts.get("inspiration_card_sources", 0),
         "personal_note_count": personal_note_count,
         "zotero_note_count": zotero_note_count,
+        "search_review_artifact_count": review_delete_count,
         "fts_row_count": fts_count,
         "passage_vector_count": int(vector_impact.get("passage_vector_count") or 0),
         "object_vector_impact_count": int(vector_impact.get("object_vector_count") or 0),
@@ -823,6 +847,13 @@ def _execute_database_transaction(plan: InternalDeletionPlan, *, runtime: Deleti
                 "deletion_preview_stale_after_write_lock",
                 "取得数据库写锁后发现删除影响已变化，事务已回滚。",
             )
+
+        counts.update(
+            _delete_review_artifacts(
+                connection,
+                plan.document_id,
+            )
+        )
 
         if plan.chunk_ids:
             chunk_placeholders = _placeholders(plan.chunk_ids)
@@ -999,6 +1030,13 @@ def _orphan_scan(plan: InternalDeletionPlan, *, runtime: DeletionRuntime) -> dic
             "orphan_document_object_links": _scalar(connection, "SELECT COUNT(*) FROM object_candidates AS child LEFT JOIN documents AS parent ON parent.id = child.document_id WHERE child.document_id IS NOT NULL AND parent.id IS NULL") if _table_exists(connection, "object_candidates") else 0,
             "dangling_personal_notes": _count(connection, "personal_notes", "document_id = ?", (plan.document_id,)) if _table_exists(connection, "personal_notes") else 0,
             "dangling_zotero_notes": _dangling_zotero_note_count(connection, plan),
+            "dangling_review_artifacts": sum(
+                len(rows)
+                for rows in _review_artifact_rows(
+                    connection,
+                    plan.document_id,
+                ).values()
+            ),
         }
     fts_remaining = 0
     if Path(runtime.fts_path).is_file():
@@ -1123,6 +1161,12 @@ def _collect_recovery_rows(connection: sqlite3.Connection, plan: InternalDeletio
             for row in connection.execute("SELECT * FROM zotero_inspiration_notes")
             if _zotero_row_matches_plan(row, plan)
         ]
+    collected.update(
+        _review_artifact_rows(
+            connection,
+            plan.document_id,
+        )
+    )
     if _table_exists(connection, "mechanism_draft_candidates"):
         collected["mechanism_draft_candidates_detached"] = _rows(
             connection,
@@ -1207,8 +1251,8 @@ def _deletion_blockers(
     )
     if any(not options[name] for name in required_true):
         blockers.append({"code": "protected_data_retention_required", "count": 1})
-    if review_count:
-        blockers.append({"code": "protected_review_artifacts_require_manual_preservation", "count": review_count})
+    # Search-owned review artifacts are captured in the recovery
+    # package and deleted transactionally after explicit confirmation.
     if user_object_comment_count:
         blockers.append({"code": "object_user_comment_requires_manual_preservation", "count": user_object_comment_count})
     if cross_document_references:
@@ -1222,6 +1266,101 @@ def _deletion_blockers(
     if managed_pdf_shared and options["delete_managed_pdf"]:
         blockers.append({"code": "managed_pdf_is_shared", "count": 1})
     return blockers
+
+
+def _review_artifact_rows(
+    connection: sqlite3.Connection,
+    document_id: int,
+) -> dict[str, list[dict[str, Any]]]:
+    collected: dict[str, list[dict[str, Any]]] = {}
+
+    for table in REVIEW_TABLES:
+        if (
+            _table_exists(connection, table)
+            and "document_id" in _table_columns(connection, table)
+        ):
+            collected[table] = _rows(
+                connection,
+                f"SELECT * FROM {table} "
+                "WHERE document_id = ? ORDER BY rowid",
+                (document_id,),
+            )
+
+    for child_table, parent_table in NOTE_REVIEW_CHILD_TABLES:
+        if (
+            not _table_exists(connection, child_table)
+            or parent_table not in collected
+        ):
+            continue
+
+        review_ids = tuple(
+            row["review_id"]
+            for row in collected[parent_table]
+            if row.get("review_id") is not None
+        )
+
+        if not review_ids:
+            collected[child_table] = []
+            continue
+
+        placeholders = _placeholders(review_ids)
+        collected[child_table] = _rows(
+            connection,
+            f"SELECT * FROM {child_table} "
+            f"WHERE review_id IN ({placeholders}) "
+            "ORDER BY rowid",
+            review_ids,
+        )
+
+    return collected
+
+
+def _delete_review_artifacts(
+    connection: sqlite3.Connection,
+    document_id: int,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+
+    for child_table, parent_table in NOTE_REVIEW_CHILD_TABLES:
+        if (
+            not _table_exists(connection, child_table)
+            or not _table_exists(connection, parent_table)
+        ):
+            counts[f"{child_table}_deleted"] = 0
+            continue
+
+        counts[f"{child_table}_deleted"] = _execute_count(
+            connection,
+            f"DELETE FROM {child_table} "
+            "WHERE review_id IN ("
+            f"SELECT review_id FROM {parent_table} "
+            "WHERE document_id = ?"
+            ")",
+            (document_id,),
+        )
+
+    for table in (
+        "object_candidate_human_review_items",
+        "object_candidate_draft_review_items",
+        "object_candidate_human_reviews",
+        "object_candidate_draft_reviews",
+        "note_correction_reviews",
+        "note_classification_reviews",
+    ):
+        if (
+            not _table_exists(connection, table)
+            or "document_id" not in _table_columns(connection, table)
+        ):
+            counts[f"{table}_deleted"] = 0
+            continue
+
+        counts[f"{table}_deleted"] = _execute_count(
+            connection,
+            f"DELETE FROM {table} WHERE document_id = ?",
+            (document_id,),
+        )
+
+    return counts
 
 
 def _review_artifact_count(connection: sqlite3.Connection, document_id: int) -> int:
@@ -1364,13 +1503,12 @@ def _database_impact_fingerprint(
                 "SELECT * FROM mechanism_draft_candidates WHERE matched_document_id = ?",
                 (document_id,),
             )
-        for table in REVIEW_TABLES:
-            if _table_exists(connection, table) and "document_id" in _table_columns(connection, table):
-                payload[table] = _rows(
-                    connection,
-                    f"SELECT * FROM {table} WHERE document_id = ?",
-                    (document_id,),
-                )
+        payload.update(
+            _review_artifact_rows(
+                connection,
+                document_id,
+            )
+        )
     return _hash_json(payload)
 
 

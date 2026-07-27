@@ -746,18 +746,94 @@ def test_missing_document_and_invalid_preview_token_are_rejected(tmp_path: Path)
     assert token.value.error_code == "deletion_preview_token_invalid_or_expired"
 
 
-def test_protected_review_artifacts_are_blockers(tmp_path: Path) -> None:
+def test_search_review_artifacts_are_recovered_and_deleted_after_confirmation(
+    tmp_path: Path,
+) -> None:
     runtime, _harness = _runtime(tmp_path)
+
     connection = sqlite3.connect(runtime.db_path)
-    connection.execute("CREATE TABLE note_correction_reviews (review_id TEXT PRIMARY KEY, document_id INTEGER NOT NULL)")
-    connection.execute("INSERT INTO note_correction_reviews VALUES ('review-1', 1)")
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.executescript(
+        """
+        CREATE TABLE note_correction_reviews (
+            review_id TEXT PRIMARY KEY,
+            document_id INTEGER NOT NULL
+        );
+        CREATE TABLE note_correction_review_items (
+            id INTEGER PRIMARY KEY,
+            review_id TEXT NOT NULL
+                REFERENCES note_correction_reviews(review_id)
+                ON DELETE NO ACTION,
+            payload TEXT
+        );
+        """
+    )
+    connection.execute(
+        "INSERT INTO note_correction_reviews VALUES ('review-1', 1)"
+    )
+    connection.execute(
+        "INSERT INTO note_correction_review_items"
+        "(review_id, payload) VALUES ('review-1', 'fixture')"
+    )
     connection.commit()
     connection.close()
-    preview = document_deletion_service.create_deletion_preview(1, runtime=runtime)
-    assert preview["whether_safe_to_delete"] is False
-    assert "protected_review_artifacts_require_manual_preservation" in {
-        item["code"] for item in preview["deletion_blockers"]
-    }
+
+    preview = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+    )
+
+    assert preview["whether_safe_to_delete"] is True
+    assert preview["search_review_artifact_count"] == 2
+    assert preview["deletion_blockers"] == []
+    assert (
+        "search_review_artifacts_will_be_deleted"
+        in preview["warnings"]
+    )
+    assert preview["retention"]["external_pdf"] == "always_preserved"
+    assert preview["retention"]["personal_notes"] == "preserve_and_detach"
+    assert preview["retention"]["zotero_data"] == "preserve_and_detach"
+
+    result = document_deletion_service.delete_document(
+        document_id=1,
+        preview_token=preview["preview_token"],
+        expected_document_revision=preview["document_revision"],
+        confirmation_text="删除",
+        runtime=runtime,
+    )
+
+    assert result["status"] == "completed"
+
+    connection = sqlite3.connect(runtime.db_path)
+    try:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM note_correction_review_items"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM note_correction_reviews"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchall() == []
+    finally:
+        connection.close()
+
+    recovery_dir = (
+        runtime.resolved_archive_root()
+        / result["audit_id"]
+    )
+    recovered = json.loads(
+        (recovery_dir / "database_rows.json").read_text(
+            encoding="utf-8"
+        )
+    )["tables"]
+
+    assert len(recovered["note_correction_reviews"]) == 1
+    assert len(recovered["note_correction_review_items"]) == 1
+    assert (
+        recovered["note_correction_reviews"][0]["review_id"]
+        == "review-1"
+    )
 
 
 def test_managed_pdf_is_deleted_only_when_explicitly_previewed(tmp_path: Path) -> None:
