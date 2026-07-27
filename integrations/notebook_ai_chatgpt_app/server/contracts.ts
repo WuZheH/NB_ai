@@ -105,10 +105,23 @@ export interface CatalogLibraryItem {
   status: "available";
   duplicate_status: string;
 }
-export type LibraryItem = ImportedLibraryItem | CatalogLibraryItem;
+export interface ZoteroLibraryItem {
+  kind: "zotero";
+  document_id: null;
+  title: string;
+  item_type: string;
+  zotero_item_key: string;
+  has_pdf: boolean;
+  attachment_count: number;
+  annotation_count: number;
+  child_note_count: number;
+  duplicate_status: string;
+  status: "available";
+}
+export type LibraryItem = ImportedLibraryItem | CatalogLibraryItem | ZoteroLibraryItem;
 
 export interface ListLibraryInput {
-  scope: "imported" | "catalog";
+  scope: "imported" | "catalog" | "zotero";
   query?: string;
   document_type?: string;
   status: "active" | "archived" | "all";
@@ -120,7 +133,7 @@ export interface ListLibraryResponse {
   count: number;
   items: LibraryItem[];
   truncated: boolean;
-  scope: "imported" | "catalog";
+  scope: "imported" | "catalog" | "zotero";
 }
 
 export interface ImportPreviewInput {

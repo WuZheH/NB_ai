@@ -183,7 +183,7 @@ export async function dispatchAction(
   }
   if (action === "list_library") {
     return await client.listLibrary({
-      scope: ["imported", "catalog"].includes(String(input.scope)) ? String(input.scope) as "imported" | "catalog" : "imported",
+      scope: ["imported", "catalog", "zotero"].includes(String(input.scope)) ? String(input.scope) as "imported" | "catalog" | "zotero" : "imported",
       query: optionalString(input.query, 256),
       document_type: optionalString(input.document_type, 64),
       status: ["active", "archived", "all"].includes(String(input.status))
@@ -412,7 +412,7 @@ function actionInputSchema(name: string): Record<string, unknown> {
     properties.format = { type: "string", enum: ["markdown", "jsonl", "json"], default: "markdown" };
     required.push("fragment_ids");
   } else if (name === "list_library") {
-    properties.scope = { type: "string", enum: ["imported", "catalog"], default: "imported" };
+    properties.scope = { type: "string", enum: ["imported", "catalog", "zotero"], default: "imported" };
     properties.query = { type: "string", maxLength: 256 };
     properties.document_type = { type: "string", maxLength: 64 };
     properties.status = { type: "string", enum: ["active", "archived", "all"], default: "active" };

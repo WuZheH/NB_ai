@@ -13,7 +13,7 @@ import {
 } from "./shared.js";
 
 export const listLibraryInputShape = {
-  scope: z.enum(["imported", "catalog"]).default("imported"),
+  scope: z.enum(["imported", "catalog", "zotero"]).default("imported"),
   query: z.string().trim().max(256).optional(),
   document_type: z.string().trim().max(64).optional(),
   status: z.enum(["active", "archived", "all"]).default("active"),
@@ -41,12 +41,17 @@ const catalogLibraryItemSchema = z.object({
   import_ref: z.string(), file_name: z.string(), relative_path: z.string(), note_count: z.number().int().nonnegative(), note_files: z.array(z.string()),
   status: z.literal("available"), duplicate_status: z.string(),
 });
+const zoteroLibraryItemSchema = z.object({
+  kind: z.literal("zotero"), document_id: z.null(), title: z.string(), item_type: z.string(), zotero_item_key: z.string(),
+  has_pdf: z.boolean(), attachment_count: z.number().int().nonnegative(), annotation_count: z.number().int().nonnegative(),
+  child_note_count: z.number().int().nonnegative(), duplicate_status: z.string(), status: z.literal("available"),
+});
 
 export const listLibraryOutputShape = {
   status: z.literal("ok"),
-  scope: z.enum(["imported", "catalog"]),
+  scope: z.enum(["imported", "catalog", "zotero"]),
   count: z.number().int().nonnegative(),
-  items: z.array(z.union([importedLibraryItemSchema, catalogLibraryItemSchema])),
+  items: z.array(z.union([importedLibraryItemSchema, catalogLibraryItemSchema, zoteroLibraryItemSchema])),
   truncated: z.boolean(),
 };
 

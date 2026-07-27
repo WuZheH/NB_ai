@@ -17,6 +17,7 @@ from app.core.paths import DATA_DIR, DATA_PROJECT_ROOT, DEFAULT_DB_PATH
 from app.schemas.library_deletion import DeletionOptions
 from app.services import (
     chat_import_catalog_service,
+    zotero_library_service,
     chat_pdf_production_import_service,
     commit_book_service,
     commit_paper_service,
@@ -139,6 +140,8 @@ def list_library(
     actual_runtime = runtime or ChatToolRuntime()
     if scope == "catalog":
         return chat_import_catalog_service.list_catalog(inbox_root=actual_runtime.resolved_inbox_root(), query=query, limit=limit)
+    if scope == "zotero":
+        return zotero_library_service.list_parent_items(query=query, limit=limit)
     if scope != "imported":
         raise ChatToolError("library_scope_invalid", "Library scope is invalid.", status_code=422)
     normalized_status = str(status or "active").strip().lower()

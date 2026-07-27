@@ -10,7 +10,7 @@ class StrictChatToolRequest(BaseModel):
 
 
 class ListLibraryRequest(StrictChatToolRequest):
-    scope: Literal["imported", "catalog"] = "imported"
+    scope: Literal["imported", "catalog", "zotero"] = "imported"
     query: str | None = Field(default=None, max_length=256)
     document_type: str | None = Field(default=None, max_length=64)
     status: str = Field(default="active", pattern=r"^(active|archived|all)$")
