@@ -42,10 +42,22 @@ def list_parent_items(*, query: str | None = None, limit: int = 20) -> dict[str,
         with sqlite3.connect(f"file:{snapshot.as_posix()}?mode=ro", uri=True) as attachment_conn:
             attachment_conn.row_factory = sqlite3.Row
             choices=[]
-            for att in attachment_conn.execute("SELECT ia.itemID, ia.key, ia.path, ia.contentType FROM itemAttachments ia WHERE ia.parentItemID=(SELECT itemID FROM items WHERE key=?) ORDER BY ia.key", (row["item_key"],)):
+            for att in attachment_conn.execute("""
+                SELECT attachment_items.itemID,
+                       attachment_items.key AS attachment_key,
+                       itemAttachments.path,
+                       itemAttachments.contentType
+                FROM itemAttachments
+                JOIN items AS attachment_items
+                  ON attachment_items.itemID = itemAttachments.itemID
+                WHERE itemAttachments.parentItemID=(
+                    SELECT itemID FROM items WHERE key=?
+                )
+                ORDER BY attachment_items.key
+            """, (row["item_key"],)):
                 raw=str(att["path"] or "")
-                resolved, supported = zotero_source_cache_service._resolve_attachment_path(str(att["key"]), raw, Path(config["zotero_data_dir"]), Path(config["zotero_storage_root"]))
-                choices.append({"zotero_attachment_key":str(att["key"]),"file_name":Path(raw.removeprefix("storage:")).name if raw else None,"path_exists":bool(supported and resolved and Path(resolved).is_file()),"content_type":att["contentType"]})
+                resolved, supported = zotero_source_cache_service._resolve_attachment_path(str(att["attachment_key"]), raw, Path(config["zotero_data_dir"]), Path(config["zotero_storage_root"]))
+                choices.append({"zotero_attachment_key":str(att["attachment_key"]),"file_name":Path(raw.removeprefix("storage:")).name if raw else None,"path_exists":bool(supported and resolved and Path(resolved).is_file()),"content_type":att["contentType"]})
         items.append({"kind":"zotero","document_id":None,"title":title,"item_type":str(row["item_type"] or "unknown"),"zotero_item_key":str(row["item_key"]),"has_pdf":int(row["pdf_count"] or 0)>0,"attachment_count":attachments,"attachment_choices":choices,"annotation_count":int(row["annotation_count"] or 0),"child_note_count":int(row["child_note_count"] or 0),"duplicate_status":"not_evaluated","status":"available"})
         if len(items)>=limit: break
     return {"status":"ok","scope":"zotero","count":len(items),"items":items,"truncated":False}
