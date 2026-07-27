@@ -30,11 +30,28 @@ def test_live_repository_keeps_note_and_selected_text_separate() -> None:
 
 def test_notebook_markdown_jsonl_and_json_export_are_read_only_and_ordered() -> None:
     _require_live_repository()
-    note = list_notebook_fragments(source_types=["zotero_annotation_comment"])[0]
-    assert note.document_id is not None
-    pdf = list_notebook_fragments(
-        source_types=["pdf_chunk"], document_ids=[note.document_id]
-    )[0]
+    note = None
+    pdf = None
+    comments = list_notebook_fragments(
+        source_types=["zotero_annotation_comment"]
+    )
+    for candidate in comments:
+        if candidate.document_id is None:
+            continue
+        pdf_candidates = list_notebook_fragments(
+            source_types=["pdf_chunk"],
+            document_ids=[candidate.document_id],
+        )
+        if pdf_candidates:
+            note = candidate
+            pdf = pdf_candidates[0]
+            break
+
+    if note is None or pdf is None:
+        pytest.skip(
+            "live repository has no mapped Zotero annotation + PDF pair"
+        )
+
     ids = [note.fragment_id, pdf.fragment_id]
 
     markdown = export_evidence(

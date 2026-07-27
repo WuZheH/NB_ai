@@ -13,6 +13,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.domains.retrieval import fragment_repository, note_vector_index
+from app.domains.retrieval.result_contracts import NotebookFragment, OpenTarget
 from app.schemas.retrieval_fragment import (
     RETRIEVAL_FRAGMENT_NAMESPACE,
     RetrievalFragment,
@@ -238,6 +240,29 @@ def _retrieval_fragment(document_id: int) -> RetrievalFragment:
     )
 
 
+def _zotero_note_fragment(document_id: int | None) -> NotebookFragment:
+    return NotebookFragment(
+        fragment_id="delete-note-vector-fragment",
+        source_type="zotero_annotation_comment",
+        zotero_item_key="BOOK0001",
+        zotero_attachment_key="ATTACH01",
+        zotero_annotation_key="ANNOT001",
+        document_id=document_id,
+        document_title="Safe Book",
+        note_text="user note",
+        selected_text="selected source text",
+        content_hash="stable-note-content-hash",
+        provenance=[
+            {
+                "store": "zotero_snapshot",
+                "table": "itemAnnotations",
+                "row_id": 1,
+            }
+        ],
+        open_target=OpenTarget(),
+    )
+
+
 def _sequential_runtime(
     root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -375,6 +400,88 @@ def test_delete_transaction_preserves_notes_pdf_and_creates_recovery_package(tmp
     assert result["orphan_scan"]["ok"] is True
     assert "chunk:1:101" not in harness.passages
     assert "object:exclusive-key" not in harness.objects
+
+
+def test_delete_document_refreshes_note_vector_document_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _harness = _runtime(tmp_path)
+
+    note_index = (
+        runtime.data_dir
+        / "vector_store"
+        / "zotero_user_notes_v1"
+    )
+
+    note_vector_index.build_zotero_note_vectors(
+        index_dir=note_index,
+        fragments=[_zotero_note_fragment(1)],
+        encode_text=lambda _text: [1.0, 0.0],
+    )
+
+    before = note_vector_index.inspect_zotero_note_vector_document_impact(
+        1,
+        index_dir=note_index,
+    )
+    assert before["document_entry_count"] == 1
+
+    monkeypatch.setattr(
+        fragment_repository,
+        "list_notebook_fragments",
+        lambda **_kwargs: [_zotero_note_fragment(None)],
+    )
+
+    def fail_if_reembedding_is_attempted():
+        raise AssertionError(
+            "metadata-only document detach must reuse existing embeddings"
+        )
+
+    monkeypatch.setattr(
+        note_vector_index,
+        "_default_encoder",
+        fail_if_reembedding_is_attempted,
+    )
+
+    preview = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+    )
+    result = document_deletion_service.delete_document(
+        document_id=1,
+        preview_token=preview["preview_token"],
+        expected_document_revision=preview["document_revision"],
+        confirmation_text="删除",
+        runtime=runtime,
+    )
+
+    assert result["status"] == "completed"
+    assert result["note_vectors"]["recomputed_count"] == 0
+    assert result["note_vectors"]["metadata_updated_count"] == 1
+    assert result["note_vectors"]["removed_document_entries"] == 1
+    assert result["note_vectors"]["stale_document_entries"] == 0
+    assert result["orphan_scan"]["orphan_note_vectors"] == 0
+
+    scoped = note_vector_index.search_zotero_note_vectors(
+        "note",
+        source_types=("zotero_annotation_comment",),
+        document_ids=(1,),
+        index_dir=note_index,
+        encode_query=lambda _query: [1.0, 0.0],
+    )
+    assert scoped["results"] == []
+
+    global_result = note_vector_index.search_zotero_note_vectors(
+        "note",
+        source_types=("zotero_annotation_comment",),
+        index_dir=note_index,
+        encode_query=lambda _query: [1.0, 0.0],
+    )
+    assert len(global_result["results"]) == 1
+    assert (
+        global_result["results"][0]["fragment"]["document_id"]
+        is None
+    )
 
 
 def test_five_sequential_deletions_complete_with_scoped_fts_cleanup(
