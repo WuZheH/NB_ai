@@ -43,7 +43,7 @@ const catalogLibraryItemSchema = z.object({
 });
 const zoteroLibraryItemSchema = z.object({
   kind: z.literal("zotero"), document_id: z.null(), title: z.string(), item_type: z.string(), zotero_item_key: z.string(),
-  has_pdf: z.boolean(), attachment_count: z.number().int().nonnegative(), annotation_count: z.number().int().nonnegative(),
+  has_pdf: z.boolean(), attachment_count: z.number().int().nonnegative(), attachment_choices: z.array(z.object({ zotero_attachment_key: z.string(), file_name: z.string().nullable(), path_exists: z.boolean(), content_type: z.string().nullable() })), annotation_count: z.number().int().nonnegative(),
   child_note_count: z.number().int().nonnegative(), duplicate_status: z.string(), status: z.literal("available"),
 });
 

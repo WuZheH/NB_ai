@@ -113,6 +113,7 @@ export interface ZoteroLibraryItem {
   zotero_item_key: string;
   has_pdf: boolean;
   attachment_count: number;
+  attachment_choices: Array<{ zotero_attachment_key: string; file_name: string | null; path_exists: boolean; content_type: string | null }>;
   annotation_count: number;
   child_note_count: number;
   duplicate_status: string;
