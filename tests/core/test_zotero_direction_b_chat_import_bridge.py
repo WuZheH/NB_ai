@@ -7,6 +7,11 @@ from pathlib import Path
 import pytest
 
 from app.core.paths import DATA_DIR, DEFAULT_DB_PATH
+from app.domains.retrieval import note_vector_index
+from app.domains.retrieval.result_contracts import (
+    NotebookFragment,
+    OpenTarget,
+)
 from app.services import (
     chat_tool_service,
     vector_store_service,
@@ -2035,6 +2040,16 @@ def _install_production_shaped_runtime(
         / "vector_store"
         / "vector_manifest.json"
     )
+    note_vector_dir = (
+        data_dir
+        / "vector_store"
+        / "zotero_user_notes_v1"
+    )
+    note_vector_index.build_zotero_note_vectors(
+        index_dir=note_vector_dir,
+        fragments=[],
+        encode_text=lambda _text: [1.0, 0.0],
+    )
 
     monkeypatch.setattr(
         zotero_direction_b_import_service,
@@ -2172,12 +2187,18 @@ def _install_production_shaped_runtime(
             "ready": fts_ready,
         },
     )
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_native_note_fragments_for_document",
+        lambda **_kwargs: [],
+    )
 
     return {
         "db_path": db_path,
         "data_dir": data_dir,
         "fts_path": fts_path,
         "fts_manifest": fts_manifest,
+        "note_vector_dir": note_vector_dir,
         "observed": observed,
     }
 
@@ -2224,6 +2245,137 @@ def test_production_shaped_import_uses_post_write_snapshot(
         assert connection.execute(
             "SELECT COUNT(*) FROM documents"
         ).fetchone()[0] == 1
+
+
+def _native_annotation_fragment(
+    document_id: int | None,
+    *,
+    fragment_id: str = "native-comment-1",
+) -> NotebookFragment:
+    return NotebookFragment(
+        fragment_id=fragment_id,
+        source_type="zotero_annotation_comment",
+        zotero_item_key="BOOKKEY1",
+        zotero_attachment_key="PDFKEY1",
+        zotero_annotation_key="ANN1",
+        document_id=document_id,
+        document_title="Fixture Book",
+        document_type=(
+            "book"
+            if document_id is not None
+            else None
+        ),
+        note_text="这个可以作为对数推入",
+        selected_text="Original selected text.",
+        content_hash="native-comment-hash",
+        provenance=[
+            {
+                "store": "zotero_snapshot",
+                "table": "itemAnnotations",
+                "row_id": 1,
+            }
+        ],
+        open_target=OpenTarget(),
+    )
+
+
+def test_production_import_attaches_only_native_note_vector_scope(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=True,
+    )
+    note_vector_dir = fixture["note_vector_dir"]
+    unrelated = _native_annotation_fragment(
+        22,
+        fragment_id="unrelated-native-comment",
+    ).model_copy(
+        update={
+            "zotero_annotation_key": "UNRELATED1",
+            "note_text": "unrelated note",
+            "content_hash": "unrelated-note-hash",
+        }
+    )
+    note_vector_index.build_zotero_note_vectors(
+        index_dir=note_vector_dir,
+        fragments=[
+            _native_annotation_fragment(None),
+            unrelated,
+        ],
+        encode_text=lambda _text: [1.0, 0.0],
+    )
+    _manifest, before_entries = (
+        note_vector_index._load_existing(
+            note_vector_dir,
+            required=True,
+        )
+    )
+    unrelated_before = next(
+        entry
+        for entry in before_entries
+        if entry["fragment_id"]
+        == "unrelated-native-comment"
+    )
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_native_note_fragments_for_document",
+        lambda **_kwargs: [
+            _native_annotation_fragment(1)
+        ],
+    )
+    monkeypatch.setattr(
+        note_vector_index,
+        "_default_encoder",
+        lambda: (
+            lambda _text: (
+                (_ for _ in ()).throw(
+                    AssertionError(
+                        "metadata-only attach must reuse embedding"
+                    )
+                )
+            )
+        ),
+    )
+
+    result = (
+        zotero_direction_b_import_service
+        .commit_selected_book_import_to_production(
+            preview_token="p" * 40,
+            body_importer=body_importer,
+        )
+    )
+
+    native_sync = result["native_note_vector_sync"]
+    assert native_sync["scope"] == "affected_fragment_ids_only"
+    assert native_sync["scoped_entry_count_after"] == 1
+    assert native_sync["recomputed_count"] == 0
+    assert native_sync["full_rebuild_performed"] is False
+    assert native_sync["orphan_delete_performed"] is False
+
+    impact = (
+        note_vector_index
+        .inspect_zotero_note_vector_document_impact(
+            1,
+            index_dir=note_vector_dir,
+        )
+    )
+    assert impact["document_entry_count"] == 1
+    _manifest, after_entries = (
+        note_vector_index._load_existing(
+            note_vector_dir,
+            required=True,
+        )
+    )
+    unrelated_after = next(
+        entry
+        for entry in after_entries
+        if entry["fragment_id"]
+        == "unrelated-native-comment"
+    )
+    assert unrelated_after == unrelated_before
 
 
 def test_production_final_verify_failure_restores_db_and_derived_exactly(

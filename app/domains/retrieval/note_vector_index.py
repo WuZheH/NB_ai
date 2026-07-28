@@ -617,6 +617,335 @@ def refresh_zotero_note_vector_document_scope(
     }
 
 
+def attach_zotero_note_vector_document_scope(
+    document_id: int,
+    *,
+    fragments: Iterable[NotebookFragment],
+    index_dir: str | Path = ZOTERO_NOTE_VECTOR_DIR,
+    encode_text: Callable[[str], list[float]] | None = None,
+    built_at: str | None = None,
+) -> dict[str, Any]:
+    """Attach only one imported document's native Zotero note fragments."""
+
+    started = time.perf_counter()
+    if (
+        isinstance(document_id, bool)
+        or not isinstance(document_id, int)
+        or document_id <= 0
+    ):
+        raise ValueError("document_id must be a positive integer")
+
+    root = Path(index_dir)
+    previous_manifest, previous_entries = _load_existing(
+        root,
+        required=True,
+    )
+    previous_by_id = {
+        str(entry["fragment_id"]): entry
+        for entry in previous_entries
+    }
+    fresh_by_id: dict[str, NotebookFragment] = {}
+    for fragment in fragments:
+        if fragment.source_type not in NOTE_SOURCE_TYPES:
+            raise ValueError(
+                "scoped note attach received unsupported source type: "
+                f"{fragment.source_type}"
+            )
+        if fragment.document_id != document_id:
+            raise ValueError(
+                "scoped note attach received a fragment for another document: "
+                f"{fragment.fragment_id}"
+            )
+        if fragment.fragment_id in fresh_by_id:
+            raise ValueError(
+                "duplicate fresh fragment in scoped note attach: "
+                f"{fragment.fragment_id}"
+            )
+        previous = previous_by_id.get(fragment.fragment_id)
+        if (
+            previous is not None
+            and previous.get("document_id") not in {None, document_id}
+        ):
+            raise ValueError(
+                "scoped note attach would steal another document mapping: "
+                f"{fragment.fragment_id}"
+            )
+        fresh_by_id[fragment.fragment_id] = fragment
+
+    if not fresh_by_id:
+        return {
+            **previous_manifest,
+            "status": "ready",
+            "scope": "affected_fragment_ids_only",
+            "document_id": document_id,
+            "scoped_entry_count_before": 0,
+            "scoped_entry_count_after": 0,
+            "reused_count": 0,
+            "recomputed_count": 0,
+            "added_count": 0,
+            "metadata_updated_count": 0,
+            "unrelated_preserved_count": len(previous_entries),
+            "full_rebuild_performed": False,
+            "orphan_delete_performed": False,
+            "vector_write_performed": False,
+            "production_db_write_performed": False,
+            "zotero_db_write_performed": False,
+            "llm_called": False,
+        }
+
+    template_compatible = bool(
+        previous_manifest
+        and previous_manifest.get("schema_version")
+        == INDEX_SCHEMA_VERSION
+        and previous_manifest.get("passage_template")
+        == PASSAGE_TEMPLATE_VERSION
+        and previous_manifest.get("model")
+        == local_embedding_service.MODEL_NAME
+        and previous_manifest.get("normalization")
+        is NORMALIZE_EMBEDDINGS
+        and previous_manifest.get("batch_size")
+        == ENCODE_BATCH_SIZE
+    )
+    target_ids = set(fresh_by_id)
+    entries = [
+        dict(entry)
+        for entry in previous_entries
+        if str(entry["fragment_id"]) not in target_ids
+    ]
+    encoder = encode_text
+    reused = 0
+    recomputed = 0
+    added = 0
+    metadata_updated = 0
+
+    for fragment_id in sorted(fresh_by_id):
+        fresh = fresh_by_id[fragment_id]
+        previous = previous_by_id.get(fragment_id)
+        passage_text = build_note_passage_text(fresh)
+        vector_content_hash = _vector_content_hash(
+            fresh,
+            passage_text,
+        )
+        fragment_payload = fresh.model_dump(mode="json")
+        fragment_snapshot_hash = _fragment_snapshot_hash(
+            fragment_payload
+        )
+        if (
+            previous is None
+            or _entry_fragment_snapshot_hash(previous)
+            != fragment_snapshot_hash
+        ):
+            metadata_updated += 1
+
+        can_reuse = bool(
+            template_compatible
+            and previous
+            and previous.get("vector_content_hash")
+            == vector_content_hash
+            and previous.get("passage_text")
+            == passage_text
+            and isinstance(previous.get("embedding"), list)
+        )
+        if can_reuse:
+            embedding = [
+                float(value)
+                for value in previous["embedding"]
+            ]
+            reused += 1
+        else:
+            if encoder is None:
+                encoder = _default_encoder()
+            embedding = [
+                float(value)
+                for value in encoder(passage_text)
+            ]
+            if not embedding:
+                raise ValueError(
+                    "empty embedding for scoped fragment "
+                    f"{fragment_id}"
+                )
+            recomputed += 1
+            if previous is None:
+                added += 1
+
+        entries.append(
+            {
+                "fragment_id": fragment_id,
+                "source_type": fresh.source_type,
+                "document_id": fresh.document_id,
+                "content_hash": fresh.content_hash,
+                "vector_content_hash": vector_content_hash,
+                "fragment_snapshot_hash":
+                    fragment_snapshot_hash,
+                "passage_text": passage_text,
+                "fragment": fragment_payload,
+                "embedding": embedding,
+            }
+        )
+
+    entries.sort(
+        key=lambda entry: str(entry["fragment_id"])
+    )
+    dimensions = {
+        len(entry["embedding"])
+        for entry in entries
+    }
+    if len(dimensions) > 1:
+        raise ValueError(
+            "inconsistent note embedding dimensions after scoped attach"
+        )
+    expected_dimension = int(
+        previous_manifest.get("dimension") or 0
+    )
+    if dimensions and dimensions != {expected_dimension}:
+        raise ValueError(
+            "scoped note attach changed embedding dimension"
+        )
+
+    scoped_after = sum(
+        1
+        for entry in entries
+        if entry.get("document_id") == document_id
+        and str(entry["fragment_id"]) in target_ids
+    )
+    if scoped_after != len(fresh_by_id):
+        raise ValueError(
+            "scoped note attach did not publish every target fragment"
+        )
+
+    content_hash = _aggregate_content_hash(entries)
+    created_at = (
+        built_at
+        or datetime.now(timezone.utc).isoformat()
+    )
+    snapshot_version = previous_manifest.get(
+        "fragment_snapshot_version"
+    )
+    payload = {
+        "schema_version": INDEX_SCHEMA_VERSION,
+        "model": local_embedding_service.MODEL_NAME,
+        "dimension": expected_dimension,
+        "normalization": NORMALIZE_EMBEDDINGS,
+        "batch_size": ENCODE_BATCH_SIZE,
+        "passage_template": PASSAGE_TEMPLATE_VERSION,
+        "fragment_snapshot_version":
+            snapshot_version,
+        "content_hash": content_hash,
+        "count": len(entries),
+        "built_at": created_at,
+        "entries": entries,
+    }
+    payload_bytes = _json_bytes(payload)
+    payload_sha = hashlib.sha256(
+        payload_bytes
+    ).hexdigest()
+    generation_name = (
+        f"notes-{content_hash[:16]}-"
+        f"{payload_sha[:16]}.json"
+    )
+    manifest = {
+        "status": "ready",
+        "schema_version": INDEX_SCHEMA_VERSION,
+        "model": local_embedding_service.MODEL_NAME,
+        "dimension": expected_dimension,
+        "normalization": NORMALIZE_EMBEDDINGS,
+        "batch_size": ENCODE_BATCH_SIZE,
+        "source_types": list(NOTE_SOURCE_TYPES),
+        "excluded_origin_kinds":
+            list(EXCLUDED_NOTE_ORIGIN_KINDS),
+        "passage_template": PASSAGE_TEMPLATE_VERSION,
+        "fragment_snapshot_version":
+            snapshot_version,
+        "count": len(entries),
+        "content_hash": content_hash,
+        "index_file": generation_name,
+        "index_sha256": payload_sha,
+        "built_at": created_at,
+        "origin_counts": dict(
+            sorted(
+                Counter(
+                    _fragment_origin(entry["fragment"])
+                    for entry in entries
+                ).items()
+            )
+        ),
+    }
+
+    root.mkdir(parents=True, exist_ok=True)
+    generation = root / generation_name
+    generation_created = False
+    try:
+        if not generation.exists():
+            _atomic_write_bytes(
+                generation,
+                payload_bytes,
+            )
+            generation_created = True
+        elif (
+            hashlib.sha256(
+                generation.read_bytes()
+            ).hexdigest()
+            != payload_sha
+        ):
+            raise ValueError(
+                "existing scoped note generation hash mismatch"
+            )
+        _atomic_write_bytes(
+            root / MANIFEST_NAME,
+            _json_bytes(manifest),
+        )
+        with _INDEX_CACHE_LOCK:
+            _INDEX_CACHE.pop(
+                str(root.resolve()),
+                None,
+            )
+        _prune_old_generations(
+            root,
+            keep=generation_name,
+        )
+    except Exception:
+        if (
+            generation_created
+            and generation.is_file()
+        ):
+            generation.unlink()
+        raise
+
+    return {
+        **manifest,
+        "scope": "affected_fragment_ids_only",
+        "document_id": document_id,
+        "scoped_entry_count_before": sum(
+            1
+            for entry in previous_entries
+            if str(entry["fragment_id"]) in target_ids
+            and entry.get("document_id") == document_id
+        ),
+        "scoped_entry_count_after": scoped_after,
+        "reused_count": reused,
+        "recomputed_count": recomputed,
+        "added_count": added,
+        "metadata_updated_count": metadata_updated,
+        "unrelated_preserved_count":
+            len(previous_entries)
+            - sum(
+                1
+                for entry in previous_entries
+                if str(entry["fragment_id"]) in target_ids
+            ),
+        "full_rebuild_performed": False,
+        "orphan_delete_performed": False,
+        "elapsed_ms": round(
+            (time.perf_counter() - started) * 1000,
+            2,
+        ),
+        "vector_write_performed": True,
+        "production_db_write_performed": False,
+        "zotero_db_write_performed": False,
+        "llm_called": False,
+    }
+
+
 def get_zotero_note_vector_status(
     *, index_dir: str | Path = ZOTERO_NOTE_VECTOR_DIR
 ) -> dict[str, Any]:

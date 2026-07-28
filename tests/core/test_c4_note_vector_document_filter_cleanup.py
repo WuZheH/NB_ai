@@ -199,6 +199,100 @@ def test_scoped_note_vector_refresh_ignores_unrelated_live_drift(
     assert scoped["results"] == []
 
 
+def test_scoped_note_vector_attach_maps_imported_document_without_reembedding(
+    tmp_path,
+) -> None:
+    index_dir = tmp_path / "note-index"
+    target_detached = _note(None)
+    unrelated = _note(20).model_copy(
+        update={
+            "fragment_id": "unrelated-fragment",
+            "zotero_annotation_key": "UNRELATED1",
+            "note_text": "unrelated note text",
+            "content_hash": "unrelated-content-hash",
+        }
+    )
+    note_vector_index.build_zotero_note_vectors(
+        index_dir=index_dir,
+        fragments=[target_detached, unrelated],
+        encode_text=lambda _text: [1.0, 0.0],
+    )
+    _manifest, before_entries = note_vector_index._load_existing(
+        index_dir,
+        required=True,
+    )
+    unrelated_before = next(
+        entry
+        for entry in before_entries
+        if entry["fragment_id"] == "unrelated-fragment"
+    )
+
+    result = (
+        note_vector_index
+        .attach_zotero_note_vector_document_scope(
+            8,
+            index_dir=index_dir,
+            fragments=[_note(8)],
+            encode_text=lambda _text: (
+                (_ for _ in ()).throw(
+                    AssertionError(
+                        "metadata-only attach must reuse embedding"
+                    )
+                )
+            ),
+        )
+    )
+
+    assert result["scope"] == "affected_fragment_ids_only"
+    assert result["scoped_entry_count_after"] == 1
+    assert result["recomputed_count"] == 0
+    assert result["full_rebuild_performed"] is False
+    assert result["orphan_delete_performed"] is False
+
+    _manifest, after_entries = note_vector_index._load_existing(
+        index_dir,
+        required=True,
+    )
+    unrelated_after = next(
+        entry
+        for entry in after_entries
+        if entry["fragment_id"] == "unrelated-fragment"
+    )
+    assert unrelated_after == unrelated_before
+
+    scoped = note_vector_index.search_zotero_note_vectors(
+        "对数",
+        source_types=("zotero_annotation_comment",),
+        document_ids=(8,),
+        index_dir=index_dir,
+        encode_query=lambda _query: [1.0, 0.0],
+    )
+    assert len(scoped["results"]) == 1
+    assert scoped["results"][0]["fragment"]["document_id"] == 8
+
+
+def test_scoped_note_vector_attach_refuses_another_document_mapping(
+    tmp_path,
+) -> None:
+    index_dir = tmp_path / "note-index"
+    note_vector_index.build_zotero_note_vectors(
+        index_dir=index_dir,
+        fragments=[_note(20)],
+        encode_text=lambda _text: [1.0, 0.0],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="would steal another document mapping",
+    ):
+        note_vector_index.attach_zotero_note_vector_document_scope(
+            8,
+            index_dir=index_dir,
+            fragments=[_note(8)],
+            encode_text=lambda _text: [1.0, 0.0],
+        )
+
+
 
 def test_scoped_refresh_preserves_legacy_unrelated_entry_exactly(
     tmp_path,

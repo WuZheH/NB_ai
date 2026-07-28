@@ -15,6 +15,8 @@ from uuid import uuid4
 
 from app.core.database import connect_readonly_sqlite
 from app.core.paths import DATA_DIR, DEFAULT_DB_PATH, LANCEDB_DIR
+from app.domains.retrieval import fragment_repository, note_vector_index
+from app.domains.retrieval.result_contracts import NOTE_SOURCE_TYPES
 from app.services import (
     book_import_service,
     commit_book_service,
@@ -26,6 +28,9 @@ from app.services.retrieval import fts_index_service, fts_status_service
 from app.services.retrieval.fts_status_service import (
     DEFAULT_INDEX_PATH,
     DEFAULT_MANIFEST_PATH,
+)
+from app.services.retrieval.source_registry import (
+    RetrievalSourceRegistry,
 )
 from app.services.pdf_parser_backends import (
     PYMUPDF_BACKEND,
@@ -124,6 +129,11 @@ def _commit_selected_book_import_locked(
     fts_manifest_path = Path(runtime.fts_manifest_path).resolve(strict=False)
     vector_store_path = Path(runtime.vector_store_path).resolve(strict=False)
     vector_manifest_path = Path(runtime.vector_manifest_path).resolve(strict=False)
+    zotero_note_vector_path = (
+        data_root
+        / "vector_store"
+        / "zotero_user_notes_v1"
+    )
 
     if runtime.persistence_scope not in {"tempdb", "production"}:
         raise DirectionBSelectedBookImportError(
@@ -188,6 +198,24 @@ def _commit_selected_book_import_locked(
                 else "zotero_direction_b_temp_fts_not_ready"
             ),
             message="Direction-B retrieval FTS is not ready.",
+            status_code=503,
+        )
+
+    if (
+        production
+        and not (
+            zotero_note_vector_path
+            / note_vector_index.MANIFEST_NAME
+        ).is_file()
+    ):
+        raise DirectionBSelectedBookImportError(
+            code=(
+                "zotero_direction_b_production_"
+                "note_vectors_not_ready"
+            ),
+            message=(
+                "Direction-B Zotero note vectors are not ready."
+            ),
             status_code=503,
         )
 
@@ -277,6 +305,10 @@ def _commit_selected_book_import_locked(
         / "vector_store"
         / vector_manifest_path.name
     )
+    staging_zotero_note_vector_path = (
+        staging_root
+        / "n"
+    )
 
     try:
         _prepare_derived_staging(
@@ -288,6 +320,12 @@ def _commit_selected_book_import_locked(
             staging_fts_manifest=staging_fts_manifest,
             staging_vector_store=staging_vector_store,
             staging_vector_manifest=staging_vector_manifest,
+            zotero_note_vector_path=(
+                zotero_note_vector_path
+            ),
+            staging_zotero_note_vector_path=(
+                staging_zotero_note_vector_path
+            ),
         )
         rollback_snapshot = _create_rollback_copy(path)
     except Exception:
@@ -493,6 +531,62 @@ def _commit_selected_book_import_locked(
                         "unsafe note vector sync result"
                     )
 
+            native_note_vector_sync: dict[str, Any] = {
+                "status": "skipped",
+                "scope": "affected_fragment_ids_only",
+                "reason": "note_vector_index_not_present",
+                "scoped_entry_count_after": 0,
+                "full_rebuild_performed": False,
+                "orphan_delete_performed": False,
+            }
+            if (
+                staging_zotero_note_vector_path
+                / note_vector_index.MANIFEST_NAME
+            ).is_file():
+                native_note_fragments = (
+                    _native_note_fragments_for_document(
+                        source_db_path=post_write_snapshot,
+                        data_root=data_root,
+                        document_id=document_id,
+                    )
+                )
+                if native_note_fragments:
+                    native_note_vector_sync = (
+                        note_vector_index
+                        .attach_zotero_note_vector_document_scope(
+                            document_id,
+                            fragments=native_note_fragments,
+                            index_dir=(
+                                staging_zotero_note_vector_path
+                            ),
+                        )
+                    )
+                else:
+                    native_note_vector_sync = {
+                        "status": "skipped",
+                        "scope": "affected_fragment_ids_only",
+                        "reason": "no_native_note_fragments",
+                        "scoped_entry_count_after": 0,
+                        "full_rebuild_performed": False,
+                        "orphan_delete_performed": False,
+                    }
+
+                if (
+                    native_note_vector_sync.get("scope")
+                    != "affected_fragment_ids_only"
+                    or native_note_vector_sync.get(
+                        "full_rebuild_performed"
+                    )
+                    is not False
+                    or native_note_vector_sync.get(
+                        "orphan_delete_performed"
+                    )
+                    is not False
+                ):
+                    raise RuntimeError(
+                        "unsafe native note vector sync result"
+                    )
+
         except DirectionBSelectedBookImportError:
             raise
         except Exception as exc:
@@ -517,6 +611,9 @@ def _commit_selected_book_import_locked(
             fts_manifest_path=fts_manifest_path,
             vector_store_path=vector_store_path,
             vector_manifest_path=vector_manifest_path,
+            zotero_note_vector_path=(
+                zotero_note_vector_path
+            ),
         )
 
         publish_attempted = True
@@ -530,6 +627,12 @@ def _commit_selected_book_import_locked(
                 fts_manifest_path=fts_manifest_path,
                 vector_store_path=vector_store_path,
                 vector_manifest_path=vector_manifest_path,
+                staging_zotero_note_vector_path=(
+                    staging_zotero_note_vector_path
+                ),
+                zotero_note_vector_path=(
+                    zotero_note_vector_path
+                ),
             )
         except Exception as exc:
             raise DirectionBSelectedBookImportError(
@@ -552,6 +655,12 @@ def _commit_selected_book_import_locked(
                 runtime=runtime,
                 document_id=document_id,
                 expected_db_sha256=after_db_sha256,
+                expected_native_note_vector_count=int(
+                    native_note_vector_sync.get(
+                        "scoped_entry_count_after"
+                    )
+                    or 0
+                ),
             )
 
         return {
@@ -583,6 +692,9 @@ def _commit_selected_book_import_locked(
             "note_vector_sync": dict(
                 note_vector_sync
             ),
+            "native_note_vector_sync": dict(
+                native_note_vector_sync
+            ),
             "body_importer": (
                 "core_book_import"
                 if body_importer is None
@@ -600,6 +712,9 @@ def _commit_selected_book_import_locked(
                 )
                 or note_vector_sync.get(
                     "lancedb_writes_performed"
+                )
+                or native_note_vector_sync.get(
+                    "vector_write_performed"
                 )
             ),
             "fts_write_performed": True,
@@ -624,6 +739,9 @@ def _commit_selected_book_import_locked(
                     fts_manifest_path=fts_manifest_path,
                     vector_store_path=vector_store_path,
                     vector_manifest_path=vector_manifest_path,
+                    zotero_note_vector_path=(
+                        zotero_note_vector_path
+                    ),
                 )
             except Exception as rollback_exc:
                 derived_rollback_exc = rollback_exc
@@ -770,6 +888,8 @@ def _prepare_derived_staging(
     staging_fts_manifest: Path,
     staging_vector_store: Path,
     staging_vector_manifest: Path,
+    zotero_note_vector_path: Path,
+    staging_zotero_note_vector_path: Path,
 ) -> None:
     staging_fts_index.parent.mkdir(parents=True, exist_ok=False)
     staging_vector_store.parent.mkdir(parents=True, exist_ok=False)
@@ -779,6 +899,11 @@ def _prepare_derived_staging(
         shutil.copytree(vector_store_path, staging_vector_store)
     if vector_manifest_path.is_file():
         shutil.copy2(vector_manifest_path, staging_vector_manifest)
+    if zotero_note_vector_path.is_dir():
+        shutil.copytree(
+            zotero_note_vector_path,
+            staging_zotero_note_vector_path,
+        )
 
 
 def _passage_source_ids_for_document(
@@ -810,6 +935,30 @@ def _passage_source_ids_for_document(
     ]
 
 
+def _native_note_fragments_for_document(
+    *,
+    source_db_path: Path,
+    data_root: Path,
+    document_id: int,
+) -> list[Any]:
+    registry = RetrievalSourceRegistry(
+        research_db_path=source_db_path,
+        zotero_snapshot_path=(
+            data_root
+            / "zotero"
+            / "snapshot"
+            / "zotero.sqlite"
+        ),
+        notes_root=data_root / "notes",
+        project_root=data_root.parent,
+    )
+    return fragment_repository.list_notebook_fragments(
+        source_types=NOTE_SOURCE_TYPES,
+        document_ids=(document_id,),
+        registry=registry,
+    )
+
+
 def _backup_derived_artifacts(
     *,
     rollback_root: Path,
@@ -817,6 +966,7 @@ def _backup_derived_artifacts(
     fts_manifest_path: Path,
     vector_store_path: Path,
     vector_manifest_path: Path,
+    zotero_note_vector_path: Path,
 ) -> dict[str, Any]:
     rollback_root.mkdir(
         parents=True,
@@ -828,6 +978,8 @@ def _backup_derived_artifacts(
         "fts_manifest": fts_manifest_path.is_file(),
         "vector_store": vector_store_path.is_dir(),
         "vector_manifest": vector_manifest_path.is_file(),
+        "zotero_note_vectors":
+            zotero_note_vector_path.is_dir(),
         "fts_index_sha256": (
             _sha256_file(fts_index_path)
             if fts_index_path.is_file()
@@ -846,6 +998,13 @@ def _backup_derived_artifacts(
         "vector_manifest_sha256": (
             _sha256_file(vector_manifest_path)
             if vector_manifest_path.is_file()
+            else None
+        ),
+        "zotero_note_vector_fingerprint": (
+            _tree_fingerprint(
+                zotero_note_vector_path
+            )
+            if zotero_note_vector_path.is_dir()
             else None
         ),
     }
@@ -915,6 +1074,26 @@ def _backup_derived_artifacts(
                 "verification failed"
             )
 
+    if state["zotero_note_vectors"]:
+        target = (
+            rollback_root
+            / "zotero_user_notes_v1"
+        )
+        shutil.copytree(
+            zotero_note_vector_path,
+            target,
+        )
+        if (
+            _tree_fingerprint(target)
+            != state[
+                "zotero_note_vector_fingerprint"
+            ]
+        ):
+            raise RuntimeError(
+                "Zotero note-vector rollback backup "
+                "verification failed"
+            )
+
     return state
 
 
@@ -928,6 +1107,8 @@ def _publish_staged_derived_indexes(
     fts_manifest_path: Path,
     vector_store_path: Path,
     vector_manifest_path: Path,
+    staging_zotero_note_vector_path: Path,
+    zotero_note_vector_path: Path,
 ) -> None:
     os.replace(staging_fts_index, fts_index_path)
     os.replace(staging_fts_manifest, fts_manifest_path)
@@ -945,6 +1126,41 @@ def _publish_staged_derived_indexes(
     if staging_vector_manifest.is_file():
         vector_manifest_path.parent.mkdir(parents=True, exist_ok=True)
         os.replace(staging_vector_manifest, vector_manifest_path)
+    if staging_zotero_note_vector_path.is_dir():
+        retired_note_vectors = (
+            staging_zotero_note_vector_path.parent
+            / ".retired-zotero-user-notes"
+        )
+        if zotero_note_vector_path.exists():
+            os.replace(
+                zotero_note_vector_path,
+                retired_note_vectors,
+            )
+        try:
+            os.replace(
+                staging_zotero_note_vector_path,
+                zotero_note_vector_path,
+            )
+        except Exception:
+            if (
+                retired_note_vectors.exists()
+                and not zotero_note_vector_path.exists()
+            ):
+                os.replace(
+                    retired_note_vectors,
+                    zotero_note_vector_path,
+                )
+            raise
+        _best_effort_remove_generated_tree(
+            retired_note_vectors
+        )
+        with note_vector_index._INDEX_CACHE_LOCK:
+            note_vector_index._INDEX_CACHE.pop(
+                str(
+                    zotero_note_vector_path.resolve()
+                ),
+                None,
+            )
 
 
 def _restore_derived_artifacts(
@@ -955,6 +1171,7 @@ def _restore_derived_artifacts(
     fts_manifest_path: Path,
     vector_store_path: Path,
     vector_manifest_path: Path,
+    zotero_note_vector_path: Path,
 ) -> None:
     _restore_file(
         fts_index_path,
@@ -983,6 +1200,21 @@ def _restore_derived_artifacts(
         rollback_root / "vector_manifest.json",
         existed=bool(state["vector_manifest"]),
     )
+
+    if zotero_note_vector_path.exists():
+        _remove_generated_tree(
+            zotero_note_vector_path
+        )
+    if state["zotero_note_vectors"]:
+        shutil.copytree(
+            rollback_root / "zotero_user_notes_v1",
+            zotero_note_vector_path,
+        )
+    with note_vector_index._INDEX_CACHE_LOCK:
+        note_vector_index._INDEX_CACHE.pop(
+            str(zotero_note_vector_path.resolve()),
+            None,
+        )
 
     if (
         state["fts_index"]
@@ -1021,11 +1253,29 @@ def _restore_derived_artifacts(
         )
 
     if (
+        state["zotero_note_vectors"]
+        and _tree_fingerprint(
+            zotero_note_vector_path
+        )
+        != state["zotero_note_vector_fingerprint"]
+    ):
+        raise RuntimeError(
+            "Zotero note-vector rollback verification failed"
+        )
+
+    if (
         not state["vector_store"]
         and vector_store_path.exists()
     ):
         raise RuntimeError(
             "Vector rollback left an unexpected store"
+        )
+    if (
+        not state["zotero_note_vectors"]
+        and zotero_note_vector_path.exists()
+    ):
+        raise RuntimeError(
+            "Zotero note-vector rollback left an unexpected store"
         )
 
     if (
@@ -1453,6 +1703,7 @@ def _verify_production_final_state(
     runtime: SelectedBookImportRuntime,
     document_id: int,
     expected_db_sha256: str,
+    expected_native_note_vector_count: int,
 ) -> None:
     if (
         _sha256_file(runtime.db_path)
@@ -1563,6 +1814,35 @@ def _verify_production_final_state(
             message=(
                 "Production retrieval FTS is not ready "
                 "after selected-book import."
+            ),
+            status_code=500,
+        )
+
+    note_vector_impact = (
+        note_vector_index
+        .inspect_zotero_note_vector_document_impact(
+            document_id,
+            index_dir=(
+                Path(runtime.data_dir)
+                / "vector_store"
+                / "zotero_user_notes_v1"
+            ),
+        )
+    )
+    if int(
+        note_vector_impact.get(
+            "document_entry_count"
+        )
+        or 0
+    ) != int(expected_native_note_vector_count):
+        raise DirectionBSelectedBookImportError(
+            code=(
+                "zotero_direction_b_"
+                "production_final_verify_failed"
+            ),
+            message=(
+                "Production Zotero note vectors could not "
+                "be verified."
             ),
             status_code=500,
         )
