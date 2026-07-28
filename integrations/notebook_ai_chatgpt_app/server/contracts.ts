@@ -194,6 +194,8 @@ export interface ImportDocumentResponse {
   chunk_count: number;
   duplicate_status: string;
   error_code: string | null;
+  already_completed: boolean;
+  replayed_receipt: boolean;
 }
 
 export interface DeletePreviewResponse {

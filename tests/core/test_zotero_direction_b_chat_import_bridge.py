@@ -471,6 +471,8 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
             "not_detected"
         ),
         "error_code": None,
+        "already_completed": False,
+        "replayed_receipt": False,
     }
 
     with sqlite3.connect(
@@ -577,21 +579,64 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
             "must remain untouched"
         )
 
-    with pytest.raises(
-        chat_tool_service.ChatToolError
-    ) as replay:
-        chat_tool_service.import_document(
+    replay = (
+        chat_tool_service
+        .import_document(
             confirmation_token=bridge[
                 "confirmation_token"
             ],
             confirmed=True,
             runtime=runtime,
         )
-
-    assert replay.value.error_code == (
-        "chat_import_confirmation_"
-        "invalid_or_expired"
     )
+
+    assert replay == {
+        "status": "committed",
+        "document_id": 1,
+        "title": "Selected Book",
+        "document_type": "book",
+        "chunk_count": 1,
+        "duplicate_status": (
+            "not_detected"
+        ),
+        "error_code": None,
+        "already_completed": True,
+        "replayed_receipt": True,
+    }
+
+    with sqlite3.connect(
+        db_path
+    ) as connection:
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM documents
+            WHERE id = 1
+            """
+        ).fetchone()[0] == 1
+
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM knowledge_chunks
+            WHERE document_id = 1
+            """
+        ).fetchone()[0] == 1
+
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM personal_notes
+            WHERE document_id = 1
+            """
+        ).fetchone()[0] == 2
+
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM note_evidence_links
+            """
+        ).fetchone()[0] == 2
 
 
 def test_zotero_bridge_output_is_compact(
@@ -1427,7 +1472,11 @@ def test_public_chat_zotero_temp_preview_registers_chat_confirmation(
     assert result["confirmation_token"] == "chat-confirmation-token"
     assert result["confirmation_expires_in_seconds"] == 600
     assert result["estimated_pages"] == 12
-    assert result["estimated_chunks"] == 36
+    assert result["estimated_chunks"] is None
+    assert (
+        "chunk_count_not_precomputed_by_preview"
+        in result["warnings"]
+    )
     assert "internal-b2-token" not in str(result)
 
 

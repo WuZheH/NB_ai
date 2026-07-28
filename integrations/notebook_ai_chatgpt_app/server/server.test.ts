@@ -129,6 +129,8 @@ class MockNotebookClient extends NotebookClient {
       chunk_count: 6,
       duplicate_status: "not_detected",
       error_code: null,
+      already_completed: false,
+      replayed_receipt: false,
     };
   }
 
@@ -295,7 +297,14 @@ test("all eight tools call only the backend adapter", async () => {
       name: "import_document",
       arguments: { confirmation_token: "i".repeat(40), confirmed: true },
     });
-    assert.equal((imported.structuredContent as { document_id: number }).document_id, 3);
+    const importedPayload = imported.structuredContent as {
+      document_id: number;
+      already_completed: boolean;
+      replayed_receipt: boolean;
+    };
+    assert.equal(importedPayload.document_id, 3);
+    assert.equal(importedPayload.already_completed, false);
+    assert.equal(importedPayload.replayed_receipt, false);
     const deletePreview = await client.callTool({ name: "delete_preview", arguments: { document_id: 3 } });
     assert.equal((deletePreview.structuredContent as { safe_to_delete: boolean }).safe_to_delete, true);
     const deleted = await client.callTool({

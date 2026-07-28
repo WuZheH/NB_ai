@@ -31,6 +31,7 @@ from app.services.library import document_deletion_service
 
 DELETE_CONFIRMATION_TTL_SECONDS = document_deletion_service.PREVIEW_TTL_SECONDS
 IMPORT_CONFIRMATION_TTL_SECONDS = 10 * 60
+IMPORT_COMPLETION_REPLAY_TTL_SECONDS = 60 * 60
 MAX_IMPORT_BYTES = 200 * 1024 * 1024
 _SAFE_FILENAME = re.compile(r"^[^\\/:*?\"<>|\x00-\x1f]{1,255}$")
 _TOKEN_LOCK = threading.RLock()
@@ -39,6 +40,8 @@ _IMPORT_CONFIRMATIONS: dict[
     str,
     "ImportConfirmation | ZoteroImportConfirmation",
 ] = {}
+_IMPORT_IN_PROGRESS: set[str] = set()
+_IMPORT_COMPLETIONS: dict[str, "ImportCompletion"] = {}
 
 
 class ChatToolError(RuntimeError):
@@ -95,6 +98,12 @@ class ZoteroImportConfirmation:
     annotation_count: int
     child_note_count: int
     duplicate_status: str
+    expires_at: float
+
+
+@dataclass(frozen=True)
+class ImportCompletion:
+    response: dict[str, Any]
     expires_at: float
 
 
@@ -380,9 +389,12 @@ def import_preview(
         "duplicate_status": "duplicate" if duplicate else "not_detected",
         "existing_document_id": classification.get("existing_document_id") if duplicate else None,
         "estimated_pages": page_count,
-        "estimated_chunks": max(1, page_count * 3) if page_count else None,
+        "estimated_chunks": None,
         "document_type": str(classification.get("document_type") or "paper"),
-        "warnings": [str(value) for value in classification.get("reasons") or []][:8],
+        "warnings": (
+            [str(value) for value in classification.get("reasons") or []][:7]
+            + ["chunk_count_not_precomputed_by_preview"]
+        ),
         "confirmation_token": token,
         "confirmation_expires_in_seconds": IMPORT_CONFIRMATION_TTL_SECONDS if token else None,
         "attachment_choices": [],
@@ -472,10 +484,13 @@ def _import_zotero_selected_book_preview(
         "estimated_pages": None,
         "estimated_chunks": None,
         "document_type": "book",
-        "warnings": [
-            str(value)
-            for value in preview.get("warnings") or []
-        ][:8],
+        "warnings": (
+            [
+                str(value)
+                for value in preview.get("warnings") or []
+            ][:7]
+            + ["chunk_count_not_precomputed_by_preview"]
+        ),
         "confirmation_token": None,
         "confirmation_expires_in_seconds": None,
         "attachment_choices": safe_choices,
@@ -522,14 +537,7 @@ def _import_zotero_selected_book_preview(
             "filename": str(selected.get("file_name") or "") or None,
             "pdf_sha256": str(selected.get("pdf_sha256") or "") or None,
             "estimated_pages": selected.get("page_count"),
-            "estimated_chunks": (
-                max(1, int(selected["page_count"]) * 3)
-                if (
-                    isinstance(selected.get("page_count"), int)
-                    and selected["page_count"] > 0
-                )
-                else None
-            ),
+            "estimated_chunks": None,
         }
     )
 
@@ -764,63 +772,102 @@ def import_document(
             status_code=422,
         )
 
-    actual_runtime = (
-        runtime
-        or ChatToolRuntime()
-    )
+    actual_runtime = runtime or ChatToolRuntime()
 
-    record = _consume_import_confirmation(
+    token_digest, record, replay = _begin_import_confirmation(
         confirmation_token
     )
 
-    if isinstance(
-        record,
-        ZoteroImportConfirmation,
-    ):
-        runtime_db = Path(
-            actual_runtime.db_path
-        ).resolve(strict=False)
-        runtime_data = Path(
-            actual_runtime.data_dir
-        ).resolve(strict=False)
+    if replay is not None:
+        return replay
 
-        if (
-            runtime_db != record.target_db_path
-            or runtime_data != record.target_data_dir
-        ):
-            raise ChatToolError(
-                "zotero_import_target_changed",
-                (
-                    "The Zotero import target "
-                    "changed after preview."
-                ),
-                status_code=409,
-            )
-
-        importer = (
-            actual_runtime
-            .commit_zotero_import
-            or _commit_confirmed_zotero_import
-        )
-
-    else:
-        _validate_import_source_unchanged(
-            record
-        )
-
-        importer = (
-            actual_runtime.commit_import
-            or _commit_confirmed_import
-        )
+    assert record is not None
 
     try:
+        if isinstance(record, ZoteroImportConfirmation):
+            runtime_db = Path(
+                actual_runtime.db_path
+            ).resolve(strict=False)
+            runtime_data = Path(
+                actual_runtime.data_dir
+            ).resolve(strict=False)
+
+            if (
+                runtime_db != record.target_db_path
+                or runtime_data != record.target_data_dir
+            ):
+                raise ChatToolError(
+                    "zotero_import_target_changed",
+                    (
+                        "The Zotero import target "
+                        "changed after preview."
+                    ),
+                    status_code=409,
+                )
+
+            importer = (
+                actual_runtime.commit_zotero_import
+                or _commit_confirmed_zotero_import
+            )
+        else:
+            _validate_import_source_unchanged(record)
+
+            importer = (
+                actual_runtime.commit_import
+                or _commit_confirmed_import
+            )
+
         result = importer(
             record=record,
             runtime=actual_runtime,
         )
+
+        duplicate_status = (
+            record.duplicate_status
+            if isinstance(record, ZoteroImportConfirmation)
+            else "not_detected"
+        )
+
+        response = {
+            "status": str(
+                result.get("status")
+                or "unknown"
+            ),
+            "document_id": result.get(
+                "document_id"
+            ),
+            "title": str(
+                result.get("title")
+                or record.title
+            ),
+            "document_type": (
+                record.document_type
+            ),
+            "chunk_count": int(
+                result.get("chunk_count")
+                or result.get("inserted_chunks")
+                or 0
+            ),
+            "duplicate_status": (
+                duplicate_status
+            ),
+            "error_code": result.get(
+                "error_code"
+            ),
+            "already_completed": False,
+            "replayed_receipt": False,
+        }
+
     except ChatToolError:
+        _fail_import_confirmation(
+            token_digest
+        )
         raise
+
     except Exception as exc:
+        _fail_import_confirmation(
+            token_digest
+        )
         raise ChatToolError(
             "import_document_failed",
             (
@@ -830,49 +877,12 @@ def import_document(
             status_code=500,
         ) from exc
 
-    duplicate_status = (
-        record.duplicate_status
-        if isinstance(
-            record,
-            ZoteroImportConfirmation,
-        )
-        else "not_detected"
+    _complete_import_confirmation(
+        token_digest,
+        response,
     )
 
-    return {
-        "status": str(
-            result.get("status")
-            or "unknown"
-        ),
-        "document_id": (
-            result.get(
-                "document_id"
-            )
-        ),
-        "title": str(
-            result.get("title")
-            or record.title
-        ),
-        "document_type": (
-            record.document_type
-        ),
-        "chunk_count": int(
-            result.get("chunk_count")
-            or result.get(
-                "inserted_chunks"
-            )
-            or 0
-        ),
-        "duplicate_status": (
-            duplicate_status
-        ),
-        "error_code": (
-            result.get(
-                "error_code"
-            )
-        ),
-    }
-
+    return response
 
 def _commit_confirmed_zotero_import(
     *,
@@ -1023,27 +1033,119 @@ def _consume_delete_confirmation(token: str) -> DeleteConfirmation:
     return record
 
 
-def _consume_import_confirmation(token: str) -> ImportConfirmation:
+def _begin_import_confirmation(
+    token: str,
+) -> tuple[
+    str,
+    ImportConfirmation | ZoteroImportConfirmation | None,
+    dict[str, Any] | None,
+]:
     digest = _token_digest(token)
+
     with _TOKEN_LOCK:
         _purge_expired_tokens()
-        record = _IMPORT_CONFIRMATIONS.pop(digest, None)
-    if record is None:
-        raise ChatToolError(
-            "chat_import_confirmation_invalid_or_expired",
-            "Import confirmation is invalid or expired.",
-            status_code=409,
-        )
-    return record
 
+        completion = _IMPORT_COMPLETIONS.get(
+            digest
+        )
+
+        if completion is not None:
+            replay = dict(
+                completion.response
+            )
+            replay["already_completed"] = True
+            replay["replayed_receipt"] = True
+
+            return digest, None, replay
+
+        if digest in _IMPORT_IN_PROGRESS:
+            raise ChatToolError(
+                "chat_import_operation_in_progress",
+                (
+                    "The confirmed import "
+                    "is already in progress."
+                ),
+                status_code=409,
+            )
+
+        record = _IMPORT_CONFIRMATIONS.get(
+            digest
+        )
+
+        if record is None:
+            raise ChatToolError(
+                (
+                    "chat_import_confirmation_"
+                    "invalid_or_expired"
+                ),
+                (
+                    "Import confirmation "
+                    "is invalid or expired."
+                ),
+                status_code=409,
+            )
+
+        _IMPORT_IN_PROGRESS.add(
+            digest
+        )
+
+        return digest, record, None
+
+
+def _complete_import_confirmation(
+    digest: str,
+    response: dict[str, Any],
+) -> None:
+    with _TOKEN_LOCK:
+        _IMPORT_CONFIRMATIONS.pop(
+            digest,
+            None,
+        )
+        _IMPORT_IN_PROGRESS.discard(
+            digest
+        )
+        _IMPORT_COMPLETIONS[digest] = (
+            ImportCompletion(
+                response=dict(response),
+                expires_at=(
+                    time.monotonic()
+                    + IMPORT_COMPLETION_REPLAY_TTL_SECONDS
+                ),
+            )
+        )
+
+
+def _fail_import_confirmation(
+    digest: str,
+) -> None:
+    with _TOKEN_LOCK:
+        _IMPORT_CONFIRMATIONS.pop(
+            digest,
+            None,
+        )
+        _IMPORT_IN_PROGRESS.discard(
+            digest
+        )
 
 def _purge_expired_tokens() -> None:
     now = time.monotonic()
-    for store in (_DELETE_CONFIRMATIONS, _IMPORT_CONFIRMATIONS):
-        expired = [key for key, record in store.items() if record.expires_at <= now]
-        for key in expired:
-            store.pop(key, None)
 
+    for store in (
+        _DELETE_CONFIRMATIONS,
+        _IMPORT_CONFIRMATIONS,
+        _IMPORT_COMPLETIONS,
+    ):
+        expired = [
+            key
+            for key, record in store.items()
+            if record.expires_at <= now
+        ]
+
+        for key in expired:
+            store.pop(
+                key,
+                None,
+            )
 
 def _validate_import_source_unchanged(record: ImportConfirmation) -> None:
     try:
@@ -1116,3 +1218,5 @@ def reset_chat_tool_state_for_tests() -> None:
     with _TOKEN_LOCK:
         _DELETE_CONFIRMATIONS.clear()
         _IMPORT_CONFIRMATIONS.clear()
+        _IMPORT_IN_PROGRESS.clear()
+        _IMPORT_COMPLETIONS.clear()

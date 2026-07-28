@@ -195,6 +195,11 @@ def test_import_preview_reads_inbox_without_writing_and_commit_uses_confirmation
     assert after_preview == before
     assert preview["pdf_sha256"] == hashlib.sha256(pdf.read_bytes()).hexdigest()
     assert preview["estimated_pages"] == 3
+    assert preview["estimated_chunks"] is None
+    assert (
+        "chunk_count_not_precomputed_by_preview"
+        in preview["warnings"]
+    )
     assert "pdf_path" not in preview
     with pytest.raises(chat_tool_service.ChatToolError) as missing:
         chat_tool_service.import_document(
@@ -210,7 +215,87 @@ def test_import_preview_reads_inbox_without_writing_and_commit_uses_confirmation
     )
     assert result["status"] == "committed"
     assert result["document_id"] == 9
+    assert result["already_completed"] is False
+    assert result["replayed_receipt"] is False
     assert len(committed) == 1
+
+    replay = chat_tool_service.import_document(
+        confirmation_token=preview[
+            "confirmation_token"
+        ],
+        confirmed=True,
+        runtime=runtime,
+    )
+
+    assert replay["status"] == "committed"
+    assert replay["document_id"] == 9
+    assert replay["chunk_count"] == 6
+    assert replay["already_completed"] is True
+    assert replay["replayed_receipt"] is True
+    assert len(committed) == 1
+
+
+def test_import_rejects_same_token_while_operation_in_progress(
+    tmp_path: Path,
+) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+
+    pdf = inbox / "fixture.pdf"
+    pdf.write_bytes(
+        b"%PDF-1.4\nfixture"
+    )
+
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=tmp_path / "data" / "db.sqlite",
+        data_dir=tmp_path / "data",
+        inbox_root=inbox,
+        classify_pdf=lambda _path, **_kwargs: {
+            "title": "Fixture",
+            "document_type": "paper",
+            "object_import_mode": "full_document",
+            "duplicate": False,
+            "signals": {
+                "page_count": 1,
+            },
+        },
+        commit_import=lambda **_kwargs: {
+            "status": "committed",
+            "document_id": 1,
+            "chunk_count": 1,
+        },
+    )
+
+    preview = chat_tool_service.import_preview(
+        runtime=runtime
+    )
+    token = preview["confirmation_token"]
+    digest = chat_tool_service._token_digest(
+        token
+    )
+
+    chat_tool_service._IMPORT_IN_PROGRESS.add(
+        digest
+    )
+
+    try:
+        with pytest.raises(
+            chat_tool_service.ChatToolError
+        ) as blocked:
+            chat_tool_service.import_document(
+                confirmation_token=token,
+                confirmed=True,
+                runtime=runtime,
+            )
+
+        assert (
+            blocked.value.error_code
+            == "chat_import_operation_in_progress"
+        )
+    finally:
+        chat_tool_service._IMPORT_IN_PROGRESS.discard(
+            digest
+        )
 
 
 def test_import_rejects_changed_pdf_and_duplicate_without_commit_token(tmp_path: Path) -> None:

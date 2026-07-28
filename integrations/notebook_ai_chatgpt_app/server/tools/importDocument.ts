@@ -26,6 +26,8 @@ export const importDocumentOutputShape = {
   chunk_count: z.number().int().nonnegative(),
   duplicate_status: z.string(),
   error_code: z.string().nullable(),
+  already_completed: z.boolean(),
+  replayed_receipt: z.boolean(),
 };
 
 export async function runImportDocumentTool(client: NotebookClient, rawInput: unknown) {
