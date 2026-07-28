@@ -171,6 +171,7 @@ class InternalDeletionPlan:
     managed_pdf: Path | None
     deletion_options: dict[str, Any]
     row_counts: dict[str, int]
+    orphan_baseline: dict[str, int]
     manual_preservation_acknowledgment: dict[str, Any] | None
 
 
@@ -536,6 +537,13 @@ def retry_incomplete_cleanup(
                 "deletion_retry_document_still_exists",
                 "文档仍存在；不得用清理重试替代数据库删除。",
             )
+        retry_orphan_baseline = {
+            str(key): int(value)
+            for key, value in (
+                cleanup_plan.get("orphan_baseline")
+                or _global_orphan_counts(connection)
+            ).items()
+        }
     preview = dict(manifest.get("preview") or {})
     plan = InternalDeletionPlan(
         document_id=document_id,
@@ -559,6 +567,7 @@ def retry_incomplete_cleanup(
         ),
         deletion_options=_normalize_options(manifest.get("deletion_options")),
         row_counts={},
+        orphan_baseline=retry_orphan_baseline,
         manual_preservation_acknowledgment=(
             dict(manifest["manual_preservation_acknowledgment"])
             if manifest.get("manual_preservation_acknowledgment")
@@ -686,6 +695,7 @@ def _prepare_preview(
             document_id=document_id,
             chunk_ids=chunk_ids,
         )
+        orphan_baseline = _global_orphan_counts(connection)
 
     pdf_path = _document_pdf_path(document_row)
     pdf_descriptor = _path_descriptor(pdf_path, data_dir=runtime.data_dir, hash_file=True)
@@ -775,6 +785,7 @@ def _prepare_preview(
         "zotero_note_count": zotero_note_count,
         "review_count": review_count,
         "review_delete_count": review_delete_count,
+        "orphan_baseline": orphan_baseline,
         "database_impact_fingerprint": _database_impact_fingerprint(
             connection_path=db_path,
             document_id=document_id,
@@ -828,6 +839,7 @@ def _prepare_preview(
         "derived_markdown_files": [_path_descriptor(path, data_dir=runtime.data_dir, hash_file=True) for path in derived_files],
         "generated_cache": [_path_descriptor(path, data_dir=runtime.data_dir, hash_file=True) for path in cache_files],
         "deletion_blockers": blockers,
+        "orphan_baseline": orphan_baseline,
         "manual_preservation_acknowledgment": preservation,
         "warnings": warnings,
         "estimated_deleted_rows": estimated_deleted_rows,
@@ -869,6 +881,7 @@ def _prepare_preview(
         managed_pdf=managed_pdf,
         deletion_options=options,
         row_counts=row_counts,
+        orphan_baseline=orphan_baseline,
         manual_preservation_acknowledgment=manual_preservation_acknowledgment,
     )
     return PreparedPreview(public=public, plan=plan)
@@ -1195,12 +1208,9 @@ def _cleanup_files(plan: InternalDeletionPlan) -> dict[str, Any]:
 
 def _orphan_scan(plan: InternalDeletionPlan, *, runtime: DeletionRuntime) -> dict[str, Any]:
     with _readonly_connection(runtime.db_path) as connection:
+        global_orphans = _global_orphan_counts(connection)
         checks = {
             "document_rows": _count(connection, "documents", "id = ?", (plan.document_id,)),
-            "orphan_chunks": _scalar(connection, "SELECT COUNT(*) FROM knowledge_chunks AS child LEFT JOIN documents AS parent ON parent.id = child.document_id WHERE parent.id IS NULL"),
-            "orphan_nodes": _scalar(connection, "SELECT COUNT(*) FROM markdown_nodes AS child LEFT JOIN documents AS parent ON parent.id = child.document_id WHERE parent.id IS NULL"),
-            "orphan_evidence_links": _scalar(connection, "SELECT COUNT(*) FROM note_evidence_links AS child LEFT JOIN knowledge_chunks AS parent ON parent.id = child.chunk_id WHERE parent.id IS NULL") if _table_exists(connection, "note_evidence_links") else 0,
-            "orphan_document_object_links": _scalar(connection, "SELECT COUNT(*) FROM object_candidates AS child LEFT JOIN documents AS parent ON parent.id = child.document_id WHERE child.document_id IS NOT NULL AND parent.id IS NULL") if _table_exists(connection, "object_candidates") else 0,
             "dangling_personal_notes": _count(connection, "personal_notes", "document_id = ?", (plan.document_id,)) if _table_exists(connection, "personal_notes") else 0,
             "dangling_zotero_notes": _dangling_zotero_note_count(connection, plan),
             "dangling_review_artifacts": sum(
@@ -1247,12 +1257,73 @@ def _orphan_scan(plan: InternalDeletionPlan, *, runtime: DeletionRuntime) -> dic
 
     checks.update(
         {
+            **global_orphans,
             "fts_rows": fts_remaining,
             "orphan_vectors": vector_orphans,
             "orphan_note_vectors": note_vector_orphans,
         }
     )
-    return {"ok": all(value == 0 for value in checks.values()), **checks}
+    new_global_orphans = {
+        f"new_{key}": max(
+            0,
+            int(value) - int(plan.orphan_baseline.get(key, 0)),
+        )
+        for key, value in global_orphans.items()
+    }
+    target_checks = {
+        key: value
+        for key, value in checks.items()
+        if key not in global_orphans
+    }
+    return {
+        "ok": (
+            all(value == 0 for value in target_checks.values())
+            and all(value == 0 for value in new_global_orphans.values())
+        ),
+        **checks,
+        "orphan_baseline": dict(plan.orphan_baseline),
+        **new_global_orphans,
+    }
+
+
+def _global_orphan_counts(
+    connection: sqlite3.Connection,
+) -> dict[str, int]:
+    return {
+        "orphan_chunks": _scalar(
+            connection,
+            "SELECT COUNT(*) FROM knowledge_chunks AS child "
+            "LEFT JOIN documents AS parent ON parent.id = child.document_id "
+            "WHERE parent.id IS NULL",
+        ),
+        "orphan_nodes": _scalar(
+            connection,
+            "SELECT COUNT(*) FROM markdown_nodes AS child "
+            "LEFT JOIN documents AS parent ON parent.id = child.document_id "
+            "WHERE parent.id IS NULL",
+        ),
+        "orphan_evidence_links": (
+            _scalar(
+                connection,
+                "SELECT COUNT(*) FROM note_evidence_links AS child "
+                "LEFT JOIN knowledge_chunks AS parent "
+                "ON parent.id = child.chunk_id WHERE parent.id IS NULL",
+            )
+            if _table_exists(connection, "note_evidence_links")
+            else 0
+        ),
+        "orphan_document_object_links": (
+            _scalar(
+                connection,
+                "SELECT COUNT(*) FROM object_candidates AS child "
+                "LEFT JOIN documents AS parent "
+                "ON parent.id = child.document_id "
+                "WHERE child.document_id IS NOT NULL AND parent.id IS NULL",
+            )
+            if _table_exists(connection, "object_candidates")
+            else 0
+        ),
+    }
 
 
 def _create_recovery_package(
@@ -1309,6 +1380,7 @@ def _create_recovery_package(
                     "derived_files": [str(path) for path in plan.derived_files],
                     "generated_cache_files": [str(path) for path in plan.generated_cache_files],
                     "managed_pdf": str(plan.managed_pdf) if plan.managed_pdf is not None else None,
+                    "orphan_baseline": plan.orphan_baseline,
                 },
                 "preview": {key: value for key, value in preview.items() if key != "preview_token"},
             },

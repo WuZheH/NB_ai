@@ -948,6 +948,82 @@ def test_manual_preservation_rejects_changed_blocker_records(
     )
 
 
+def test_preexisting_unrelated_orphan_is_baselined_and_preserved(
+    tmp_path: Path,
+) -> None:
+    runtime, _harness = _runtime(tmp_path)
+    connection = sqlite3.connect(runtime.db_path)
+    connection.execute(
+        "INSERT INTO object_candidates VALUES "
+        "(32, 999, 'legacy-orphan', '', NULL, NULL, '[]', '[]')"
+    )
+    connection.commit()
+    connection.close()
+
+    preview = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+    )
+    assert preview["orphan_baseline"][
+        "orphan_document_object_links"
+    ] == 1
+    result = document_deletion_service.delete_document(
+        document_id=1,
+        preview_token=preview["preview_token"],
+        expected_document_revision=preview["document_revision"],
+        confirmation_text="删除",
+        runtime=runtime,
+    )
+    assert result["status"] == "completed"
+    assert result["orphan_scan"]["ok"] is True
+    assert result["orphan_scan"]["orphan_document_object_links"] == 1
+    assert result["orphan_scan"]["new_orphan_document_object_links"] == 0
+    assert (
+        sqlite3.connect(runtime.db_path)
+        .execute("SELECT COUNT(*) FROM object_candidates WHERE id=32")
+        .fetchone()[0]
+        == 1
+    )
+
+
+def test_new_unrelated_orphan_after_preview_marks_cleanup_incomplete(
+    tmp_path: Path,
+) -> None:
+    runtime, _harness = _runtime(tmp_path)
+    cleanup_fts = runtime.cleanup_fts
+
+    def cleanup_then_add_orphan(**kwargs):
+        result = cleanup_fts(**kwargs)
+        connection = sqlite3.connect(runtime.db_path)
+        connection.execute(
+            "INSERT INTO object_candidates VALUES "
+            "(32, 999, 'new-orphan', '', NULL, NULL, '[]', '[]')"
+        )
+        connection.commit()
+        connection.close()
+        return result
+
+    runtime = replace(runtime, cleanup_fts=cleanup_then_add_orphan)
+    preview = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+    )
+    result = document_deletion_service.delete_document(
+        document_id=1,
+        preview_token=preview["preview_token"],
+        expected_document_revision=preview["document_revision"],
+        confirmation_text="删除",
+        runtime=runtime,
+    )
+    assert result["status"] == "cleanup_incomplete"
+    assert result["orphan_scan"]["ok"] is False
+    assert result["orphan_scan"]["new_orphan_document_object_links"] == 1
+    assert any(
+        item["error_code"] == "deletion_orphan_scan_failed"
+        for item in result["remediation"]
+    )
+
+
 def test_database_failure_rolls_back_before_vector_or_file_cleanup(tmp_path: Path) -> None:
     runtime, harness = _runtime(tmp_path)
     connection = sqlite3.connect(runtime.db_path)
