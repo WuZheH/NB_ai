@@ -1366,43 +1366,19 @@ def _passage_source_rows_from_sqlite(
     if not database.is_file():
         raise ValueError("source_db_path must identify an existing SQLite database")
     requested = set(source_ids or [])
-    scoped_ids = [_parse_passage_source_id(source_id) for source_id in requested]
+    scoped_ids = sorted(
+        _parse_passage_source_id(source_id) for source_id in requested
+    )
     status_placeholders = ",".join("?" for _ in READ_LIBRARY_STATUSES)
-    scope_clause = ""
-    params: list[Any] = [*READ_LIBRARY_STATUSES]
+    scoped_batches: list[list[tuple[int, int]] | None]
     if scoped_ids:
-        scope_clause = " AND (" + " OR ".join(
-            "(documents.id = ? AND chunks.id = ?)" for _ in scoped_ids
-        ) + ")"
-        for document_id, chunk_id in scoped_ids:
-            params.extend((document_id, chunk_id))
-    query = f"""
-        SELECT
-            documents.id AS document_id,
-            documents.title AS document_title,
-            documents.document_type,
-            documents.object_import_mode,
-            documents.read_status,
-            chunks.id AS chunk_id,
-            chunks.document_id AS chunk_document_id,
-            chunks.chunk_index,
-            chunks.heading_path,
-            chunks.chunk_text,
-            chunks.content_hash,
-            chunks.pdf_page_start,
-            chunks.pdf_page_end,
-            chunks.chapter_id,
-            chunks.updated_at,
-            chapters.title AS chapter_title
-        FROM documents
-        JOIN knowledge_chunks AS chunks
-          ON chunks.document_id = documents.id
-        LEFT JOIN book_chapters AS chapters
-          ON chapters.id = chunks.chapter_id
-        WHERE documents.read_status IN ({status_placeholders})
-        {scope_clause}
-        ORDER BY documents.id, chunks.chunk_index, chunks.id
-    """
+        scoped_batches = [
+            scoped_ids[offset : offset + 400]
+            for offset in range(0, len(scoped_ids), 400)
+        ]
+    else:
+        scoped_batches = [None]
+    rows: list[sqlite3.Row] = []
     with connect_readonly_sqlite(
         database,
         resolve_strict=True,
@@ -1410,7 +1386,51 @@ def _passage_source_rows_from_sqlite(
         query_only=True,
         temp_store="MEMORY",
     ) as connection:
-        rows = connection.execute(query, tuple(params)).fetchall()
+        for scoped_batch in scoped_batches:
+            scope_clause = ""
+            params: list[Any] = [*READ_LIBRARY_STATUSES]
+            if scoped_batch:
+                scope_clause = " AND (" + " OR ".join(
+                    "(documents.id = ? AND chunks.id = ?)"
+                    for _ in scoped_batch
+                ) + ")"
+                for document_id, chunk_id in scoped_batch:
+                    params.extend((document_id, chunk_id))
+            query = f"""
+                SELECT
+                    documents.id AS document_id,
+                    documents.title AS document_title,
+                    documents.document_type,
+                    documents.object_import_mode,
+                    documents.read_status,
+                    chunks.id AS chunk_id,
+                    chunks.document_id AS chunk_document_id,
+                    chunks.chunk_index,
+                    chunks.heading_path,
+                    chunks.chunk_text,
+                    chunks.content_hash,
+                    chunks.pdf_page_start,
+                    chunks.pdf_page_end,
+                    chunks.chapter_id,
+                    chunks.updated_at,
+                    chapters.title AS chapter_title
+                FROM documents
+                JOIN knowledge_chunks AS chunks
+                  ON chunks.document_id = documents.id
+                LEFT JOIN book_chapters AS chapters
+                  ON chapters.id = chunks.chapter_id
+                WHERE documents.read_status IN ({status_placeholders})
+                {scope_clause}
+                ORDER BY documents.id, chunks.chunk_index, chunks.id
+            """
+            rows.extend(connection.execute(query, tuple(params)).fetchall())
+    rows.sort(
+        key=lambda row: (
+            int(row["document_id"]),
+            int(row["chunk_index"]),
+            int(row["chunk_id"]),
+        )
+    )
 
     result: list[tuple[SimpleNamespace, SimpleNamespace]] = []
     for row in rows:

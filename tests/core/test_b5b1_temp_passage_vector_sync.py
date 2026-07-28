@@ -104,6 +104,49 @@ def test_temp_passage_source_is_readonly_exact_and_avoids_sessionlocal(
     assert all(item["source_type"] == "passage" for item in sources)
 
 
+def test_temp_passage_source_batches_more_than_sqlite_expression_depth(
+    tmp_path: Path,
+) -> None:
+    database = _temp_research_db(tmp_path)
+    chunk_count = 1_205
+    with sqlite3.connect(database) as connection:
+        connection.executemany(
+            "INSERT INTO knowledge_chunks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    chunk_id,
+                    1,
+                    chunk_index,
+                    "Target",
+                    f"target text {chunk_index}",
+                    f"target-hash-{chunk_index}",
+                    chunk_index + 1,
+                    chunk_index + 1,
+                    None,
+                    "2026-07-28",
+                )
+                for chunk_index, chunk_id in enumerate(
+                    range(1_000, 1_000 + chunk_count)
+                )
+            ],
+        )
+        connection.commit()
+
+    requested = [
+        f"chunk:1:{chunk_id}"
+        for chunk_id in range(1_000, 1_000 + chunk_count)
+    ]
+    sources = vector_store_service.collect_passage_sources(
+        source_ids=list(reversed(requested)),
+        source_db_path=database,
+    )
+
+    assert len(sources) == chunk_count
+    assert {item["source_id"] for item in sources} == set(requested)
+    assert sources[0]["source_id"] == "chunk:1:1000"
+    assert sources[-1]["source_id"] == f"chunk:1:{999 + chunk_count}"
+
+
 def test_temp_passage_apply_is_affected_only_and_second_sync_is_noop(
     tmp_path: Path,
     fake_embedding,
