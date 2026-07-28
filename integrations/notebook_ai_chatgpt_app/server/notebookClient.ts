@@ -22,6 +22,7 @@ export interface NotebookClientOptions {
   baseUrl?: string;
   bearerToken?: string;
   timeoutMs?: number;
+  importTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
   adapter?: "mcp" | "actions";
@@ -54,6 +55,7 @@ export class NotebookClient {
   private readonly baseUrl: URL;
   private readonly bearerToken?: string;
   private readonly timeoutMs: number;
+  private readonly importTimeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly adapter: "mcp" | "actions";
 
@@ -69,6 +71,10 @@ export class NotebookClient {
       ?? environment.SEARCH_BACKEND_BEARER_TOKEN
       ?? environment.NOTEBOOK_AI_BACKEND_BEARER_TOKEN;
     this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.importTimeoutMs = Math.max(
+      this.timeoutMs,
+      options.importTimeoutMs ?? 900_000,
+    );
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.adapter = options.adapter ?? "mcp";
   }
@@ -165,7 +171,12 @@ export class NotebookClient {
   }
 
   async importDocument(input: ImportDocumentInput): Promise<ImportDocumentResponse> {
-    return this.requestChatTool<ImportDocumentResponse>("/api/v1/chat-tools/import-document", input);
+    return this.requestChatTool<ImportDocumentResponse>(
+      "/api/v1/chat-tools/import-document",
+      input,
+      undefined,
+      this.importTimeoutMs,
+    );
   }
 
   async deletePreview(documentId: number): Promise<DeletePreviewResponse> {
@@ -184,12 +195,13 @@ export class NotebookClient {
     path: string,
     input: unknown,
     expectedStatus?: string,
+    timeoutMs: number = this.timeoutMs,
   ): Promise<T> {
     const response = await this.requestJson<T>(path, {
       method: "POST",
       headers: { "X-Search-Chat-Adapter": this.adapter },
       body: JSON.stringify(input),
-    });
+    }, timeoutMs);
     if (
       !isRecord(response)
       || typeof response.status !== "string"
@@ -200,9 +212,13 @@ export class NotebookClient {
     return response as T;
   }
 
-  private async requestJson<T>(path: string, init: RequestInit): Promise<T> {
+  private async requestJson<T>(
+    path: string,
+    init: RequestInit,
+    timeoutMs: number = this.timeoutMs,
+  ): Promise<T> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json, text/plain;q=0.9");
     if (init.body) {

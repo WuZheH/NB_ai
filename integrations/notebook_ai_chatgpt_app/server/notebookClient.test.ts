@@ -208,3 +208,32 @@ test("NotebookClient classifies a rejected fetch as backend unavailable", async 
       && !error.message.includes("private connection detail"),
   );
 });
+
+test("NotebookClient gives confirmed imports a bounded long-running window", async () => {
+  const client = new NotebookClient({
+    baseUrl: "http://127.0.0.1:8123",
+    timeoutMs: 1,
+    importTimeoutMs: 50,
+    fetchImpl: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return Response.json({
+        status: "committed",
+        document_id: 8,
+        title: "Selected book",
+        document_type: "book",
+        chunk_count: 3_899,
+        duplicate_status: "not_detected",
+        error_code: null,
+      });
+    },
+  });
+
+  const result = await client.importDocument({
+    confirmation_token: "i".repeat(40),
+    confirmed: true,
+  });
+
+  assert.equal(result.status, "committed");
+  assert.equal(result.document_id, 8);
+  assert.equal(result.chunk_count, 3_899);
+});
