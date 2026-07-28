@@ -21,6 +21,7 @@ The canonical routes are:
 | POST | `/api/v1/library/management/archive` | Archive one to five explicit document IDs |
 | POST | `/api/v1/library/management/restore` | Restore one to five explicit document IDs |
 | GET | `/api/v1/library/documents/{document_id}/deletion-preview` | Read-only deletion impact preview |
+| POST | `/api/v1/library/documents/{document_id}/deletion-preview` | Read-only preview with a formal manual-preservation acknowledgment |
 | POST | `/api/v1/library/documents/{document_id}/delete` | Confirm and delete one document |
 | POST | `/api/v1/library/documents/delete-batch` | Confirm one to five independently previewed documents |
 
@@ -40,7 +41,22 @@ Every delete request includes:
 - confirmation text equal to the exact title or `删除`;
 - the exact options that were previewed.
 
+When `object_user_comment_requires_manual_preservation` is present, an
+optional `ManualPreservationAcknowledgment` may be supplied to the POST
+preview. It binds the blocker type, exact object-candidate record IDs,
+document ID, preservation artifact directory, preservation manifest SHA256,
+acknowledging operator, and acknowledgment text. Search normalizes the
+acknowledgment, verifies the manifest identity and every declared artifact
+file, and binds the normalized acknowledgment fingerprint to the preview
+token and hash. The same acknowledgment is required on delete.
+
 The backend reacquires a process-wide deletion mutex, regenerates the complete impact, and rejects a changed revision, changed options, changed impact hash, expired/used token, wrong confirmation, missing document, or blocker. After SQLite grants `BEGIN IMMEDIATE`, it regenerates and compares the impact once more before the first mutation, closing the preview-to-write-lock race window. Tokens are one-use for mutation. Batch deletion has a hard limit of five, verifies the exact selected ID list, preflights every document before starting, and rejects selected documents that share an object key because the first deletion would change the second preview.
+
+Manual preservation is not a boolean bypass. Preview, delete preflight, and
+the write-lock recheck all verify the artifact directory, manifest SHA256,
+manifest schema, declared file sizes and SHA256 values, exact blocker records,
+document revision, and token-bound normalized acknowledgment. Any mismatch
+rejects the operation.
 
 ## 4. Cascade and retention policy
 
@@ -102,11 +118,16 @@ It does not copy an external PDF, unrelated production rows, credentials, tokens
 
 Mutation and preview routes require a loopback client, a loopback API Host, an exact local renderer Origin, no Forwarded/Cloudflare headers, a bounded request size, and per-scope rate limits. Archive/delete POST requests additionally require a short-lived mutation token bound to client and Origin. Public/tunnel calls are rejected before service execution.
 
-The MCP server remains limited to `search`, `fetch`, and `export_evidence`. No archive, preview, delete, cleanup, or recovery tool is registered for MCP or the ChatGPT App.
+The MCP server keeps its existing eight-tool surface: `search`, `fetch`,
+`list_library`, `import_preview`, `import_document`, `delete_preview`,
+`delete_document`, and `export_evidence`. This change adds no MCP tool.
+Manual-preservation artifact paths and acknowledgment fields are accepted only
+by the local library deletion API; they are not exposed through a new MCP
+capability. Archive, cleanup, and recovery remain unavailable through MCP.
 
 ## 8. Verification contract
 
-All mutation tests use temporary SQLite databases, temporary data roots, temporary vector doubles, and temporary archive roots. Coverage includes read-only preview, missing documents, invalid/stale tokens, revision changes, wrong confirmation, shared-object preservation, user-comment/review blockers, personal and Zotero note detach, external and managed PDF behavior, FTS/vector cleanup, rollback before derived cleanup, `cleanup_incomplete`, orphan scan, recovery package, retry dry-run/apply, batch limit/overlap, local-only security, MCP non-exposure, UI second confirmation, shelf refresh, and Workspace deep-link retention.
+All mutation tests use temporary SQLite databases, temporary data roots, temporary vector doubles, and temporary archive roots. Coverage includes read-only preview, missing documents, invalid/stale tokens, revision changes, wrong confirmation, shared-object preservation, user-comment/review blockers, exact manual-preservation scope, manifest and artifact tamper rejection, token-bound acknowledgment, single and batch acknowledgment deletion, personal and Zotero note detach, external and managed PDF behavior, FTS/vector cleanup, rollback before derived cleanup, `cleanup_incomplete`, orphan scan, recovery package, retry dry-run/apply, batch limit/overlap, local-only security, unchanged MCP tool count, UI second confirmation, shelf refresh, and Workspace deep-link retention.
 
 Production acceptance is preview-only. Candidate10 validation must not send a final delete request for any production document and must prove the production tree hash, SQLite integrity, foreign keys, and WAL/SHM state are unchanged.
 

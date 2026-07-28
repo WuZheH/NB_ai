@@ -43,6 +43,7 @@ from app.api.library.documents import (
     delete_document,
     delete_documents_batch,
     deletion_preview,
+    deletion_preview_with_acknowledgment,
     zotero_link_candidates,
     document_detail,
 )

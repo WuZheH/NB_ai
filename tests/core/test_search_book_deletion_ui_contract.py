@@ -81,12 +81,14 @@ def test_read_shelf_management_has_no_default_dangerous_selection() -> None:
     assert "X-Search-Mutation-Token" in management_api
 
 
-def test_delete_routes_are_post_only_and_preview_is_get() -> None:
-    methods = {
-        route.path: set(route.methods or set())
-        for route in app.routes
+def test_delete_routes_are_post_only_and_preview_supports_acknowledgment_post() -> None:
+    methods: dict[str, set[str]] = {}
+    for route in app.routes:
+        methods.setdefault(route.path, set()).update(route.methods or set())
+    assert methods["/api/v1/library/documents/{document_id}/deletion-preview"] == {
+        "GET",
+        "POST",
     }
-    assert methods["/api/v1/library/documents/{document_id}/deletion-preview"] == {"GET"}
     assert methods["/api/v1/library/documents/{document_id}/delete"] == {"POST"}
     assert methods["/api/v1/library/documents/delete-batch"] == {"POST"}
     assert methods["/api/v1/library/management/archive"] == {"POST"}

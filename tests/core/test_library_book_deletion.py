@@ -220,6 +220,57 @@ def _runtime(root: Path, *, vector: _VectorHarness | None = None, cleanup_fts=No
     ), harness
 
 
+def _manual_preservation_acknowledgment(
+    root: Path,
+    *,
+    document_id: int = 1,
+    record_ids: tuple[int, ...] = (31,),
+    acknowledged_by: str = "Search operator",
+    acknowledgment_text: str = "I verified the preserved user comment.",
+) -> dict[str, object]:
+    artifact_dir = root / "preservation"
+    artifact_dir.mkdir(exist_ok=True)
+    files: dict[str, dict[str, object]] = {}
+    for filename, content in (
+        ("object_user_comment.json", '{"preserved":true}\n'),
+        ("README.md", "isolated preservation fixture\n"),
+    ):
+        path = artifact_dir / filename
+        path.write_text(content, encoding="utf-8")
+        files[filename] = {
+            "size": path.stat().st_size,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    manifest = {
+        "schema_version": "search_deletion_preservation_manifest.v1",
+        "exported_record_identities": [
+            {
+                "source_table": "object_candidates",
+                "record_id": record_id,
+                "document_id": document_id,
+            }
+            for record_id in record_ids
+        ],
+        "files": files,
+    }
+    manifest_path = artifact_dir / "preservation_manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    return {
+        "blocker_type": "object_user_comment_requires_manual_preservation",
+        "record_ids": list(record_ids),
+        "document_id": document_id,
+        "preservation_artifact_directory": str(artifact_dir),
+        "preservation_manifest_sha256": hashlib.sha256(
+            manifest_path.read_bytes()
+        ).hexdigest(),
+        "acknowledged_by": acknowledged_by,
+        "acknowledgment_text": acknowledgment_text,
+    }
+
+
 def _retrieval_fragment(document_id: int) -> RetrievalFragment:
     locator = f"test://document/{document_id}/fragment/1"
     text = f"isolated book {document_id}"
@@ -688,6 +739,215 @@ def test_shared_objects_are_reported_and_user_comments_block(tmp_path: Path) -> 
     assert {item["code"] for item in blocked["deletion_blockers"]} >= {"object_user_comment_requires_manual_preservation"}
 
 
+def test_valid_manual_preservation_acknowledgment_unblocks_and_is_audited(
+    tmp_path: Path,
+) -> None:
+    runtime, _harness = _runtime(tmp_path)
+    connection = sqlite3.connect(runtime.db_path)
+    connection.execute(
+        "UPDATE object_candidates SET user_comment='keep me' WHERE id=31"
+    )
+    connection.commit()
+    connection.close()
+    acknowledgment = _manual_preservation_acknowledgment(tmp_path)
+
+    preview = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+        manual_preservation_acknowledgment=acknowledgment,
+    )
+    assert preview["whether_safe_to_delete"] is True
+    assert preview["deletion_blockers"] == []
+    preservation = preview["manual_preservation_acknowledgment"]
+    assert preservation["status"] == "validated"
+    assert preservation["record_ids"] == [31]
+    assert preservation["verified_file_count"] == 2
+    assert str(tmp_path) not in json.dumps(preview, ensure_ascii=False)
+
+    result = document_deletion_service.delete_document(
+        document_id=1,
+        preview_token=preview["preview_token"],
+        expected_document_revision=preview["document_revision"],
+        confirmation_text="删除",
+        manual_preservation_acknowledgment=acknowledgment,
+        runtime=runtime,
+    )
+    assert result["status"] == "completed"
+    recovery_manifest = json.loads(
+        (
+            runtime.resolved_archive_root()
+            / result["audit_id"]
+            / "recovery_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert (
+        recovery_manifest["manual_preservation_acknowledgment"][
+            "record_ids"
+        ]
+        == [31]
+    )
+    deletion_report = json.loads(
+        (
+            runtime.resolved_archive_root()
+            / result["audit_id"]
+            / "deletion_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert (
+        deletion_report[
+            "manual_preservation_acknowledgment_fingerprint"
+        ]
+        == preservation["acknowledgment_fingerprint"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_code"),
+    [
+        (
+            lambda acknowledgment: acknowledgment.update({"record_ids": [32]}),
+            "manual_preservation_acknowledgment_scope_mismatch",
+        ),
+        (
+            lambda acknowledgment: acknowledgment.update(
+                {"document_id": 2}
+            ),
+            "manual_preservation_acknowledgment_scope_mismatch",
+        ),
+        (
+            lambda acknowledgment: acknowledgment.update(
+                {"preservation_manifest_sha256": "0" * 64}
+            ),
+            "manual_preservation_manifest_sha256_mismatch",
+        ),
+    ],
+)
+def test_manual_preservation_preview_rejects_scope_and_sha_mismatch(
+    tmp_path: Path,
+    mutation,
+    error_code: str,
+) -> None:
+    runtime, _harness = _runtime(tmp_path)
+    connection = sqlite3.connect(runtime.db_path)
+    connection.execute(
+        "UPDATE object_candidates SET user_comment='keep me' WHERE id=31"
+    )
+    connection.commit()
+    connection.close()
+    acknowledgment = _manual_preservation_acknowledgment(tmp_path)
+    mutation(acknowledgment)
+
+    with pytest.raises(document_deletion_service.DeletionError) as error:
+        document_deletion_service.create_deletion_preview(
+            1,
+            runtime=runtime,
+            manual_preservation_acknowledgment=acknowledgment,
+        )
+    assert error.value.error_code == error_code
+
+
+def test_manual_preservation_token_and_artifact_are_revalidated(
+    tmp_path: Path,
+) -> None:
+    runtime, _harness = _runtime(tmp_path)
+    connection = sqlite3.connect(runtime.db_path)
+    connection.execute(
+        "UPDATE object_candidates SET user_comment='keep me' WHERE id=31"
+    )
+    connection.commit()
+    connection.close()
+    acknowledgment = _manual_preservation_acknowledgment(tmp_path)
+    preview = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+        manual_preservation_acknowledgment=acknowledgment,
+    )
+
+    changed = dict(acknowledgment)
+    changed["acknowledgment_text"] = "different confirmation"
+    with pytest.raises(document_deletion_service.DeletionError) as mismatch:
+        document_deletion_service.delete_document(
+            document_id=1,
+            preview_token=preview["preview_token"],
+            expected_document_revision=preview["document_revision"],
+            confirmation_text="删除",
+            manual_preservation_acknowledgment=changed,
+            runtime=runtime,
+        )
+    assert (
+        mismatch.value.error_code
+        == "deletion_preview_acknowledgment_changed"
+    )
+
+    fresh = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+        manual_preservation_acknowledgment=acknowledgment,
+    )
+    (
+        Path(str(acknowledgment["preservation_artifact_directory"]))
+        / "object_user_comment.json"
+    ).write_text('{"tampered":true}\n', encoding="utf-8")
+    with pytest.raises(document_deletion_service.DeletionError) as tampered:
+        document_deletion_service.delete_document(
+            document_id=1,
+            preview_token=fresh["preview_token"],
+            expected_document_revision=fresh["document_revision"],
+            confirmation_text="删除",
+            manual_preservation_acknowledgment=acknowledgment,
+            runtime=runtime,
+        )
+    assert (
+        tampered.value.error_code
+        == "manual_preservation_artifact_file_mismatch"
+    )
+    assert (
+        sqlite3.connect(runtime.db_path)
+        .execute("SELECT COUNT(*) FROM documents WHERE id=1")
+        .fetchone()[0]
+        == 1
+    )
+
+
+def test_manual_preservation_rejects_changed_blocker_records(
+    tmp_path: Path,
+) -> None:
+    runtime, _harness = _runtime(tmp_path)
+    connection = sqlite3.connect(runtime.db_path)
+    connection.execute(
+        "UPDATE object_candidates SET user_comment='keep me' WHERE id=31"
+    )
+    connection.commit()
+    connection.close()
+    acknowledgment = _manual_preservation_acknowledgment(tmp_path)
+    preview = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+        manual_preservation_acknowledgment=acknowledgment,
+    )
+    connection = sqlite3.connect(runtime.db_path)
+    connection.execute(
+        "INSERT INTO object_candidates VALUES "
+        "(32, 1, 'new-key', 'new comment', NULL, NULL, '[]', '[]')"
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(document_deletion_service.DeletionError) as changed:
+        document_deletion_service.delete_document(
+            document_id=1,
+            preview_token=preview["preview_token"],
+            expected_document_revision=preview["document_revision"],
+            confirmation_text="删除",
+            manual_preservation_acknowledgment=acknowledgment,
+            runtime=runtime,
+        )
+    assert (
+        changed.value.error_code
+        == "manual_preservation_acknowledgment_scope_mismatch"
+    )
+
+
 def test_database_failure_rolls_back_before_vector_or_file_cleanup(tmp_path: Path) -> None:
     runtime, harness = _runtime(tmp_path)
     connection = sqlite3.connect(runtime.db_path)
@@ -1048,6 +1308,51 @@ def test_batch_preflight_rejects_object_overlap_before_any_delete(tmp_path: Path
         )
     assert overlap.value.error_code == "deletion_batch_shared_object_overlap"
     assert sqlite3.connect(runtime.db_path).execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 2
+
+
+def test_batch_delete_accepts_per_document_manual_preservation(
+    tmp_path: Path,
+) -> None:
+    runtime, _harness = _runtime(tmp_path)
+    connection = sqlite3.connect(runtime.db_path)
+    connection.execute(
+        "UPDATE object_candidates SET user_comment='keep me' WHERE id=31"
+    )
+    connection.commit()
+    connection.close()
+    acknowledgment = _manual_preservation_acknowledgment(tmp_path)
+    first = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+        manual_preservation_acknowledgment=acknowledgment,
+    )
+    second = document_deletion_service.create_deletion_preview(
+        2,
+        runtime=runtime,
+    )
+    requests = [
+        {
+            "document_id": first["document_id"],
+            "preview_token": first["preview_token"],
+            "expected_document_revision": first["document_revision"],
+            "deletion_options": first["deletion_options"],
+            "manual_preservation_acknowledgment": acknowledgment,
+        },
+        {
+            "document_id": second["document_id"],
+            "preview_token": second["preview_token"],
+            "expected_document_revision": second["document_revision"],
+            "deletion_options": second["deletion_options"],
+        },
+    ]
+    result = document_deletion_service.delete_documents_batch(
+        document_ids=[1, 2],
+        requests=requests,
+        confirmation_text="删除",
+        runtime=runtime,
+    )
+    assert result["status"] == "completed"
+    assert result["completed_document_ids"] == [1, 2]
 
 
 def test_cleanup_recovery_is_dry_run_by_default_and_can_be_applied(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,7 +26,10 @@ from app.core.paths import (
 )
 from app.domains.retrieval import fragment_repository, note_vector_index
 from app.domains.retrieval.result_contracts import NOTE_SOURCE_TYPES
-from app.schemas.library_deletion import DeletionOptions
+from app.schemas.library_deletion import (
+    DeletionOptions,
+    ManualPreservationAcknowledgment,
+)
 from app.services import vector_store_service
 from app.services.retrieval.fts_index_service import cleanup_document_retrieval_fts
 from app.services.retrieval.source_registry import RetrievalSourceRegistry
@@ -35,6 +39,13 @@ PREVIEW_TTL_SECONDS = 5 * 60
 MAX_BATCH_SIZE = 5
 DELETION_SCHEMA_VERSION = "search_book_deletion.v1"
 AUDIT_SCHEMA_VERSION = "search_book_deletion_audit.v1"
+MANUAL_PRESERVATION_BLOCKER_TYPE = (
+    "object_user_comment_requires_manual_preservation"
+)
+PRESERVATION_MANIFEST_FILENAME = "preservation_manifest.json"
+PRESERVATION_MANIFEST_SCHEMA_VERSION = (
+    "search_deletion_preservation_manifest.v1"
+)
 RELEVANT_REFERENCE_COLUMNS = {
     "document_id",
     "matched_document_id",
@@ -160,6 +171,7 @@ class InternalDeletionPlan:
     managed_pdf: Path | None
     deletion_options: dict[str, Any]
     row_counts: dict[str, int]
+    manual_preservation_acknowledgment: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -175,6 +187,7 @@ class PreviewRecord:
     document_revision: str
     impact_hash: str
     options_hash: str
+    acknowledgment_hash: str
     expires_at: float
 
 
@@ -197,12 +210,23 @@ def create_deletion_preview(
     document_id: int,
     *,
     deletion_options: DeletionOptions | dict[str, Any] | None = None,
+    manual_preservation_acknowledgment: (
+        ManualPreservationAcknowledgment | dict[str, Any] | None
+    ) = None,
     runtime: DeletionRuntime | None = None,
     issue_token: bool = True,
 ) -> dict[str, Any]:
     actual_runtime = runtime or DeletionRuntime()
     options = _normalize_options(deletion_options)
-    prepared = _prepare_preview(int(document_id), options=options, runtime=actual_runtime)
+    acknowledgment = _normalize_acknowledgment(
+        manual_preservation_acknowledgment
+    )
+    prepared = _prepare_preview(
+        int(document_id),
+        options=options,
+        manual_preservation_acknowledgment=acknowledgment,
+        runtime=actual_runtime,
+    )
     payload = dict(prepared.public)
     if issue_token:
         token = secrets.token_urlsafe(32)
@@ -213,6 +237,7 @@ def create_deletion_preview(
             document_revision=prepared.plan.document_revision,
             impact_hash=prepared.plan.impact_hash,
             options_hash=_hash_json(options),
+            acknowledgment_hash=_hash_acknowledgment(acknowledgment),
             expires_at=now + PREVIEW_TTL_SECONDS,
         )
         with _TOKEN_LOCK:
@@ -234,18 +259,34 @@ def delete_document(
     expected_document_revision: str,
     confirmation_text: str,
     deletion_options: DeletionOptions | dict[str, Any] | None = None,
+    manual_preservation_acknowledgment: (
+        ManualPreservationAcknowledgment | dict[str, Any] | None
+    ) = None,
     runtime: DeletionRuntime | None = None,
 ) -> dict[str, Any]:
     actual_runtime = runtime or DeletionRuntime()
     options = _normalize_options(deletion_options)
+    acknowledgment = _normalize_acknowledgment(
+        manual_preservation_acknowledgment
+    )
     record = _consume_preview_token(preview_token)
     if record.document_id != int(document_id):
         raise DeletionError("deletion_preview_document_mismatch", "删除预览不属于该文档。")
     if record.options_hash != _hash_json(options):
         raise DeletionError("deletion_preview_options_changed", "删除选项已变化，请重新预览。")
+    if record.acknowledgment_hash != _hash_acknowledgment(acknowledgment):
+        raise DeletionError(
+            "deletion_preview_acknowledgment_changed",
+            "人工保存确认内容已变化，请重新预览。",
+        )
 
     with _MUTATION_LOCK:
-        prepared = _prepare_preview(int(document_id), options=options, runtime=actual_runtime)
+        prepared = _prepare_preview(
+            int(document_id),
+            options=options,
+            manual_preservation_acknowledgment=acknowledgment,
+            runtime=actual_runtime,
+        )
         plan = prepared.plan
         if expected_document_revision != plan.document_revision:
             raise DeletionError("deletion_document_revision_stale", "文档已变化，请重新预览。")
@@ -325,17 +366,33 @@ def preflight_delete_document(
     expected_document_revision: str,
     confirmation_text: str,
     deletion_options: DeletionOptions | dict[str, Any] | None = None,
+    manual_preservation_acknowledgment: (
+        ManualPreservationAcknowledgment | dict[str, Any] | None
+    ) = None,
     runtime: DeletionRuntime | None = None,
 ) -> PreparedPreview:
     actual_runtime = runtime or DeletionRuntime()
     options = _normalize_options(deletion_options)
+    acknowledgment = _normalize_acknowledgment(
+        manual_preservation_acknowledgment
+    )
     record = _preview_record(preview_token, consume=False)
-    prepared = _prepare_preview(int(document_id), options=options, runtime=actual_runtime)
+    prepared = _prepare_preview(
+        int(document_id),
+        options=options,
+        manual_preservation_acknowledgment=acknowledgment,
+        runtime=actual_runtime,
+    )
     plan = prepared.plan
     if record.document_id != int(document_id):
         raise DeletionError("deletion_preview_document_mismatch", "删除预览不属于该文档。")
     if record.options_hash != _hash_json(options):
         raise DeletionError("deletion_preview_options_changed", "删除选项已变化，请重新预览。")
+    if record.acknowledgment_hash != _hash_acknowledgment(acknowledgment):
+        raise DeletionError(
+            "deletion_preview_acknowledgment_changed",
+            "人工保存确认内容已变化，请重新预览。",
+        )
     if expected_document_revision != plan.document_revision:
         raise DeletionError("deletion_document_revision_stale", "文档已变化，请重新预览。")
     if record.document_revision != plan.document_revision or record.impact_hash != plan.impact_hash:
@@ -388,6 +445,9 @@ def delete_documents_batch(
                     expected_document_revision=str(item.get("expected_document_revision") or ""),
                     confirmation_text="删除",
                     deletion_options=item.get("deletion_options"),
+                    manual_preservation_acknowledgment=item.get(
+                        "manual_preservation_acknowledgment"
+                    ),
                     runtime=actual_runtime,
                 )
             )
@@ -413,6 +473,9 @@ def delete_documents_batch(
                     expected_document_revision=str(item.get("expected_document_revision") or ""),
                     confirmation_text="删除",
                     deletion_options=item.get("deletion_options"),
+                    manual_preservation_acknowledgment=item.get(
+                        "manual_preservation_acknowledgment"
+                    ),
                     runtime=actual_runtime,
                 )
             except DeletionError as exc:
@@ -496,6 +559,11 @@ def retry_incomplete_cleanup(
         ),
         deletion_options=_normalize_options(manifest.get("deletion_options")),
         row_counts={},
+        manual_preservation_acknowledgment=(
+            dict(manifest["manual_preservation_acknowledgment"])
+            if manifest.get("manual_preservation_acknowledgment")
+            else None
+        ),
     )
     dry_run = {
         "status": "ready_to_retry" if previous_report.get("result") == "cleanup_incomplete" else "review_required",
@@ -537,6 +605,7 @@ def _prepare_preview(
     document_id: int,
     *,
     options: dict[str, Any],
+    manual_preservation_acknowledgment: dict[str, Any] | None,
     runtime: DeletionRuntime,
 ) -> PreparedPreview:
     db_path = Path(runtime.db_path)
@@ -601,6 +670,11 @@ def _prepare_preview(
         user_object_comment_count = sum(
             1 for row in objects if str(row["user_comment"] or "").strip()
         )
+        user_object_comment_record_ids = tuple(
+            int(row["id"])
+            for row in objects
+            if str(row["user_comment"] or "").strip()
+        )
         cross_document_references = _cross_document_reference_count(
             connection,
             document_id=document_id,
@@ -657,10 +731,16 @@ def _prepare_preview(
         }
         vector_warning = f"vector_impact_unavailable:{type(exc).__name__}"
 
+    preservation = _validate_manual_preservation_acknowledgment(
+        manual_preservation_acknowledgment,
+        document_id=document_id,
+        blocker_record_ids=user_object_comment_record_ids,
+    )
     blockers = _deletion_blockers(
         options=options,
         review_count=review_count,
         user_object_comment_count=user_object_comment_count,
+        manual_preservation_acknowledged=preservation is not None,
         cross_document_references=cross_document_references,
         unknown_references=unknown_references,
         vector_warning=vector_warning,
@@ -748,6 +828,7 @@ def _prepare_preview(
         "derived_markdown_files": [_path_descriptor(path, data_dir=runtime.data_dir, hash_file=True) for path in derived_files],
         "generated_cache": [_path_descriptor(path, data_dir=runtime.data_dir, hash_file=True) for path in cache_files],
         "deletion_blockers": blockers,
+        "manual_preservation_acknowledgment": preservation,
         "warnings": warnings,
         "estimated_deleted_rows": estimated_deleted_rows,
         "estimated_detached_rows": estimated_detached_rows,
@@ -788,6 +869,7 @@ def _prepare_preview(
         managed_pdf=managed_pdf,
         deletion_options=options,
         row_counts=row_counts,
+        manual_preservation_acknowledgment=manual_preservation_acknowledgment,
     )
     return PreparedPreview(public=public, plan=plan)
 
@@ -842,6 +924,9 @@ def _execute_database_transaction(plan: InternalDeletionPlan, *, runtime: Deleti
         locked_preview = _prepare_preview(
             plan.document_id,
             options=plan.deletion_options,
+            manual_preservation_acknowledgment=(
+                plan.manual_preservation_acknowledgment
+            ),
             runtime=runtime,
         )
         if (
@@ -1206,6 +1291,9 @@ def _create_recovery_package(
                 "document_revision": plan.document_revision,
                 "preview_hash": plan.impact_hash,
                 "deletion_options": plan.deletion_options,
+                "manual_preservation_acknowledgment": (
+                    plan.manual_preservation_acknowledgment
+                ),
                 "file_hashes": [
                     _file_fingerprint(path)
                     for path in (*plan.derived_files, *plan.generated_cache_files, plan.managed_pdf)
@@ -1306,6 +1394,13 @@ def _audit_payload(
         "title_hash": _sha256_text(plan.title)[:16],
         "preview_hash": plan.impact_hash,
         "deletion_options": plan.deletion_options,
+        "manual_preservation_acknowledgment_fingerprint": (
+            _hash_acknowledgment(
+                plan.manual_preservation_acknowledgment
+            )
+            if plan.manual_preservation_acknowledgment
+            else None
+        ),
         "database_deleted_rows": int(db_result.get("deleted_rows") or 0),
         "database_detached_rows": int(db_result.get("detached_rows") or 0),
         "vector_deleted_rows": int(cleanup.vectors.get("deleted_passage_vectors") or 0) + int(cleanup.vectors.get("deleted_object_vectors") or 0),
@@ -1360,6 +1455,7 @@ def _deletion_blockers(
     vector_warning: str,
     fts_warning: str,
     managed_pdf_shared: bool,
+    manual_preservation_acknowledged: bool = False,
 ) -> list[dict[str, Any]]:
     blockers: list[dict[str, Any]] = []
     required_true = (
@@ -1372,7 +1468,7 @@ def _deletion_blockers(
         blockers.append({"code": "protected_data_retention_required", "count": 1})
     # Search-owned review artifacts are captured in the recovery
     # package and deleted transactionally after explicit confirmation.
-    if user_object_comment_count:
+    if user_object_comment_count and not manual_preservation_acknowledged:
         blockers.append({"code": "object_user_comment_requires_manual_preservation", "count": user_object_comment_count})
     if cross_document_references:
         blockers.append({"code": "cross_document_reference_requires_review", "count": cross_document_references})
@@ -1855,6 +1951,217 @@ def _source_kind(document: dict[str, Any], pdf: dict[str, Any] | None) -> str:
     if pdf:
         return "external_pdf"
     return "imported_document"
+
+
+def _normalize_acknowledgment(
+    value: ManualPreservationAcknowledgment | dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    try:
+        model = (
+            value
+            if isinstance(value, ManualPreservationAcknowledgment)
+            else ManualPreservationAcknowledgment.model_validate(value)
+        )
+    except Exception as exc:
+        raise DeletionError(
+            "manual_preservation_acknowledgment_invalid",
+            "人工保存确认格式无效。",
+            status_code=422,
+            details={"exception_type": type(exc).__name__},
+        ) from exc
+    payload = model.model_dump()
+    payload["blocker_type"] = _normalize_acknowledgment_text(
+        payload["blocker_type"]
+    )
+    payload["record_ids"] = sorted(int(value) for value in payload["record_ids"])
+    payload["preservation_artifact_directory"] = str(
+        Path(payload["preservation_artifact_directory"])
+        .expanduser()
+        .resolve(strict=False)
+    )
+    payload["preservation_manifest_sha256"] = str(
+        payload["preservation_manifest_sha256"]
+    ).lower()
+    payload["acknowledged_by"] = _normalize_acknowledgment_text(
+        payload["acknowledged_by"]
+    )
+    payload["acknowledgment_text"] = _normalize_acknowledgment_text(
+        payload["acknowledgment_text"]
+    )
+    if not payload["acknowledged_by"] or not payload["acknowledgment_text"]:
+        raise DeletionError(
+            "manual_preservation_acknowledgment_invalid",
+            "人工保存确认人和确认文字不能为空。",
+            status_code=422,
+        )
+    return payload
+
+
+def _normalize_acknowledgment_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    return " ".join(normalized.split())
+
+
+def _hash_acknowledgment(value: dict[str, Any] | None) -> str:
+    return _hash_json(value) if value is not None else _sha256_text("")
+
+
+def _validate_manual_preservation_acknowledgment(
+    acknowledgment: dict[str, Any] | None,
+    *,
+    document_id: int,
+    blocker_record_ids: tuple[int, ...],
+) -> dict[str, Any] | None:
+    if acknowledgment is None:
+        return None
+    expected_record_ids = tuple(sorted(int(value) for value in blocker_record_ids))
+    acknowledged_record_ids = tuple(
+        sorted(int(value) for value in acknowledgment["record_ids"])
+    )
+    if (
+        acknowledgment["blocker_type"] != MANUAL_PRESERVATION_BLOCKER_TYPE
+        or int(acknowledgment["document_id"]) != int(document_id)
+        or not expected_record_ids
+        or acknowledged_record_ids != expected_record_ids
+    ):
+        raise DeletionError(
+            "manual_preservation_acknowledgment_scope_mismatch",
+            "人工保存确认未绑定当前文档的精确 blocker records。",
+            details={
+                "document_id": int(document_id),
+                "expected_record_ids": list(expected_record_ids),
+            },
+        )
+
+    artifact_directory = Path(
+        acknowledgment["preservation_artifact_directory"]
+    ).resolve(strict=False)
+    if (
+        not artifact_directory.is_absolute()
+        or not artifact_directory.is_dir()
+    ):
+        raise DeletionError(
+            "manual_preservation_artifact_directory_invalid",
+            "人工保存 artifact 目录不存在或不可用。",
+        )
+    manifest_path = artifact_directory / PRESERVATION_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        raise DeletionError(
+            "manual_preservation_manifest_missing",
+            "人工保存 artifact 缺少 preservation manifest。",
+        )
+    actual_manifest_sha256 = _sha256_file(manifest_path)
+    if actual_manifest_sha256.lower() != acknowledgment[
+        "preservation_manifest_sha256"
+    ]:
+        raise DeletionError(
+            "manual_preservation_manifest_sha256_mismatch",
+            "人工保存 manifest SHA256 不匹配。",
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise DeletionError(
+            "manual_preservation_manifest_invalid",
+            "人工保存 manifest 无法解析。",
+            details={"exception_type": type(exc).__name__},
+        ) from exc
+    if (
+        manifest.get("schema_version")
+        != PRESERVATION_MANIFEST_SCHEMA_VERSION
+    ):
+        raise DeletionError(
+            "manual_preservation_manifest_schema_invalid",
+            "人工保存 manifest schema 不受支持。",
+        )
+
+    identities = manifest.get("exported_record_identities")
+    if identities is None:
+        singleton = manifest.get("exported_record_identity")
+        identities = [singleton] if isinstance(singleton, dict) else []
+    manifest_record_ids: list[int] = []
+    for identity in identities:
+        if (
+            not isinstance(identity, dict)
+            or identity.get("source_table") != "object_candidates"
+            or int(identity.get("document_id") or 0) != int(document_id)
+        ):
+            raise DeletionError(
+                "manual_preservation_manifest_identity_mismatch",
+                "人工保存 manifest 的导出身份与当前 blocker 不一致。",
+            )
+        manifest_record_ids.append(int(identity.get("record_id") or 0))
+    if tuple(sorted(manifest_record_ids)) != expected_record_ids:
+        raise DeletionError(
+            "manual_preservation_manifest_identity_mismatch",
+            "人工保存 manifest 未覆盖精确 blocker records。",
+            details={"expected_record_ids": list(expected_record_ids)},
+        )
+
+    verified_files: list[dict[str, Any]] = []
+    files = manifest.get("files")
+    if not isinstance(files, dict) or not files:
+        raise DeletionError(
+            "manual_preservation_manifest_files_invalid",
+            "人工保存 manifest 未声明 artifact 文件。",
+        )
+    for filename, descriptor in sorted(files.items()):
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or not isinstance(descriptor, dict)
+        ):
+            raise DeletionError(
+                "manual_preservation_manifest_files_invalid",
+                "人工保存 manifest 含无效文件身份。",
+            )
+        artifact_path = artifact_directory / filename
+        expected_size = int(descriptor.get("size") or -1)
+        expected_sha256 = str(descriptor.get("sha256") or "").lower()
+        if (
+            not artifact_path.is_file()
+            or artifact_path.stat().st_size != expected_size
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+            or _sha256_file(artifact_path).lower() != expected_sha256
+        ):
+            raise DeletionError(
+                "manual_preservation_artifact_file_mismatch",
+                "人工保存 artifact 文件与 manifest 不一致。",
+                details={"filename": filename},
+            )
+        verified_files.append(
+            {
+                "filename": filename,
+                "size": expected_size,
+                "sha256": expected_sha256,
+            }
+        )
+
+    acknowledgment_fingerprint = _hash_acknowledgment(acknowledgment)
+    artifact_fingerprint = _hash_json(
+        {
+            "manifest_sha256": actual_manifest_sha256.lower(),
+            "files": verified_files,
+        }
+    )
+    return {
+        "status": "validated",
+        "blocker_type": acknowledgment["blocker_type"],
+        "record_ids": list(acknowledged_record_ids),
+        "document_id": int(document_id),
+        "preservation_artifact": {
+            "basename": artifact_directory.name,
+            "path_hash": _sha256_text(str(artifact_directory).lower()),
+        },
+        "preservation_manifest_sha256": actual_manifest_sha256.lower(),
+        "verified_file_count": len(verified_files),
+        "artifact_fingerprint": artifact_fingerprint,
+        "acknowledged_by": acknowledgment["acknowledged_by"],
+        "acknowledgment_text": acknowledgment["acknowledgment_text"],
+        "acknowledgment_fingerprint": acknowledgment_fingerprint,
+    }
 
 
 def _normalize_options(value: DeletionOptions | dict[str, Any] | None) -> dict[str, Any]:

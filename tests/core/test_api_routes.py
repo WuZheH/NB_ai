@@ -77,3 +77,45 @@ def test_obsolete_database_search_route_is_not_mounted() -> None:
     assert "app.api.search_api" not in main_source
     assert "search_router" not in main_source
 
+
+def test_manual_preservation_acknowledgment_is_in_deletion_openapi_contract() -> None:
+    schema = app.openapi()
+    paths = schema["paths"]
+    preview = paths[
+        "/api/v1/library/documents/{document_id}/deletion-preview"
+    ]["post"]
+    delete = paths[
+        "/api/v1/library/documents/{document_id}/delete"
+    ]["post"]
+    batch = paths["/api/v1/library/documents/delete-batch"]["post"]
+    assert (
+        preview["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/DeletionPreviewRequest"
+    )
+    delete_ref = delete["requestBody"]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
+    batch_ref = batch["requestBody"]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
+    assert delete_ref.endswith(
+        "app__schemas__library_deletion__DeleteDocumentRequest"
+    )
+    assert batch_ref.endswith("DeleteDocumentsBatchRequest")
+    delete_schema = schema["components"]["schemas"][
+        delete_ref.rsplit("/", 1)[-1]
+    ]
+    assert "manual_preservation_acknowledgment" in delete_schema["properties"]
+    acknowledgment = schema["components"]["schemas"][
+        "ManualPreservationAcknowledgment"
+    ]
+    assert set(acknowledgment["required"]) == {
+        "blocker_type",
+        "record_ids",
+        "document_id",
+        "preservation_artifact_directory",
+        "preservation_manifest_sha256",
+        "acknowledged_by",
+        "acknowledgment_text",
+    }
+

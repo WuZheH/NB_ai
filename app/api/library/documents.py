@@ -4,6 +4,7 @@ from app.api.library.read_common import *  # noqa: F401,F403
 from app.schemas.library_deletion import (
     DeleteDocumentRequest,
     DeleteDocumentsBatchRequest,
+    DeletionPreviewRequest,
     DeletionOptions,
 )
 from app.services.library import document_deletion_service
@@ -48,6 +49,23 @@ def deletion_preview(
         raise _deletion_http_error(exc) from exc
 
 
+@router.post("/documents/{document_id}/deletion-preview")
+def deletion_preview_with_acknowledgment(
+    document_id: int,
+    payload: DeletionPreviewRequest,
+    request: Request,
+) -> dict[str, Any]:
+    require_local_renderer(request, rate_scope="deletion_preview", rate_limit=60)
+    try:
+        return document_deletion_service.create_deletion_preview(
+            document_id,
+            deletion_options=payload.deletion_options,
+            manual_preservation_acknowledgment=payload.manual_preservation_acknowledgment,
+        )
+    except document_deletion_service.DeletionError as exc:
+        raise _deletion_http_error(exc) from exc
+
+
 @router.post("/documents/{document_id}/delete")
 def delete_document(
     document_id: int,
@@ -71,6 +89,7 @@ def delete_document(
             expected_document_revision=payload.expected_document_revision,
             confirmation_text=payload.confirmation_text,
             deletion_options=payload.deletion_options,
+            manual_preservation_acknowledgment=payload.manual_preservation_acknowledgment,
         )
     except document_deletion_service.DeletionError as exc:
         raise _deletion_http_error(exc) from exc
