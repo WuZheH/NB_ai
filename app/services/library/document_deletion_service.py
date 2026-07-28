@@ -1099,7 +1099,16 @@ def _run_post_commit_cleanup(plan: InternalDeletionPlan, *, runtime: DeletionRun
         state.errors.append(_cleanup_error("file_cleanup_failed", exc))
         state.files = {"status": "failed", "error_code": "file_cleanup_failed"}
     try:
-        state.orphan_scan = _orphan_scan(plan, runtime=runtime)
+        preserved_object_source_ids = (
+            state.vectors.pop("preserved_object_source_ids", None)
+            if isinstance(state.vectors, dict)
+            else None
+        )
+        state.orphan_scan = _orphan_scan(
+            plan,
+            runtime=runtime,
+            preserved_object_source_ids=preserved_object_source_ids,
+        )
         if not state.orphan_scan.get("ok"):
             state.errors.append(
                 {
@@ -1206,7 +1215,12 @@ def _cleanup_files(plan: InternalDeletionPlan) -> dict[str, Any]:
     return {"status": "ok", "removed_files": removed, "already_missing_files": missing}
 
 
-def _orphan_scan(plan: InternalDeletionPlan, *, runtime: DeletionRuntime) -> dict[str, Any]:
+def _orphan_scan(
+    plan: InternalDeletionPlan,
+    *,
+    runtime: DeletionRuntime,
+    preserved_object_source_ids: list[str] | None = None,
+) -> dict[str, Any]:
     with _readonly_connection(runtime.db_path) as connection:
         global_orphans = _global_orphan_counts(connection)
         checks = {
@@ -1226,11 +1240,22 @@ def _orphan_scan(plan: InternalDeletionPlan, *, runtime: DeletionRuntime) -> dic
         with _readonly_connection(runtime.fts_path) as fts:
             fts_remaining = _count(fts, "retrieval_fragments", "document_id = ?", (plan.document_id,))
     vector_orphans = 0
+    preserved_object_ids = {
+        str(value)
+        for value in (preserved_object_source_ids or [])
+        if str(value or "").strip()
+    }
+    orphan_check_object_keys = [
+        key
+        for key in plan.exclusive_object_keys
+        if vector_store_service.make_object_source_id(key)
+        not in preserved_object_ids
+    ]
     try:
         inspector = runtime.inspect_vectors or vector_store_service.inspect_document_vector_impact
         impact = inspector(
             passage_source_ids=list(plan.passage_source_ids),
-            object_keys=list(plan.exclusive_object_keys),
+            object_keys=orphan_check_object_keys,
             store_path=runtime.vector_store_path,
         )
         vector_orphans = int(impact.get("passage_vector_count") or 0) + int(impact.get("object_vector_count") or 0)
@@ -1261,6 +1286,7 @@ def _orphan_scan(plan: InternalDeletionPlan, *, runtime: DeletionRuntime) -> dic
             "fts_rows": fts_remaining,
             "orphan_vectors": vector_orphans,
             "orphan_note_vectors": note_vector_orphans,
+            "preserved_object_vectors": len(preserved_object_ids),
         }
     )
     new_global_orphans = {
@@ -1273,7 +1299,7 @@ def _orphan_scan(plan: InternalDeletionPlan, *, runtime: DeletionRuntime) -> dic
     target_checks = {
         key: value
         for key, value in checks.items()
-        if key not in global_orphans
+        if key not in global_orphans and key != "preserved_object_vectors"
     }
     return {
         "ok": (

@@ -1152,6 +1152,7 @@ def cleanup_document_vectors(
         "deleted_passage_vectors": len(passage_before),
         "deleted_object_vectors": len(delete_object_ids),
         "updated_shared_object_vectors": len(upserted_ids),
+        "preserved_object_source_ids": sorted(current_object_sources),
         "passage_count": passage_count,
         "object_count": object_count,
         "full_rebuild_performed": False,

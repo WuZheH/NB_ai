@@ -1358,6 +1358,55 @@ def test_shared_object_row_and_vector_are_preserved(tmp_path: Path) -> None:
     assert "object:exclusive-key" in harness.objects
 
 
+def test_spec_derived_object_vector_survives_deleted_db_candidate(
+    tmp_path: Path,
+) -> None:
+    runtime, harness = _runtime(tmp_path)
+
+    def preserve_spec_source(
+        *,
+        passage_source_ids,
+        affected_object_keys,
+        store_path,
+        manifest_path,
+    ):
+        del affected_object_keys, store_path, manifest_path
+        passage_before = len(
+            harness.passages.intersection(passage_source_ids)
+        )
+        harness.passages.difference_update(passage_source_ids)
+        return {
+            "status": "ok",
+            "deleted_passage_vectors": passage_before,
+            "deleted_object_vectors": 0,
+            "updated_shared_object_vectors": 1,
+            "preserved_object_source_ids": [
+                vector_store_service.make_object_source_id(
+                    "exclusive-key"
+                )
+            ],
+        }
+
+    runtime = replace(runtime, cleanup_vectors=preserve_spec_source)
+    preview = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+    )
+    assert preview["exclusive_object_count"] == 1
+    result = document_deletion_service.delete_document(
+        document_id=1,
+        preview_token=preview["preview_token"],
+        expected_document_revision=preview["document_revision"],
+        confirmation_text="删除",
+        runtime=runtime,
+    )
+    assert result["status"] == "completed"
+    assert result["orphan_scan"]["ok"] is True
+    assert result["orphan_scan"]["preserved_object_vectors"] == 1
+    assert result["orphan_scan"]["orphan_vectors"] == 0
+    assert "object:exclusive-key" in harness.objects
+
+
 def test_batch_preflight_rejects_object_overlap_before_any_delete(tmp_path: Path) -> None:
     runtime, _harness = _runtime(tmp_path)
     connection = sqlite3.connect(runtime.db_path)
