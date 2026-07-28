@@ -997,14 +997,14 @@ def _note_evidence_link_detach_count(
         return _count(
             connection,
             "note_evidence_links",
-            "document_id = ?",
+            "document_id = ? AND chunk_id IS NOT NULL",
             (document_id,),
         )
     return _count(
         connection,
         "note_evidence_links",
-        "document_id = ? AND "
-        f"(chunk_id IS NULL OR chunk_id NOT IN ({_placeholders(chunk_ids)}))",
+        "document_id = ? AND chunk_id IS NOT NULL AND "
+        f"chunk_id NOT IN ({_placeholders(chunk_ids)})",
         (document_id, *chunk_ids),
     )
 
@@ -1051,11 +1051,31 @@ def _execute_database_transaction(plan: InternalDeletionPlan, *, runtime: Deleti
                 "UPDATE personal_notes SET document_id = NULL WHERE document_id = ?",
                 (plan.document_id,),
             ) if _table_exists(connection, "personal_notes") else 0
-            counts["note_evidence_links_deleted"] = _execute_count(
-                connection,
-                f"DELETE FROM note_evidence_links WHERE chunk_id IN ({chunk_placeholders})",
-                plan.chunk_ids,
-            ) if _table_exists(connection, "note_evidence_links") else 0
+            if _table_exists(connection, "note_evidence_links"):
+                has_note_document_id = (
+                    "document_id"
+                    in _table_columns(connection, "note_evidence_links")
+                )
+                note_condition = (
+                    f"chunk_id IN ({chunk_placeholders})"
+                    + (
+                        " OR (document_id = ? AND chunk_id IS NULL)"
+                        if has_note_document_id
+                        else ""
+                    )
+                )
+                note_params = (
+                    (*plan.chunk_ids, plan.document_id)
+                    if has_note_document_id
+                    else plan.chunk_ids
+                )
+                counts["note_evidence_links_deleted"] = _execute_count(
+                    connection,
+                    f"DELETE FROM note_evidence_links WHERE {note_condition}",
+                    note_params,
+                )
+            else:
+                counts["note_evidence_links_deleted"] = 0
             counts["knowledge_relations_detached"] = _execute_count(
                 connection,
                 f"UPDATE knowledge_relations SET evidence_chunk_id = NULL WHERE evidence_chunk_id IN ({chunk_placeholders})",
@@ -1077,6 +1097,20 @@ def _execute_database_transaction(plan: InternalDeletionPlan, *, runtime: Deleti
                 "UPDATE personal_notes SET document_id = NULL WHERE document_id = ?",
                 (plan.document_id,),
             ) if _table_exists(connection, "personal_notes") else 0
+            counts["note_evidence_links_deleted"] = (
+                _execute_count(
+                    connection,
+                    "DELETE FROM note_evidence_links "
+                    "WHERE document_id = ? AND chunk_id IS NULL",
+                    (plan.document_id,),
+                )
+                if (
+                    _table_exists(connection, "note_evidence_links")
+                    and "document_id"
+                    in _table_columns(connection, "note_evidence_links")
+                )
+                else 0
+            )
             counts["inspiration_card_sources_deleted"] = _execute_count(
                 connection,
                 "DELETE FROM inspiration_card_sources WHERE source_doc_id = ?",

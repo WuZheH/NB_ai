@@ -459,9 +459,23 @@ def test_note_evidence_document_fk_is_previewed_recovered_and_detached(
     runtime, _harness = _runtime(tmp_path)
     connection = sqlite3.connect(runtime.db_path)
     connection.execute(
-        "ALTER TABLE note_evidence_links ADD COLUMN "
-        "document_id INTEGER REFERENCES documents(id)"
+        "ALTER TABLE note_evidence_links RENAME TO "
+        "legacy_note_evidence_links"
     )
+    connection.execute(
+        "CREATE TABLE note_evidence_links ("
+        "id INTEGER PRIMARY KEY, "
+        "note_id INTEGER NOT NULL REFERENCES personal_notes(id), "
+        "document_id INTEGER REFERENCES documents(id), "
+        "chunk_id INTEGER REFERENCES knowledge_chunks(id), "
+        "CHECK (document_id IS NOT NULL OR chunk_id IS NOT NULL)"
+        ")"
+    )
+    connection.execute(
+        "INSERT INTO note_evidence_links(id, note_id, chunk_id) "
+        "SELECT id, note_id, chunk_id FROM legacy_note_evidence_links"
+    )
+    connection.execute("DROP TABLE legacy_note_evidence_links")
     connection.execute(
         "UPDATE note_evidence_links SET document_id=1 WHERE id=51"
     )
@@ -475,6 +489,11 @@ def test_note_evidence_document_fk_is_previewed_recovered_and_detached(
         "(id, note_id, chunk_id, document_id) "
         "VALUES (52, 41, 102, 1)"
     )
+    connection.execute(
+        "INSERT INTO note_evidence_links"
+        "(id, note_id, chunk_id, document_id) "
+        "VALUES (53, 41, NULL, 1)"
+    )
     connection.commit()
     connection.close()
 
@@ -482,7 +501,7 @@ def test_note_evidence_document_fk_is_previewed_recovered_and_detached(
         1,
         runtime=runtime,
     )
-    assert preview["evidence_link_count"] == 2
+    assert preview["evidence_link_count"] == 3
     assert preview["note_evidence_link_detach_count"] == 1
     assert "note_evidence_links_will_be_detached" in preview["warnings"]
     result = document_deletion_service.delete_document(
@@ -495,13 +514,13 @@ def test_note_evidence_document_fk_is_previewed_recovered_and_detached(
     assert result["status"] == "completed"
     assert result["database"]["counts"][
         "note_evidence_links_deleted"
-    ] == 1
+    ] == 2
     assert result["database"]["counts"][
         "note_evidence_links_detached"
     ] == 1
     connection = sqlite3.connect(runtime.db_path)
     assert connection.execute(
-        "SELECT COUNT(*) FROM note_evidence_links WHERE id=51"
+        "SELECT COUNT(*) FROM note_evidence_links WHERE id IN (51, 53)"
     ).fetchone()[0] == 0
     assert connection.execute(
         "SELECT document_id FROM note_evidence_links WHERE id=52"
@@ -518,7 +537,7 @@ def test_note_evidence_document_fk_is_previewed_recovered_and_detached(
     assert {
         row["id"]
         for row in recovery_rows["tables"]["note_evidence_links"]
-    } == {51, 52}
+    } == {51, 52, 53}
 
 
 def test_delete_document_refreshes_note_vector_document_scope(
