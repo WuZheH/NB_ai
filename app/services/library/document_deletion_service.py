@@ -1044,14 +1044,26 @@ def _sync_note_vectors_after_document_delete(
         notes_root=data_dir / "notes",
         project_root=data_dir.parent,
     )
-    fragments = fragment_repository.list_notebook_fragments(
-        source_types=NOTE_SOURCE_TYPES,
-        registry=registry,
+    affected_fragment_ids = set(
+        before.get("fragment_ids") or []
     )
 
-    result = note_vector_index.sync_zotero_note_vectors(
-        index_dir=index_dir,
-        fragments=fragments,
+    fragments = [
+        fragment
+        for fragment in fragment_repository.list_notebook_fragments(
+            source_types=NOTE_SOURCE_TYPES,
+            registry=registry,
+        )
+        if fragment.fragment_id in affected_fragment_ids
+    ]
+
+    result = (
+        note_vector_index
+        .refresh_zotero_note_vector_document_scope(
+            plan.document_id,
+            index_dir=index_dir,
+            fragments=fragments,
+        )
     )
 
     after = note_vector_index.inspect_zotero_note_vector_document_impact(

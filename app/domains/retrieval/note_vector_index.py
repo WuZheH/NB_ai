@@ -262,6 +262,361 @@ def sync_zotero_note_vectors(
     }
 
 
+def refresh_zotero_note_vector_document_scope(
+    document_id: int,
+    *,
+    fragments: Iterable[NotebookFragment],
+    index_dir: str | Path = ZOTERO_NOTE_VECTOR_DIR,
+    encode_text: Callable[[str], list[float]] | None = None,
+    built_at: str | None = None,
+) -> dict[str, Any]:
+    """Refresh only note-vector entries formerly scoped to one document."""
+
+    started = time.perf_counter()
+
+    if (
+        isinstance(document_id, bool)
+        or not isinstance(document_id, int)
+        or document_id <= 0
+    ):
+        raise ValueError("document_id must be a positive integer")
+
+    root = Path(index_dir)
+    previous_manifest, previous_entries = _load_existing(
+        root,
+        required=True,
+    )
+
+    scoped_previous = [
+        entry
+        for entry in previous_entries
+        if entry.get("document_id") == document_id
+    ]
+
+    if not scoped_previous:
+        return {
+            **previous_manifest,
+            "document_id": document_id,
+            "scoped_entry_count_before": 0,
+            "scoped_entry_count_after": 0,
+            "reused_count": 0,
+            "recomputed_count": 0,
+            "metadata_updated_count": 0,
+            "removed_count": 0,
+            "unrelated_preserved_count": len(previous_entries),
+            "elapsed_ms": round(
+                (time.perf_counter() - started) * 1000,
+                2,
+            ),
+            "vector_write_performed": False,
+            "production_db_write_performed": False,
+            "zotero_db_write_performed": False,
+            "llm_called": False,
+        }
+
+    target_ids = {
+        str(entry["fragment_id"])
+        for entry in scoped_previous
+    }
+
+    fresh_by_id: dict[str, NotebookFragment] = {}
+
+    for fragment in fragments:
+        if fragment.source_type not in NOTE_SOURCE_TYPES:
+            raise ValueError(
+                "scoped note refresh received unsupported source type: "
+                f"{fragment.source_type}"
+            )
+
+        if fragment.fragment_id not in target_ids:
+            continue
+
+        if fragment.fragment_id in fresh_by_id:
+            raise ValueError(
+                "duplicate fresh fragment in scoped note refresh: "
+                f"{fragment.fragment_id}"
+            )
+
+        if fragment.document_id == document_id:
+            raise ValueError(
+                "fresh fragment remains mapped to deleted document: "
+                f"{fragment.fragment_id}"
+            )
+
+        fresh_by_id[fragment.fragment_id] = fragment
+
+    template_compatible = bool(
+        previous_manifest
+        and previous_manifest.get("schema_version")
+        == INDEX_SCHEMA_VERSION
+        and previous_manifest.get("passage_template")
+        == PASSAGE_TEMPLATE_VERSION
+        and previous_manifest.get("model")
+        == local_embedding_service.MODEL_NAME
+        and previous_manifest.get("normalization")
+        is NORMALIZE_EMBEDDINGS
+        and previous_manifest.get("batch_size")
+        == ENCODE_BATCH_SIZE
+    )
+
+    entries: list[dict[str, Any]] = []
+    encoder = encode_text
+
+    reused = 0
+    recomputed = 0
+    metadata_updated = 0
+    removed = 0
+
+    for previous in previous_entries:
+        fragment_id = str(previous["fragment_id"])
+
+        if previous.get("document_id") != document_id:
+            # Deleting one Search document must not migrate or refresh
+            # unrelated note-vector entries. Preserve the prior entry
+            # exactly, including legacy entries without snapshot hashes.
+            entries.append(dict(previous))
+            continue
+
+        fresh = fresh_by_id.get(fragment_id)
+
+        if fresh is None:
+            removed += 1
+            continue
+
+        passage_text = build_note_passage_text(fresh)
+        vector_content_hash = _vector_content_hash(
+            fresh,
+            passage_text,
+        )
+        fragment_payload = fresh.model_dump(mode="json")
+        fragment_snapshot_hash = _fragment_snapshot_hash(
+            fragment_payload
+        )
+
+        if (
+            _entry_fragment_snapshot_hash(previous)
+            != fragment_snapshot_hash
+        ):
+            metadata_updated += 1
+
+        can_reuse = bool(
+            template_compatible
+            and previous.get("vector_content_hash")
+            == vector_content_hash
+            and previous.get("passage_text")
+            == passage_text
+            and isinstance(previous.get("embedding"), list)
+        )
+
+        if can_reuse:
+            embedding = [
+                float(value)
+                for value in previous["embedding"]
+            ]
+            reused += 1
+        else:
+            if encoder is None:
+                encoder = _default_encoder()
+
+            embedding = [
+                float(value)
+                for value in encoder(passage_text)
+            ]
+
+            if not embedding:
+                raise ValueError(
+                    "empty embedding for scoped fragment "
+                    f"{fragment_id}"
+                )
+
+            recomputed += 1
+
+        entries.append(
+            {
+                "fragment_id": fragment_id,
+                "source_type": fresh.source_type,
+                "document_id": fresh.document_id,
+                "content_hash": fresh.content_hash,
+                "vector_content_hash": vector_content_hash,
+                "fragment_snapshot_hash":
+                    fragment_snapshot_hash,
+                "passage_text": passage_text,
+                "fragment": fragment_payload,
+                "embedding": embedding,
+            }
+        )
+
+    entries.sort(
+        key=lambda entry: str(entry["fragment_id"])
+    )
+
+    dimensions = {
+        len(entry["embedding"])
+        for entry in entries
+    }
+
+    if len(dimensions) > 1:
+        raise ValueError(
+            "inconsistent note embedding dimensions after scoped refresh"
+        )
+
+    expected_dimension = int(
+        previous_manifest.get("dimension") or 0
+    )
+
+    if dimensions and dimensions != {expected_dimension}:
+        raise ValueError(
+            "scoped note refresh changed embedding dimension"
+        )
+
+    scoped_after = sum(
+        1
+        for entry in entries
+        if entry.get("document_id") == document_id
+    )
+
+    if scoped_after:
+        raise ValueError(
+            "scoped note refresh retained deleted document mappings"
+        )
+
+    content_hash = _aggregate_content_hash(entries)
+    created_at = (
+        built_at
+        or datetime.now(timezone.utc).isoformat()
+    )
+
+    # Scoped deletion cleanup must not implicitly migrate the whole
+    # note-vector index. A legacy index remains legacy until an explicit
+    # full sync performs the schema migration.
+    snapshot_version = previous_manifest.get(
+        "fragment_snapshot_version"
+    )
+
+    payload = {
+        "schema_version": INDEX_SCHEMA_VERSION,
+        "model": local_embedding_service.MODEL_NAME,
+        "dimension": expected_dimension,
+        "normalization": NORMALIZE_EMBEDDINGS,
+        "batch_size": ENCODE_BATCH_SIZE,
+        "passage_template": PASSAGE_TEMPLATE_VERSION,
+        "fragment_snapshot_version":
+            snapshot_version,
+        "content_hash": content_hash,
+        "count": len(entries),
+        "built_at": created_at,
+        "entries": entries,
+    }
+
+    payload_bytes = _json_bytes(payload)
+    payload_sha = hashlib.sha256(
+        payload_bytes
+    ).hexdigest()
+
+    generation_name = (
+        f"notes-{content_hash[:16]}-"
+        f"{payload_sha[:16]}.json"
+    )
+
+    manifest = {
+        "status": "ready",
+        "schema_version": INDEX_SCHEMA_VERSION,
+        "model": local_embedding_service.MODEL_NAME,
+        "dimension": expected_dimension,
+        "normalization": NORMALIZE_EMBEDDINGS,
+        "batch_size": ENCODE_BATCH_SIZE,
+        "source_types": list(NOTE_SOURCE_TYPES),
+        "excluded_origin_kinds":
+            list(EXCLUDED_NOTE_ORIGIN_KINDS),
+        "passage_template": PASSAGE_TEMPLATE_VERSION,
+        "fragment_snapshot_version":
+            snapshot_version,
+        "count": len(entries),
+        "content_hash": content_hash,
+        "index_file": generation_name,
+        "index_sha256": payload_sha,
+        "built_at": created_at,
+        "origin_counts": dict(
+            sorted(
+                Counter(
+                    _fragment_origin(entry["fragment"])
+                    for entry in entries
+                ).items()
+            )
+        ),
+    }
+
+    root.mkdir(parents=True, exist_ok=True)
+    generation = root / generation_name
+    generation_created = False
+
+    try:
+        if not generation.exists():
+            _atomic_write_bytes(
+                generation,
+                payload_bytes,
+            )
+            generation_created = True
+        elif (
+            hashlib.sha256(
+                generation.read_bytes()
+            ).hexdigest()
+            != payload_sha
+        ):
+            raise ValueError(
+                "existing scoped note generation hash mismatch"
+            )
+
+        _atomic_write_bytes(
+            root / MANIFEST_NAME,
+            _json_bytes(manifest),
+        )
+
+        with _INDEX_CACHE_LOCK:
+            _INDEX_CACHE.pop(
+                str(root.resolve()),
+                None,
+            )
+
+        _prune_old_generations(
+            root,
+            keep=generation_name,
+        )
+
+    except Exception:
+        if (
+            generation_created
+            and generation.is_file()
+        ):
+            generation.unlink()
+        raise
+
+    return {
+        **manifest,
+        "document_id": document_id,
+        "scoped_entry_count_before":
+            len(scoped_previous),
+        "scoped_entry_count_after":
+            scoped_after,
+        "reused_count": reused,
+        "recomputed_count": recomputed,
+        "metadata_updated_count":
+            metadata_updated,
+        "removed_count": removed,
+        "unrelated_preserved_count":
+            len(previous_entries)
+            - len(scoped_previous),
+        "elapsed_ms": round(
+            (time.perf_counter() - started) * 1000,
+            2,
+        ),
+        "vector_write_performed": True,
+        "production_db_write_performed": False,
+        "zotero_db_write_performed": False,
+        "llm_called": False,
+    }
+
+
 def get_zotero_note_vector_status(
     *, index_dir: str | Path = ZOTERO_NOTE_VECTOR_DIR
 ) -> dict[str, Any]:
