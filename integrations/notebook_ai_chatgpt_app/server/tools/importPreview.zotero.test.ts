@@ -10,6 +10,7 @@ function zoteroResponse() {
     source_type: "zotero_selected_book" as const,
     filename: "book.pdf",
     title: "Selected Zotero Book",
+    item_type: "book",
     pdf_sha256: "a".repeat(64),
     duplicate_status: "not_detected",
     existing_document_id: null,
@@ -36,6 +37,7 @@ test("import_preview accepts legacy local PDF and Zotero key inputs", async () =
 
   const local = await runImportPreviewTool(client, { inbox_filename: "fixture.pdf" });
   assert.equal(local.structuredContent?.source_type, "zotero_selected_book");
+  assert.equal(local.structuredContent?.item_type, "book");
   await runImportPreviewTool(client, {
     source_type: "zotero_selected_book",
     zotero_item_key: "ABCD1234",

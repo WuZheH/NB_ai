@@ -156,6 +156,7 @@ export interface ImportPreviewResponse {
   source_type: "local_pdf" | "zotero_selected_book";
   filename: string | null;
   title: string;
+  item_type: string | null;
   pdf_sha256: string | null;
   duplicate_status: string;
   existing_document_id: number | null;
