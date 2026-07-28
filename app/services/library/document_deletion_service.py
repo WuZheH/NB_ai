@@ -684,6 +684,13 @@ def _prepare_preview(
             for row in objects
             if str(row["user_comment"] or "").strip()
         )
+        note_evidence_link_detach_count = (
+            _note_evidence_link_detach_count(
+                connection,
+                document_id=document_id,
+                chunk_ids=chunk_ids,
+            )
+        )
         cross_document_references = _cross_document_reference_count(
             connection,
             document_id=document_id,
@@ -763,6 +770,11 @@ def _prepare_preview(
             "personal_notes_will_be_detached" if personal_note_count else "",
             "zotero_notes_will_be_detached" if zotero_note_count else "",
             (
+                "note_evidence_links_will_be_detached"
+                if note_evidence_link_detach_count
+                else ""
+            ),
+            (
                 "search_review_artifacts_will_be_deleted"
                 if review_delete_count
                 else ""
@@ -785,6 +797,9 @@ def _prepare_preview(
         "zotero_note_count": zotero_note_count,
         "review_count": review_count,
         "review_delete_count": review_delete_count,
+        "note_evidence_link_detach_count": (
+            note_evidence_link_detach_count
+        ),
         "orphan_baseline": orphan_baseline,
         "database_impact_fingerprint": _database_impact_fingerprint(
             connection_path=db_path,
@@ -804,7 +819,12 @@ def _prepare_preview(
         + review_delete_count
         + 1
     )
-    estimated_detached_rows = personal_note_count + zotero_note_count + row_counts.get("knowledge_relations", 0)
+    estimated_detached_rows = (
+        personal_note_count
+        + zotero_note_count
+        + row_counts.get("knowledge_relations", 0)
+        + note_evidence_link_detach_count
+    )
     archive_root = runtime.resolved_archive_root()
     public = {
         "status": "ok",
@@ -828,6 +848,9 @@ def _prepare_preview(
         "evidence_link_count": row_counts.get("note_evidence_links", 0) + row_counts.get("knowledge_relations", 0) + row_counts.get("inspiration_card_sources", 0),
         "personal_note_count": personal_note_count,
         "zotero_note_count": zotero_note_count,
+        "note_evidence_link_detach_count": (
+            note_evidence_link_detach_count
+        ),
         "search_review_artifact_count": review_delete_count,
         "fts_row_count": fts_count,
         "passage_vector_count": int(vector_impact.get("passage_vector_count") or 0),
@@ -906,7 +929,6 @@ def _impact_row_counts(
         placeholders = _placeholders(chunk_ids)
         for table, column in (
             ("chunk_tags", "chunk_id"),
-            ("note_evidence_links", "chunk_id"),
             ("knowledge_relations", "evidence_chunk_id"),
         ):
             if _table_exists(connection, table):
@@ -920,7 +942,71 @@ def _impact_row_counts(
             )
     else:
         counts["inspiration_card_sources"] = _count(connection, "inspiration_card_sources", "source_doc_id = ?", (document_id,)) if _table_exists(connection, "inspiration_card_sources") else 0
+    if _table_exists(connection, "note_evidence_links"):
+        condition, params = _note_evidence_scope(
+            connection,
+            document_id=document_id,
+            chunk_ids=chunk_ids,
+        )
+        counts["note_evidence_links"] = _count(
+            connection,
+            "note_evidence_links",
+            condition,
+            params,
+        )
     return counts
+
+
+def _note_evidence_scope(
+    connection: sqlite3.Connection,
+    *,
+    document_id: int,
+    chunk_ids: tuple[int, ...],
+) -> tuple[str, tuple[Any, ...]]:
+    has_document_id = (
+        "document_id" in _table_columns(connection, "note_evidence_links")
+    )
+    if chunk_ids:
+        chunk_condition = (
+            f"chunk_id IN ({_placeholders(chunk_ids)})"
+        )
+        if has_document_id:
+            return (
+                f"document_id = ? OR {chunk_condition}",
+                (document_id, *chunk_ids),
+            )
+        return chunk_condition, tuple(chunk_ids)
+    if has_document_id:
+        return "document_id = ?", (document_id,)
+    return "0 = 1", ()
+
+
+def _note_evidence_link_detach_count(
+    connection: sqlite3.Connection,
+    *,
+    document_id: int,
+    chunk_ids: tuple[int, ...],
+) -> int:
+    if (
+        not _table_exists(connection, "note_evidence_links")
+        or "document_id"
+        not in _table_columns(connection, "note_evidence_links")
+    ):
+        return 0
+    if not chunk_ids:
+        return _count(
+            connection,
+            "note_evidence_links",
+            "document_id = ?",
+            (document_id,),
+        )
+    return _count(
+        connection,
+        "note_evidence_links",
+        "document_id = ? AND "
+        f"(chunk_id IS NULL OR chunk_id NOT IN ({_placeholders(chunk_ids)}))",
+        (document_id, *chunk_ids),
+    )
 
 
 def _execute_database_transaction(plan: InternalDeletionPlan, *, runtime: DeletionRuntime) -> dict[str, Any]:
@@ -997,6 +1083,20 @@ def _execute_database_transaction(plan: InternalDeletionPlan, *, runtime: Deleti
                 (plan.document_id,),
             ) if _table_exists(connection, "inspiration_card_sources") else 0
 
+        counts["note_evidence_links_detached"] = (
+            _execute_count(
+                connection,
+                "UPDATE note_evidence_links SET document_id = NULL "
+                "WHERE document_id = ?",
+                (plan.document_id,),
+            )
+            if (
+                _table_exists(connection, "note_evidence_links")
+                and "document_id"
+                in _table_columns(connection, "note_evidence_links")
+            )
+            else 0
+        )
         counts["zotero_notes_detached"] = _detach_zotero_notes(connection, plan)
         counts["mechanism_drafts_detached"] = _detach_mechanism_drafts(connection, plan)
         for table in DERIVED_DOCUMENT_TABLES:
@@ -1437,7 +1537,6 @@ def _collect_recovery_rows(connection: sqlite3.Connection, plan: InternalDeletio
         placeholders = _placeholders(plan.chunk_ids)
         for table, condition in (
             ("chunk_tags", f"chunk_id IN ({placeholders})"),
-            ("note_evidence_links", f"chunk_id IN ({placeholders})"),
             ("knowledge_relations", f"evidence_chunk_id IN ({placeholders})"),
         ):
             if _table_exists(connection, table):
@@ -1448,6 +1547,17 @@ def _collect_recovery_rows(connection: sqlite3.Connection, plan: InternalDeletio
                 f"SELECT * FROM inspiration_card_sources WHERE source_doc_id = ? OR source_chunk_id IN ({placeholders})",
                 (plan.document_id, *plan.chunk_ids),
             )
+    if _table_exists(connection, "note_evidence_links"):
+        condition, params = _note_evidence_scope(
+            connection,
+            document_id=plan.document_id,
+            chunk_ids=plan.chunk_ids,
+        )
+        collected["note_evidence_links"] = _rows(
+            connection,
+            f"SELECT * FROM note_evidence_links WHERE {condition}",
+            params,
+        )
     if _table_exists(connection, "personal_notes"):
         collected["personal_notes_detached"] = _rows(
             connection,
@@ -1768,7 +1878,6 @@ def _database_impact_fingerprint(
             placeholders = _placeholders(chunk_ids)
             for table, condition in (
                 ("chunk_tags", f"chunk_id IN ({placeholders})"),
-                ("note_evidence_links", f"chunk_id IN ({placeholders})"),
                 ("knowledge_relations", f"evidence_chunk_id IN ({placeholders})"),
                 (
                     "inspiration_card_sources",
@@ -1792,6 +1901,17 @@ def _database_impact_fingerprint(
                 connection,
                 "SELECT * FROM inspiration_card_sources WHERE source_doc_id = ?",
                 (document_id,),
+            )
+        if _table_exists(connection, "note_evidence_links"):
+            condition, params = _note_evidence_scope(
+                connection,
+                document_id=document_id,
+                chunk_ids=chunk_ids,
+            )
+            payload["note_evidence_links"] = _rows(
+                connection,
+                f"SELECT * FROM note_evidence_links WHERE {condition}",
+                params,
             )
         if _table_exists(connection, "personal_notes"):
             payload["personal_notes"] = _rows(

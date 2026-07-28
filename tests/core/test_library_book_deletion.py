@@ -453,6 +453,74 @@ def test_delete_transaction_preserves_notes_pdf_and_creates_recovery_package(tmp
     assert "object:exclusive-key" not in harness.objects
 
 
+def test_note_evidence_document_fk_is_previewed_recovered_and_detached(
+    tmp_path: Path,
+) -> None:
+    runtime, _harness = _runtime(tmp_path)
+    connection = sqlite3.connect(runtime.db_path)
+    connection.execute(
+        "ALTER TABLE note_evidence_links ADD COLUMN "
+        "document_id INTEGER REFERENCES documents(id)"
+    )
+    connection.execute(
+        "UPDATE note_evidence_links SET document_id=1 WHERE id=51"
+    )
+    connection.execute(
+        "INSERT INTO knowledge_chunks VALUES "
+        "(102, 2, NULL, 0, 'Other', 'other chunk', "
+        "'other-hash', 'chunk:2:102', NULL, NULL)"
+    )
+    connection.execute(
+        "INSERT INTO note_evidence_links"
+        "(id, note_id, chunk_id, document_id) "
+        "VALUES (52, 41, 102, 1)"
+    )
+    connection.commit()
+    connection.close()
+
+    preview = document_deletion_service.create_deletion_preview(
+        1,
+        runtime=runtime,
+    )
+    assert preview["evidence_link_count"] == 2
+    assert preview["note_evidence_link_detach_count"] == 1
+    assert "note_evidence_links_will_be_detached" in preview["warnings"]
+    result = document_deletion_service.delete_document(
+        document_id=1,
+        preview_token=preview["preview_token"],
+        expected_document_revision=preview["document_revision"],
+        confirmation_text="删除",
+        runtime=runtime,
+    )
+    assert result["status"] == "completed"
+    assert result["database"]["counts"][
+        "note_evidence_links_deleted"
+    ] == 1
+    assert result["database"]["counts"][
+        "note_evidence_links_detached"
+    ] == 1
+    connection = sqlite3.connect(runtime.db_path)
+    assert connection.execute(
+        "SELECT COUNT(*) FROM note_evidence_links WHERE id=51"
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT document_id FROM note_evidence_links WHERE id=52"
+    ).fetchone()[0] is None
+    assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    connection.close()
+    recovery_rows = json.loads(
+        (
+            runtime.resolved_archive_root()
+            / result["audit_id"]
+            / "database_rows.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert {
+        row["id"]
+        for row in recovery_rows["tables"]["note_evidence_links"]
+    } == {51, 52}
+
+
 def test_delete_document_refreshes_note_vector_document_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
