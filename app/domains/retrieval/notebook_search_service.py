@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import time
 import re
+import sqlite3
+import json
 from typing import Any
 
+from app.core.database import connect_readonly_sqlite
+from app.core.paths import DEFAULT_DB_PATH
 from app.domains.retrieval.fragment_repository import (
     cache_notebook_fragments,
     get_notebook_fragments,
@@ -45,7 +49,9 @@ def search_notebook(
         else NotebookSearchRequest.model_validate(request)
     )
     started = time.perf_counter()
-    warnings: list[str] = []
+    warnings: list[str | dict[str, Any]] = _requested_document_warnings(
+        search_request.document_ids
+    )
     candidates: list[dict[str, Any]] = []
     backends: list[str] = []
 
@@ -110,6 +116,11 @@ def search_notebook(
             warnings.append("没有高相关用户笔记")
     else:
         ranked = candidates
+    ranked, omitted_pdf_count = _filter_low_relevance_pdf_candidates(ranked)
+    if omitted_pdf_count:
+        warnings.append(
+            f"low_relevance_pdf_candidates_omitted:{omitted_pdf_count}"
+        )
     limited = ranked[: search_request.limit]
     cache_notebook_fragments(item["fragment"] for item in limited)
     results = [
@@ -127,7 +138,7 @@ def search_notebook(
         backend="+".join(dict.fromkeys(backends)) or "high_quality_notebook_search",
         result_count=len(results),
         results=results,
-        warnings=list(dict.fromkeys(warnings)),
+        warnings=_dedupe_warnings(warnings),
         latency={
             "pdf_high_quality_ms": round(pdf_ms, 2),
             "note_vector_ms": round(notes_ms, 2),
@@ -267,6 +278,32 @@ def _filter_relevant_notes_and_duplicates(
     return result
 
 
+def _filter_low_relevance_pdf_candidates(
+    ranked: list[dict[str, Any]],
+    *,
+    strong_score_floor: float = 4.0,
+    maximum_score_gap: float = 1.25,
+) -> tuple[list[dict[str, Any]], int]:
+    pdf_scores = [
+        float(item.get("reranker_score") or 0.0)
+        for item in ranked
+        if item.get("kind") == "pdf"
+    ]
+    if not pdf_scores:
+        return ranked, 0
+    top_score = max(pdf_scores)
+    if top_score < strong_score_floor:
+        return ranked, 0
+    cutoff = top_score - maximum_score_gap
+    filtered = [
+        item
+        for item in ranked
+        if item.get("kind") != "pdf"
+        or float(item.get("reranker_score") or 0.0) >= cutoff
+    ]
+    return filtered, len(ranked) - len(filtered)
+
+
 def _note_is_relevant(query: str, candidate: dict[str, Any]) -> bool:
     reranker_score = float(candidate.get("reranker_score") or 0.0)
     semantic_score = float(candidate.get("semantic_score") or 0.0)
@@ -318,3 +355,73 @@ def _int_or_none(value: Any) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _requested_document_warnings(
+    document_ids: list[int],
+) -> list[dict[str, Any]]:
+    requested = sorted({int(value) for value in document_ids})
+    if not requested:
+        return []
+    placeholders = ",".join("?" for _ in requested)
+    try:
+        with connect_readonly_sqlite(
+            DEFAULT_DB_PATH,
+            resolve_strict=True,
+            query_only=True,
+            temp_store="MEMORY",
+        ) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, COALESCE(read_status, '') AS read_status
+                  FROM documents
+                 WHERE id IN ({placeholders})
+                """,
+                requested,
+            ).fetchall()
+    except (OSError, sqlite3.Error):
+        return [
+            {
+                "code": "requested_document_validation_unavailable",
+                "document_ids": requested,
+            }
+        ]
+    statuses = {int(row[0]): str(row[1] or "") for row in rows}
+    warnings: list[dict[str, Any]] = []
+    missing = [value for value in requested if value not in statuses]
+    archived = [
+        value for value in requested if statuses.get(value) == "archived"
+    ]
+    if missing:
+        warnings.append(
+            {
+                "code": "requested_document_not_found",
+                "document_ids": missing,
+            }
+        )
+    if archived:
+        warnings.append(
+            {
+                "code": "requested_document_archived",
+                "document_ids": archived,
+            }
+        )
+    return warnings
+
+
+def _dedupe_warnings(
+    warnings: list[str | dict[str, Any]],
+) -> list[str | dict[str, Any]]:
+    result: list[str | dict[str, Any]] = []
+    seen: set[str] = set()
+    for warning in warnings:
+        identity = (
+            warning
+            if isinstance(warning, str)
+            else json.dumps(warning, sort_keys=True, ensure_ascii=True)
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(warning)
+    return result

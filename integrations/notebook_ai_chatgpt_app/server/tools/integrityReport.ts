@@ -71,6 +71,8 @@ export const integrityReportOutputShape = {
     confirmation_token_fingerprint: z.string(),
     previewed_at: z.string(),
     confirmed_at: z.string(),
+    transaction_fingerprint: z.string(),
+    source_revision_fingerprint: z.string(),
     lifecycle_events: z.string(),
   }),
   writes_performed: z.object({
@@ -98,7 +100,7 @@ export async function runIntegrityReportTool(client: NotebookClient, rawInput: u
       duration_ms: elapsedMilliseconds(startedAt),
       error_code: errorCode(error),
     });
-    return errorToolResult(error);
+    return errorToolResult(error, { tool: "integrity_report" });
   }
 }
 

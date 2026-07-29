@@ -73,13 +73,34 @@ export function jsonContent(value: unknown): Array<{ type: "text"; text: string 
   return [{ type: "text", text: JSON.stringify(value) }];
 }
 
-export function errorToolResult(error: unknown): {
+const PUBLIC_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  MCP_INVALID_ARGUMENT: "The tool arguments are invalid.",
+  notebook_fragment_not_found: "The requested fragment was not found.",
+  integrity_report_document_not_found: "The requested document was not found.",
+  evidence_fragment_not_found: "A selected evidence fragment was not found.",
+  attachment_not_owned_by_item:
+    "The selected PDF attachment does not belong to the selected Zotero item.",
+  import_inbox_unavailable: "The local PDF import inbox is unavailable.",
+  zotero_item_not_found: "The selected Zotero item was not found.",
+  zotero_item_type_unsupported:
+    "The selected Zotero item type is not supported for PDF import.",
+  no_pdf_attachment: "The selected Zotero item has no PDF attachment.",
+  pdf_file_missing: "The selected Zotero PDF is not available as a local file.",
+  preview_token_expired: "The import preview expired. Run import_preview again.",
+  preview_token_unknown: "The import preview is no longer available. Run import_preview again.",
+});
+
+export function errorToolResult(
+  error: unknown,
+  options: { tool?: string; writeOperation?: boolean } = {},
+): {
   isError: true;
   content: Array<{ type: "text"; text: string }>;
 } {
   const code = errorCode(error);
   const message =
-    code === "BACKEND_TIMEOUT"
+    PUBLIC_ERROR_MESSAGES[code]
+    ?? (code === "BACKEND_TIMEOUT"
       ? "Search backend request timed out."
       : code === "zotero_direction_b_body_import_failed"
         ? "Selected-book body extraction failed and the import was rolled back."
@@ -105,8 +126,22 @@ export function errorToolResult(error: unknown): {
           "reranker_model_inference_failed",
         ].includes(code)
         ? "Search high-quality retrieval model is unavailable."
-      : "Search request failed.";
-  const structuredContent = { status: "error" as const, error_code: code, message };
+      : "Search request failed.");
+  const writeOperation = options.writeOperation === true;
+  const structuredContent = {
+    status: "error" as const,
+    tool: options.tool ?? "unknown",
+    error_code: code,
+    message,
+    retryable: code === "BACKEND_TIMEOUT" || code === "BACKEND_UNAVAILABLE",
+    writes_performed: writeOperation ? null : false,
+    ...(writeOperation
+      ? {
+          token_consumed: null,
+          safe_to_retry: false,
+        }
+      : {}),
+  };
   return { isError: true, content: jsonContent(structuredContent) };
 }
 

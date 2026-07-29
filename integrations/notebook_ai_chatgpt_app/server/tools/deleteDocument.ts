@@ -39,7 +39,7 @@ export async function runDeleteDocumentTool(client: NotebookClient, rawInput: un
       duration_ms: elapsedMilliseconds(startedAt),
       error_code: errorCode(error),
     });
-    return errorToolResult(error);
+    return errorToolResult(error, { tool: "delete_document", writeOperation: true });
   }
 }
 

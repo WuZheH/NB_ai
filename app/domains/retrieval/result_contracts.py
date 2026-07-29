@@ -111,7 +111,7 @@ class NotebookSearchResponse(BaseModel):
     backend: str
     result_count: int = Field(..., ge=0)
     results: list[PublicEvidence] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[str | dict[str, Any]] = Field(default_factory=list)
     latency: dict[str, float] = Field(default_factory=dict)
     db_write_performed: bool = False
     production_db_write_performed: bool = False

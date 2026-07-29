@@ -39,7 +39,7 @@ export async function runFetchTool(client: NotebookClient, rawInput: unknown) {
     };
   } catch (error) {
     logToolInvocation({ tool: "fetch", duration_ms: elapsedMilliseconds(startedAt), error_code: errorCode(error) });
-    return errorToolResult(error);
+    return errorToolResult(error, { tool: "fetch" });
   }
 }
 

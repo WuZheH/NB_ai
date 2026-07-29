@@ -16,7 +16,7 @@ export const listLibraryInputShape = {
   scope: z.enum(["imported", "catalog", "zotero"]).default("imported"),
   query: z.string().trim().max(256).optional(),
   document_type: z.string().trim().max(64).optional(),
-  status: z.enum(["active", "archived", "all"]).default("active"),
+  status: z.enum(["active", "archived", "available", "imported", "all"]).default("active"),
   limit: z.number().int().min(1).max(50).default(20),
 };
 export const listLibraryInputSchema = z.object(listLibraryInputShape);
@@ -45,12 +45,12 @@ const catalogLibraryItemSchema = z.object({
 });
 const zoteroLibraryItemSchema = z.object({
   kind: z.literal("zotero"), document_id: z.number().int().positive().nullable(), title: z.string(), item_type: z.string(), zotero_item_key: z.string(),
-  parent_key: z.string(), authors: z.array(z.string()), date: z.string(),
+  parent_key: z.string(), authors: z.array(z.string()), tags: z.array(z.string()).optional(), date: z.string(),
   attachment_keys: z.array(z.string()), primary_pdf_attachment_key: z.string().nullable(),
   has_pdf: z.boolean(), attachment_count: z.number().int().nonnegative(), attachment_choices: z.array(z.object({ zotero_attachment_key: z.string(), file_name: z.string().nullable(), path_exists: z.boolean(), content_type: z.string().nullable() })), annotation_count: z.number().int().nonnegative(),
   child_note_count: z.number().int().nonnegative(), date_modified: z.string(), recent_activity_at: z.string(),
   already_imported: z.boolean(), imported_document_id: z.number().int().positive().nullable(),
-  duplicate_status: z.string(), status: z.literal("available"),
+  duplicate_status: z.string(), status: z.enum(["available", "imported"]),
   source: z.literal("zotero_library"),
 });
 
@@ -58,8 +58,11 @@ export const listLibraryOutputShape = {
   status: z.literal("ok"),
   scope: z.enum(["imported", "catalog", "zotero"]),
   count: z.number().int().nonnegative(),
+  total_matches: z.number().int().nonnegative().optional(),
   items: z.array(z.union([importedLibraryItemSchema, catalogLibraryItemSchema, zoteroLibraryItemSchema])),
   truncated: z.boolean(),
+  warnings: z.array(z.record(z.string(), z.unknown())).optional(),
+  applied_filters: z.record(z.string(), z.unknown()).optional(),
 };
 
 export async function runListLibraryTool(client: NotebookClient, rawInput: unknown) {
@@ -71,8 +74,11 @@ export async function runListLibraryTool(client: NotebookClient, rawInput: unkno
       status: "ok" as const,
       scope: response.scope ?? input.scope ?? "imported",
       count: response.items.length,
+      total_matches: response.total_matches,
       items: response.items,
       truncated: response.truncated,
+      warnings: response.warnings,
+      applied_filters: response.applied_filters,
     };
     logToolInvocation({
       tool: "list_library",
@@ -86,7 +92,7 @@ export async function runListLibraryTool(client: NotebookClient, rawInput: unkno
       duration_ms: elapsedMilliseconds(startedAt),
       error_code: errorCode(error),
     });
-    return errorToolResult(error);
+    return errorToolResult(error, { tool: "list_library" });
   }
 }
 

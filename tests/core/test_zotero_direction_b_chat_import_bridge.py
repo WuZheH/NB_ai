@@ -296,6 +296,11 @@ def preview_payload():
         "source_revision": {
             "fingerprint": "f" * 64,
         },
+        "extractor_strategy": "native_text",
+        "estimated_pages": 120,
+        "estimated_chunks": 12,
+        "extraction_ready": True,
+        "blockers": [],
         "warnings": [],
     }
 
@@ -687,7 +692,37 @@ def test_zotero_bridge_output_is_compact(
     assert "source_revision" not in result
     assert "pdf_path" not in result
     assert "zotero_item_key" not in result
+
+
+def test_confirmation_preserves_supported_journal_article_type(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = make_temp_db(tmp_path / "db")
+    payload = preview_payload()
+    payload["zotero_item"]["item_type"] = "journalArticle"
+    payload["_preview_audit"] = {
+        "previewed_at": "2026-07-30T01:00:00+00:00",
+    }
+    monkeypatch.setattr(
+        zotero_selected_book_preview_service,
+        "resolve_selected_book_preview_token",
+        lambda *_args, **_kwargs: payload,
+    )
+    result = chat_tool_service.register_zotero_selected_book_import_preview(
+        preview_token="article-preview-token",
+        runtime=chat_tool_service.ChatToolRuntime(
+            db_path=db_path,
+            data_dir=tmp_path / "data",
+        ),
+    )
+    assert result["item_type"] == "journalArticle"
+    assert result["document_type"] == "journalArticle"
+    assert result["confirmation_token"]
     assert "zotero_attachment_key" not in result
+    record = next(iter(chat_tool_service._IMPORT_CONFIRMATIONS.values()))
+    assert record.previewed_at == "2026-07-30T01:00:00+00:00"
+    assert len(record.confirmation_token_fingerprint) == 64
 
 
 def test_source_drift_is_rejected_before_body_import(
@@ -1207,10 +1242,14 @@ def test_chat_bridge_allows_production_preview_registration(
             "duplicate_check": {
                 "duplicate_found": False,
             },
-            "source_revision": {
-                "fingerprint": "d" * 64,
-            },
-        }
+                "source_revision": {
+                    "fingerprint": "d" * 64,
+                },
+                "extractor_strategy": "native_text",
+                "estimated_chunks": 4,
+                "extraction_ready": True,
+                "blockers": [],
+            }
 
     monkeypatch.setattr(
         zotero_selected_book_preview_service,
@@ -1347,6 +1386,11 @@ def _public_chat_zotero_ready_preview(
             "existing_documents": existing_documents or [],
         },
         "warnings": [],
+        "extractor_strategy": "native_text",
+        "estimated_pages": 12,
+        "estimated_chunks": 4,
+        "extraction_ready": True,
+        "blockers": [],
         "source_revision": {
             "fingerprint": "e" * 64,
         },
@@ -1472,11 +1516,90 @@ def test_public_chat_zotero_temp_preview_registers_chat_confirmation(
     assert result["confirmation_token"] == "chat-confirmation-token"
     assert result["confirmation_expires_in_seconds"] == 600
     assert result["estimated_pages"] == 12
-    assert result["estimated_chunks"] is None
-    assert (
-        "chunk_count_not_precomputed_by_preview"
-        in result["warnings"]
+    assert result["estimated_chunks"] == 4
+    assert "chunk_count_not_precomputed_by_preview" not in result["warnings"]
+
+
+def test_public_chat_journal_article_preview_uses_real_document_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "research.db"
+    database.write_bytes(b"fixture")
+    payload = _public_chat_zotero_ready_preview()
+    payload["zotero_item"]["item_type"] = "journalArticle"
+    monkeypatch.setattr(
+        zotero_selected_book_preview_service,
+        "build_selected_book_preview",
+        lambda **_kwargs: payload,
     )
+    monkeypatch.setattr(
+        chat_tool_service,
+        "register_zotero_selected_book_import_preview",
+        lambda **_kwargs: {
+            "duplicate_status": "not_detected",
+            "confirmation_token": "article-confirmation-token",
+            "confirmation_expires_in_seconds": 600,
+        },
+    )
+    result = chat_tool_service.import_preview(
+        source_type="zotero_selected_book",
+        zotero_item_key="ABCD1234",
+        runtime=chat_tool_service.ChatToolRuntime(
+            db_path=database,
+            data_dir=tmp_path / "data",
+        ),
+    )
+    assert result["item_type"] == "journalArticle"
+    assert result["document_type"] == "journalArticle"
+    assert result["parent_key"] == "ABCD1234"
+    assert result["zotero_item_key"] == "ABCD1234"
+    assert result["zotero_attachment_key"] == "EFGH5678"
+    assert result["estimated_chunks"] == 4
+    assert result["confirmation_token"] == "article-confirmation-token"
+
+
+def test_public_chat_extraction_blocker_never_registers_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "research.db"
+    database.write_bytes(b"fixture")
+    payload = _public_chat_zotero_ready_preview()
+    payload.update(
+        {
+            "extractor_strategy": "high_quality_pdf_to_markdown",
+            "estimated_pages": 0,
+            "estimated_chunks": 0,
+            "extraction_ready": False,
+            "blockers": [{"code": "required_extraction_models_missing"}],
+            "preview_token": None,
+        }
+    )
+    monkeypatch.setattr(
+        zotero_selected_book_preview_service,
+        "build_selected_book_preview",
+        lambda **_kwargs: payload,
+    )
+    monkeypatch.setattr(
+        chat_tool_service,
+        "register_zotero_selected_book_import_preview",
+        lambda **_kwargs: pytest.fail("blocked preview must not register"),
+    )
+    result = chat_tool_service.import_preview(
+        source_type="zotero_selected_book",
+        zotero_item_key="ABCD1234",
+        runtime=chat_tool_service.ChatToolRuntime(
+            db_path=database,
+            data_dir=tmp_path / "data",
+        ),
+    )
+    assert result["extraction_ready"] is False
+    assert result["estimated_chunks"] == 0
+    assert result["blockers"] == [
+        {"code": "required_extraction_models_missing"}
+    ]
+    assert result["confirmation_token"] is None
     assert "internal-b2-token" not in str(result)
 
 
@@ -1702,6 +1825,7 @@ def test_default_core_body_importer_is_used_without_runtime_override(
         *,
         db_path,
         backup,
+        document_type,
     ):
         calls["apply"] += 1
 
@@ -1710,6 +1834,7 @@ def test_default_core_body_importer_is_used_without_runtime_override(
         )
 
         assert backup is False
+        assert document_type == "book"
 
         with sqlite3.connect(
             db_path

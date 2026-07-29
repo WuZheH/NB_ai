@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 import pytest
@@ -307,6 +308,56 @@ def test_annotation_and_inspiration_duplicate_is_returned_once() -> None:
     assert [item["fragment"].fragment_id for item in filtered] == [
         annotation.fragment_id
     ]
+
+
+def test_missing_requested_document_returns_structured_warning(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "research.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE documents(id INTEGER PRIMARY KEY,read_status TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO documents(id,read_status) VALUES(1,'read'),(2,'archived')"
+        )
+        connection.commit()
+    monkeypatch.setattr(service, "DEFAULT_DB_PATH", database)
+
+    assert service._requested_document_warnings([1, 2, 999999]) == [
+        {
+            "code": "requested_document_not_found",
+            "document_ids": [999999],
+        },
+        {
+            "code": "requested_document_archived",
+            "document_ids": [2],
+        },
+    ]
+
+
+def test_strong_pdf_result_does_not_force_fill_with_large_score_gap() -> None:
+    ranked = [
+        {"kind": "pdf", "reranker_score": 7.98, "fragment": object()},
+        {"kind": "pdf", "reranker_score": 6.66, "fragment": object()},
+        {"kind": "pdf", "reranker_score": 6.65, "fragment": object()},
+    ]
+    filtered, omitted = service._filter_low_relevance_pdf_candidates(ranked)
+    assert filtered == [ranked[0]]
+    assert omitted == 2
+
+
+def test_pdf_threshold_keeps_close_results_and_never_removes_notes() -> None:
+    note = {"kind": "note", "reranker_score": 0.8, "fragment": object()}
+    ranked = [
+        {"kind": "pdf", "reranker_score": 7.0, "fragment": object()},
+        {"kind": "pdf", "reranker_score": 6.0, "fragment": object()},
+        note,
+    ]
+    filtered, omitted = service._filter_low_relevance_pdf_candidates(ranked)
+    assert filtered == ranked
+    assert omitted == 0
 
 
 def _pdf_id(document_id: int, chunk_id: int) -> str:

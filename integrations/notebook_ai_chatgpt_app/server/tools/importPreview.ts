@@ -57,6 +57,9 @@ export const importPreviewOutputShape = {
   filename: z.string().nullable(),
   title: z.string(),
   item_type: z.string().nullable(),
+  parent_key: z.string().nullable().optional(),
+  zotero_item_key: z.string().nullable().optional(),
+  zotero_attachment_key: z.string().nullable().optional(),
   pdf_sha256: z.string().nullable(),
   duplicate_status: z.string(),
   existing_document_id: z.number().int().positive().nullable(),
@@ -68,6 +71,7 @@ export const importPreviewOutputShape = {
   converted_markdown_status: z.string().nullable().optional(),
   converted_markdown_path: z.string().nullable().optional(),
   extraction_ready: z.boolean().nullable().optional(),
+  blockers: z.array(z.record(z.string(), z.unknown())).optional(),
   document_type: z.string(),
   warnings: z.array(z.string()),
   confirmation_token: z.string().nullable(),
@@ -113,6 +117,9 @@ export async function runImportPreviewTool(
       source_type: backendResponse.source_type ?? input.source_type,
       filename: backendResponse.filename ?? null,
       item_type: backendResponse.item_type ?? null,
+      parent_key: backendResponse.parent_key ?? null,
+      zotero_item_key: backendResponse.zotero_item_key ?? null,
+      zotero_attachment_key: backendResponse.zotero_attachment_key ?? null,
       pdf_sha256: backendResponse.pdf_sha256 ?? null,
       attachment_choices: backendResponse.attachment_choices ?? [],
       annotation_count: backendResponse.annotation_count ?? null,
@@ -130,7 +137,7 @@ export async function runImportPreviewTool(
       duration_ms: elapsedMilliseconds(startedAt),
       error_code: errorCode(error),
     });
-    return errorToolResult(error);
+    return errorToolResult(error, { tool: "import_preview" });
   } finally {
     if (stagedPath) {
       await discardStagedPath(stagedPath);

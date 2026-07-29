@@ -35,6 +35,8 @@ def _fixture(tmp_path, monkeypatch):
                 creatorID INTEGER PRIMARY KEY,firstName TEXT,lastName TEXT,fieldMode INTEGER
             );
             CREATE TABLE itemCreators(itemID INTEGER,creatorID INTEGER,orderIndex INTEGER);
+            CREATE TABLE tags(tagID INTEGER PRIMARY KEY,name TEXT);
+            CREATE TABLE itemTags(itemID INTEGER,tagID INTEGER);
             """
         )
         connection.executemany(
@@ -49,7 +51,15 @@ def _fixture(tmp_path, monkeypatch):
         )
         connection.executemany(
             "INSERT INTO fields VALUES(?,?)",
-            [(1, "title"), (2, "date"), (3, "abstractNote")],
+            [
+                (1, "title"),
+                (2, "date"),
+                (3, "abstractNote"),
+                (4, "DOI"),
+                (5, "shortTitle"),
+                (6, "publicationTitle"),
+                (7, "extra"),
+            ],
         )
         connection.executemany(
             "INSERT INTO items VALUES(?,?,?,?)",
@@ -74,11 +84,25 @@ def _fixture(tmp_path, monkeypatch):
                 (3, "2022"),
                 (4, "The HumanML3D benchmark and dataset"),
                 (5, ""),
+                (6, "10.1109/CVPR52688.2022.00511"),
+                (7, "Human motion generation"),
+                (8, "CVPR"),
+                (9, "Citation Key: Guo2022HumanML3D"),
             ],
         )
         connection.executemany(
             "INSERT INTO itemData VALUES(?,?,?)",
-            [(1, 1, 1), (2, 1, 2), (2, 2, 3), (2, 3, 4), (3, 1, 5)],
+            [
+                (1, 1, 1),
+                (2, 1, 2),
+                (2, 2, 3),
+                (2, 3, 4),
+                (3, 1, 5),
+                (2, 4, 6),
+                (2, 5, 7),
+                (2, 6, 8),
+                (2, 7, 9),
+            ],
         )
         connection.executemany(
             "INSERT INTO itemAttachments VALUES(?,?,?,?)",
@@ -95,6 +119,8 @@ def _fixture(tmp_path, monkeypatch):
         connection.execute("INSERT INTO itemNotes VALUES(30,2)")
         connection.execute("INSERT INTO creators VALUES(1,'Chuan','Guo',0)")
         connection.execute("INSERT INTO itemCreators VALUES(2,1,0)")
+        connection.execute("INSERT INTO tags VALUES(1,'motion synthesis')")
+        connection.execute("INSERT INTO itemTags VALUES(2,1)")
         connection.commit()
 
     monkeypatch.setattr(
@@ -119,7 +145,7 @@ def test_journal_filter_returns_only_top_level_parent(tmp_path, monkeypatch):
     result = zotero_library_service.list_parent_items(
         document_type="journalArticle", db_path=None
     )
-    assert [item["parent_key"] for item in result["items"]] == ["EMPTY", "FMF4LBDE"]
+    assert [item["parent_key"] for item in result["items"]] == ["FMF4LBDE"]
     assert all(item["item_type"] == "journalArticle" for item in result["items"])
     assert all(item["kind"] == "zotero" for item in result["items"])
 
@@ -128,8 +154,12 @@ def test_annotation_attachment_and_orphans_never_become_candidates(tmp_path, mon
     _fixture(tmp_path, monkeypatch)
     result = zotero_library_service.list_parent_items(db_path=None)
     keys = {item["parent_key"] for item in result["items"]}
-    assert keys == {"BOOK1", "EMPTY", "FMF4LBDE"}
+    assert keys == {"BOOK1", "FMF4LBDE"}
     assert not keys.intersection({"ATT1", "ATT2", "ANN1", "ANN2", "ORPHANANN", "ORPHANATT"})
+    assert result["warnings"] == [
+        {"code": "zotero_parent_without_title_hidden", "count": 1},
+        {"code": "zotero_orphan_child_items_hidden", "count": 2},
+    ]
 
 
 def test_two_level_annotation_and_direct_child_note_aggregation(tmp_path, monkeypatch):
@@ -160,6 +190,13 @@ def test_title_author_and_normalized_abbreviation_search(tmp_path, monkeypatch):
         "Guo",
         "HumanML3D",
         "human ml3d",
+        "FMF4LBDE",
+        "ATT1",
+        "10.1109/CVPR52688.2022.00511",
+        "Human motion generation",
+        "CVPR",
+        "Guo2022HumanML3D",
+        "motion synthesis",
     ):
         result = zotero_library_service.list_parent_items(query=query, db_path=None)
         assert [item["parent_key"] for item in result["items"]] == ["FMF4LBDE"]
@@ -192,5 +229,66 @@ def test_chat_tool_passes_document_type_to_parent_service(monkeypatch):
     assert captured == {
         "query": None,
         "document_type": "journalArticle",
+        "status": "active",
         "limit": 7,
+        "db_path": chat_tool_service.DEFAULT_DB_PATH,
     }
+
+
+def test_limit_and_truncated_are_computed_after_parent_filtering(tmp_path, monkeypatch):
+    _fixture(tmp_path, monkeypatch)
+    result = zotero_library_service.list_parent_items(
+        status="all",
+        limit=1,
+        db_path=None,
+    )
+    assert result["count"] == 1
+    assert result["total_matches"] == 2
+    assert result["truncated"] is True
+    assert result["items"][0]["item_type"] in {"book", "journalArticle"}
+
+
+def test_status_filters_available_and_imported_without_silent_ignore(
+    tmp_path,
+    monkeypatch,
+):
+    _fixture(tmp_path, monkeypatch)
+    research_db = tmp_path / "research.db"
+    with sqlite3.connect(research_db) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE documents(id INTEGER PRIMARY KEY,zotero_key TEXT);
+            CREATE TABLE document_sources(
+                document_id INTEGER,
+                zotero_item_key TEXT
+            );
+            INSERT INTO documents(id,zotero_key) VALUES(7,'FMF4LBDE');
+            INSERT INTO document_sources(document_id,zotero_item_key)
+            VALUES(7,'FMF4LBDE');
+            """
+        )
+    imported = zotero_library_service.list_parent_items(
+        status="imported",
+        db_path=research_db,
+    )
+    available = zotero_library_service.list_parent_items(
+        status="available",
+        db_path=research_db,
+    )
+    assert [item["parent_key"] for item in imported["items"]] == ["FMF4LBDE"]
+    assert imported["items"][0]["status"] == "imported"
+    assert imported["items"][0]["imported_document_id"] == 7
+    assert [item["parent_key"] for item in available["items"]] == ["BOOK1"]
+
+
+def test_parent_key_and_attachment_key_have_deterministic_exact_priority(
+    tmp_path,
+    monkeypatch,
+):
+    _fixture(tmp_path, monkeypatch)
+    for query in ("FMF4LBDE", "ATT2"):
+        result = zotero_library_service.list_parent_items(
+            query=query,
+            db_path=None,
+        )
+        assert [item["parent_key"] for item in result["items"]] == ["FMF4LBDE"]

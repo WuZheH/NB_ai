@@ -15,7 +15,9 @@ export function searchViewModel(envelope: ToolEnvelope | null): SearchViewModel 
   const structured = asObject(envelope.structuredContent);
   const meta = asObject(envelope._meta);
   const results = asResults(meta["notebookAi/results"] ?? structured.results);
-  const warnings = Array.isArray(structured.warnings) ? structured.warnings.map(String) : [];
+  const warnings = Array.isArray(structured.warnings)
+    ? structured.warnings.map(formatWarning)
+    : [];
   const error = envelope.isError || structured.status === "error" ? String(structured.message ?? "Search failed.") : undefined;
   return {
     status: String(structured.status ?? (error ? "error" : "ok")),
@@ -25,6 +27,32 @@ export function searchViewModel(envelope: ToolEnvelope | null): SearchViewModel 
     warnings,
     error,
   };
+}
+
+function formatWarning(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "Search returned a warning.";
+  }
+  const warning = value as Record<string, unknown>;
+  const ids = Array.isArray(warning.document_ids)
+    ? warning.document_ids.filter((item) => Number.isInteger(item)).join(", ")
+    : "";
+  if (warning.code === "requested_document_not_found") {
+    return ids
+      ? `Requested document not found: ${ids}`
+      : "A requested document was not found.";
+  }
+  if (warning.code === "requested_document_archived") {
+    return ids
+      ? `Requested document is archived: ${ids}`
+      : "A requested document is archived.";
+  }
+  return typeof warning.code === "string"
+    ? warning.code.replaceAll("_", " ")
+    : "Search returned a warning.";
 }
 
 export function fetchedFragment(envelope: ToolEnvelope): FragmentDetail | null {

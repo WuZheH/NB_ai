@@ -41,7 +41,7 @@ export async function runDeletePreviewTool(client: NotebookClient, rawInput: unk
       duration_ms: elapsedMilliseconds(startedAt),
       error_code: errorCode(error),
     });
-    return errorToolResult(error);
+    return errorToolResult(error, { tool: "delete_preview" });
   }
 }
 

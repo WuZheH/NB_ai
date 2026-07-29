@@ -108,6 +108,7 @@ def _commit_selected_book_import(
     preview_token: str,
     runtime: SelectedBookImportRuntime,
     body_importer: Callable[..., dict[str, Any]] | None = None,
+    import_audit: dict[str, Any] | None = None,
     now_ts: float | None = None,
 ) -> dict[str, Any]:
     with _DIRECTION_B_IMPORT_LOCK:
@@ -115,6 +116,7 @@ def _commit_selected_book_import(
             preview_token=preview_token,
             runtime=runtime,
             body_importer=body_importer,
+            import_audit=import_audit,
             now_ts=now_ts,
         )
 
@@ -124,6 +126,7 @@ def _commit_selected_book_import_locked(
     preview_token: str,
     runtime: SelectedBookImportRuntime,
     body_importer: Callable[..., dict[str, Any]] | None = None,
+    import_audit: dict[str, Any] | None = None,
     now_ts: float | None = None,
 ) -> dict[str, Any]:
     path = Path(runtime.db_path).resolve(strict=False)
@@ -259,13 +262,21 @@ def _commit_selected_book_import_locked(
         or ""
     ).strip()
 
-    if item_type != "book":
+    try:
+        document_type = (
+            zotero_selected_book_preview_service
+            .document_type_for_item_type(item_type)
+        )
+    except ValueError as exc:
         raise DirectionBSelectedBookImportError(
             code="zotero_item_type_unsupported",
-            message="Only Zotero book items can use selected-book import.",
+            message=(
+                "The selected Zotero item type is not supported for "
+                "bibliographic PDF import."
+            ),
             status_code=422,
             details={"item_type": item_type or "unknown"},
-        )
+        ) from exc
 
     duplicate = preview.get("duplicate_check") or {}
     if bool(duplicate.get("duplicate_found")):
@@ -347,6 +358,7 @@ def _commit_selected_book_import_locked(
                     preview=preview,
                     db_path=path,
                     pdf_path=pdf_path,
+                    import_audit=import_audit,
                 )
             else:
                 body_result = body_importer(
@@ -679,7 +691,7 @@ def _commit_selected_book_import_locked(
             ),
             "document_type": str(
                 body_result.get("document_type")
-                or "book"
+                or document_type
             ),
             "chunk_count": int(
                 body_result.get("chunk_count")
@@ -850,6 +862,7 @@ def commit_selected_book_import_to_temp_db(
     db_path: str | Path,
     data_dir: str | Path,
     body_importer: Callable[..., dict[str, Any]] | None = None,
+    import_audit: dict[str, Any] | None = None,
     now_ts: float | None = None,
 ) -> dict[str, Any]:
     runtime = _make_temp_runtime(db_path, data_dir)
@@ -863,6 +876,7 @@ def commit_selected_book_import_to_temp_db(
         preview_token=preview_token,
         runtime=runtime,
         body_importer=body_importer,
+        import_audit=import_audit,
         now_ts=now_ts,
     )
 
@@ -871,12 +885,14 @@ def commit_selected_book_import_to_production(
     *,
     preview_token: str,
     body_importer: Callable[..., dict[str, Any]] | None = None,
+    import_audit: dict[str, Any] | None = None,
     now_ts: float | None = None,
 ) -> dict[str, Any]:
     return _commit_selected_book_import(
         preview_token=preview_token,
         runtime=_production_runtime(),
         body_importer=body_importer,
+        import_audit=import_audit,
         now_ts=now_ts,
     )
 
@@ -1323,6 +1339,7 @@ def _default_selected_book_body_importer(
     preview: dict[str, Any],
     db_path: Path,
     pdf_path: Path,
+    import_audit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     parent = (
         preview.get(
@@ -1343,6 +1360,12 @@ def _default_selected_book_body_importer(
             "title"
         )
         or pdf_path.stem
+    )
+    document_type = (
+        zotero_selected_book_preview_service
+        .document_type_for_item_type(
+            str(parent.get("item_type") or "")
+        )
     )
 
     strategy = str(
@@ -1419,6 +1442,7 @@ def _default_selected_book_body_importer(
             prepared,
             db_path=db_path,
             backup=False,
+            document_type=document_type,
         )
     )
 
@@ -1479,6 +1503,7 @@ def _default_selected_book_body_importer(
                 "fingerprint"
             )
         ),
+        "import_history": _safe_import_history(import_audit),
     }
 
     document_source_written = (
@@ -1504,7 +1529,10 @@ def _default_selected_book_body_importer(
         "status": "committed",
         "document_id": document_id,
         "title": title,
-        "document_type": "book",
+        "document_type": str(
+            apply_result.get("document_type")
+            or document_type
+        ),
         "chunk_count": int(
             apply_result.get(
                 "inserted_chunks"
@@ -1537,6 +1565,37 @@ def _default_selected_book_body_importer(
             )
         ),
     }
+
+
+def _safe_import_history(
+    value: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    result = {
+        key: str(value.get(key) or "")
+        for key in (
+            "confirmation_token_fingerprint",
+            "previewed_at",
+            "confirmed_at",
+            "transaction_fingerprint",
+            "source_revision_fingerprint",
+        )
+        if value.get(key)
+    }
+    events = [
+        str(item)
+        for item in value.get("lifecycle_events") or []
+        if str(item)
+        in {
+            "previewed",
+            "confirmed",
+            "transaction_started",
+        }
+    ]
+    if events:
+        result["lifecycle_events"] = events
+    return result or None
 
 
 def _required_document_id(

@@ -156,6 +156,8 @@ class MockNotebookClient extends NotebookClient {
         confirmation_token_fingerprint: "not_recorded",
         previewed_at: "not_recorded",
         confirmed_at: "not_recorded",
+        transaction_fingerprint: "not_recorded",
+        source_revision_fingerprint: "not_recorded",
         lifecycle_events: "not_recorded",
       },
       writes_performed: {
@@ -275,6 +277,11 @@ test("tools/list exposes nine annotated tools and widget resource", async () => 
       ["download_url", "file_id", "file_name", "mime_type"],
     );
     assert.deepEqual([...(fileSchema?.required ?? [])].sort(), ["download_url", "file_id"]);
+    const listLibrary = listed.tools.find((tool) => tool.name === "list_library");
+    assert.deepEqual(
+      listLibrary?.inputSchema?.properties?.status?.enum,
+      ["active", "archived", "available", "imported", "all"],
+    );
 
     const resource = await client.readResource({ uri: "ui://notebook-ai/research-search-v1.html" });
     assert.equal(resource.contents[0]?.mimeType, RESOURCE_MIME_TYPE);
@@ -419,12 +426,22 @@ test("export_evidence returns small content completely and paginates only above 
     content_truncated: boolean;
     next_content_offset: number | null;
     full_content_retrieval: { arguments: { content_offset: number } } | null;
+    offset_unit: string;
+    requires_concatenation: boolean;
+    content_sha256: string;
+    requested_offset: number;
+    offset_out_of_range: boolean;
   };
   assert.equal(firstPayload.content, null);
   assert.equal(firstPayload.content_preview?.length, 32_000);
   assert.equal(firstPayload.content_truncated, true);
   assert.equal(firstPayload.next_content_offset, 32_000);
   assert.equal(firstPayload.full_content_retrieval?.arguments.content_offset, 32_000);
+  assert.equal(firstPayload.offset_unit, "utf16_code_units");
+  assert.equal(firstPayload.requires_concatenation, true);
+  assert.match(firstPayload.content_sha256, /^[0-9a-f]{64}$/);
+  assert.equal(firstPayload.requested_offset, 0);
+  assert.equal(firstPayload.offset_out_of_range, false);
 
   const second = await runExportEvidenceTool(backend, {
     fragment_ids: ["fragment-1"],
@@ -438,6 +455,41 @@ test("export_evidence returns small content completely and paginates only above 
   };
   assert.equal(secondPayload.content?.length, 8_000);
   assert.equal(secondPayload.content_truncated, false);
+});
+
+test("export pagination is Unicode-safe and reports out-of-range offsets", async () => {
+  class UnicodeExportClient extends MockNotebookClient {
+    override async exportEvidence() {
+      return { status: "ok", content: `${"x".repeat(999)}😀z` };
+    }
+  }
+  const backend = new UnicodeExportClient();
+  const first = await runExportEvidenceTool(backend, {
+    fragment_ids: ["fragment-1"],
+    format: "markdown",
+    content_limit: 1_000,
+  });
+  const firstPayload = first.structuredContent as {
+    content_preview: string;
+    next_content_offset: number;
+  };
+  assert.equal(firstPayload.content_preview.length, 999);
+  assert.equal(firstPayload.next_content_offset, 999);
+
+  const outside = await runExportEvidenceTool(backend, {
+    fragment_ids: ["fragment-1"],
+    format: "markdown",
+    content_offset: 99_999,
+    content_limit: 1_000,
+  });
+  const outsidePayload = outside.structuredContent as {
+    content: string;
+    offset_out_of_range: boolean;
+    warnings: Array<{ code: string }>;
+  };
+  assert.equal(outsidePayload.content, "");
+  assert.equal(outsidePayload.offset_out_of_range, true);
+  assert.equal(outsidePayload.warnings[0]?.code, "content_offset_out_of_range");
 });
 
 test("anonymous startup is refused without the explicit development switch", () => {
@@ -642,6 +694,32 @@ test("selected-book failures preserve a safe actionable stage", () => {
     "Selected-book body extraction failed and the import was rolled back.",
   );
   assert.doesNotMatch(JSON.stringify(result), /D:\\\\private/);
+});
+
+test("public errors keep stable actionable messages and safety fields", () => {
+  const cases = [
+    ["notebook_fragment_not_found", "The requested fragment was not found."],
+    ["integrity_report_document_not_found", "The requested document was not found."],
+    ["evidence_fragment_not_found", "A selected evidence fragment was not found."],
+    [
+      "attachment_not_owned_by_item",
+      "The selected PDF attachment does not belong to the selected Zotero item.",
+    ],
+    ["import_inbox_unavailable", "The local PDF import inbox is unavailable."],
+  ] as const;
+  for (const [code, message] of cases) {
+    const result = errorToolResult(
+      new NotebookBackendError("private backend detail", 404, code),
+      { tool: "fetch" },
+    );
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.tool, "fetch");
+    assert.equal(payload.error_code, code);
+    assert.equal(payload.message, message);
+    assert.equal(payload.retryable, false);
+    assert.equal(payload.writes_performed, false);
+    assert.doesNotMatch(JSON.stringify(payload), /private backend detail/);
+  }
 });
 
 test("all tool failures use isError content without output-schema mismatch", async () => {

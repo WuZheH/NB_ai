@@ -24,6 +24,16 @@ from app.services.retrieval.fragment_normalizer import (
 
 
 DEFAULT_PREVIEW_TTL_SECONDS = 15 * 60
+SUPPORTED_BIBLIOGRAPHIC_ITEM_TYPES = frozenset(
+    {
+        "book",
+        "journalArticle",
+        "conferencePaper",
+        "preprint",
+        "thesis",
+        "report",
+    }
+)
 
 _PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
 _PREVIEW_CACHE_LOCK = threading.Lock()
@@ -191,9 +201,6 @@ def build_selected_book_preview(
                     "zotero_attachment_key": selected[
                         "attachment_key"
                     ],
-                    "resolved_pdf_path": selected[
-                        "resolved_pdf_path"
-                    ],
                 },
             )
 
@@ -287,7 +294,13 @@ def build_selected_book_preview(
 
     preview_token = None
 
-    if issue_token:
+    if (
+        issue_token
+        and not bool(duplicate.get("duplicate_found"))
+        and bool(extraction_plan.get("extraction_ready"))
+        and int(extraction_plan.get("estimated_chunks") or 0) > 0
+        and not bool(extraction_plan.get("blockers"))
+    ):
         preview_token = secrets.token_urlsafe(24)
 
         _store_preview(
@@ -484,6 +497,12 @@ def resolve_selected_book_preview_token(
             },
         )
 
+    current["_preview_audit"] = {
+        "preview_token_fingerprint": hashlib.sha256(
+            token.encode("utf-8")
+        ).hexdigest(),
+        "previewed_at": _iso_timestamp(float(entry["created_at"])),
+    }
     return current
 
 
@@ -784,17 +803,28 @@ def _read_parent_item(
         )
 
     parent = dict(rows[0])
-    if str(parent.get("item_type") or "unknown") != "book":
+    item_type = str(parent.get("item_type") or "unknown")
+    if item_type not in SUPPORTED_BIBLIOGRAPHIC_ITEM_TYPES:
         raise ZoteroSelectedBookPreviewError(
             status_code=422,
             code="zotero_item_type_unsupported",
-            message="Only Zotero book items can use selected-book import.",
+            message=(
+                "The selected Zotero item type is not supported for "
+                "bibliographic PDF import."
+            ),
             details={
                 "zotero_item_key": item_key,
-                "item_type": str(parent.get("item_type") or "unknown"),
+                "item_type": item_type,
             },
         )
     return parent
+
+
+def document_type_for_item_type(item_type: str) -> str:
+    normalized = str(item_type or "").strip()
+    if normalized not in SUPPORTED_BIBLIOGRAPHIC_ITEM_TYPES:
+        raise ValueError("zotero_item_type_unsupported")
+    return normalized
 
 
 def _read_pdf_attachments(

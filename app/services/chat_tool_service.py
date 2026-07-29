@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -93,6 +94,8 @@ class ZoteroImportConfirmation:
     zotero_attachment_key: str
     item_type: str
     source_revision_fingerprint: str
+    confirmation_token_fingerprint: str
+    previewed_at: str
     title: str
     document_type: str
     page_count: int
@@ -157,11 +160,22 @@ def list_library(
     if scope == "catalog":
         return chat_import_catalog_service.list_catalog(inbox_root=actual_runtime.resolved_inbox_root(), query=query, limit=limit)
     if scope == "zotero":
-        return zotero_library_service.list_parent_items(
-            query=query,
-            document_type=document_type,
-            limit=limit,
-        )
+        try:
+            return zotero_library_service.list_parent_items(
+                query=query,
+                document_type=document_type,
+                status=status,
+                limit=limit,
+                db_path=actual_runtime.db_path,
+            )
+        except ValueError as exc:
+            if str(exc) == "zotero_status_invalid":
+                raise ChatToolError(
+                    "library_status_invalid",
+                    "The Zotero library status filter is invalid.",
+                    status_code=422,
+                ) from exc
+            raise
     if scope != "imported":
         raise ChatToolError("library_scope_invalid", "Library scope is invalid.", status_code=422)
     normalized_status = str(status or "active").strip().lower()
@@ -479,12 +493,17 @@ def _import_zotero_selected_book_preview(
         else {}
     )
     item_type = str(item.get("item_type") or "").strip()
-    if item_type != "book":
+    try:
+        document_type = (
+            zotero_selected_book_preview_service
+            .document_type_for_item_type(item_type)
+        )
+    except ValueError as exc:
         raise ChatToolError(
             "zotero_import_preview_contract_invalid",
-            "Selected-book preview did not return a validated Zotero book.",
+            "The Zotero preview did not return a supported bibliographic item.",
             status_code=500,
-        )
+        ) from exc
 
     choices = (
         preview.get("attachment_choices")
@@ -514,19 +533,20 @@ def _import_zotero_selected_book_preview(
         "filename": None,
         "title": str(item.get("title") or ""),
         "item_type": item_type,
+        "parent_key": str(item.get("zotero_item_key") or "") or None,
+        "zotero_item_key": str(item.get("zotero_item_key") or "") or None,
+        "zotero_attachment_key": None,
         "pdf_sha256": None,
         "duplicate_status": "not_evaluated",
         "existing_document_id": None,
         "estimated_pages": None,
         "estimated_chunks": None,
-        "document_type": "book",
-        "warnings": (
-            [
-                str(value)
-                for value in preview.get("warnings") or []
-            ][:7]
-            + ["chunk_count_not_precomputed_by_preview"]
-        ),
+        "document_type": document_type,
+        "warnings": [
+            str(value)
+            for value in preview.get("warnings") or []
+        ][:7],
+        "blockers": list(preview.get("blockers") or []),
         "confirmation_token": None,
         "confirmation_expires_in_seconds": None,
         "attachment_choices": safe_choices,
@@ -571,8 +591,14 @@ def _import_zotero_selected_book_preview(
     base.update(
         {
             "filename": str(selected.get("file_name") or "") or None,
+            "zotero_attachment_key": (
+                str(selected.get("zotero_attachment_key") or "") or None
+            ),
             "pdf_sha256": str(selected.get("pdf_sha256") or "") or None,
-            "estimated_pages": selected.get("page_count"),
+            "estimated_pages": preview.get(
+                "estimated_pages",
+                selected.get("page_count"),
+            ),
             "estimated_chunks": preview.get("estimated_chunks"),
             "extractor_strategy": preview.get("extractor_strategy"),
             "text_quality_score": preview.get("text_quality_score"),
@@ -584,8 +610,9 @@ def _import_zotero_selected_book_preview(
                 preview.get("converted_markdown_path")
             ),
             "extraction_ready": bool(
-                preview.get("extraction_ready", True)
+                preview.get("extraction_ready", False)
             ),
+            "blockers": list(preview.get("blockers") or []),
         }
     )
 
@@ -594,7 +621,11 @@ def _import_zotero_selected_book_preview(
         base["existing_document_id"] = unique_document_id
         return base
 
-    if not bool(preview.get("extraction_ready", True)):
+    if (
+        not bool(preview.get("extraction_ready"))
+        or int(preview.get("estimated_chunks") or 0) <= 0
+        or bool(preview.get("blockers"))
+    ):
         return base
 
     preview_token = str(preview.get("preview_token") or "")
@@ -745,11 +776,25 @@ def register_zotero_selected_book_import_preview(
         source_revision.get("fingerprint") or ""
     ).strip()
 
+    try:
+        document_type = (
+            zotero_selected_book_preview_service
+            .document_type_for_item_type(item_type)
+        )
+    except ValueError as exc:
+        raise ChatToolError(
+            "zotero_import_preview_contract_invalid",
+            "Selected-book preview metadata has an unsupported item type.",
+            status_code=500,
+        ) from exc
+
     if (
-        item_type != "book"
-        or not item_key
+        not item_key
         or not attachment_key
         or not source_revision_fingerprint
+        or not bool(preview.get("extraction_ready"))
+        or int(preview.get("estimated_chunks") or 0) <= 0
+        or bool(preview.get("blockers"))
     ):
         raise ChatToolError(
             "zotero_import_preview_contract_invalid",
@@ -773,6 +818,12 @@ def register_zotero_selected_book_import_preview(
         )
 
     token = secrets.token_urlsafe(32)
+    token_fingerprint = _token_digest(token)
+    preview_audit = (
+        preview.get("_preview_audit")
+        if isinstance(preview.get("_preview_audit"), dict)
+        else {}
+    )
 
     record = ZoteroImportConfirmation(
         preview_token=str(preview_token),
@@ -782,8 +833,10 @@ def register_zotero_selected_book_import_preview(
         zotero_attachment_key=attachment_key,
         item_type=item_type,
         source_revision_fingerprint=source_revision_fingerprint,
+        confirmation_token_fingerprint=token_fingerprint,
+        previewed_at=str(preview_audit.get("previewed_at") or ""),
         title=str(item.get("title") or ""),
-        document_type="book",
+        document_type=document_type,
         page_count=int(selected.get("page_count") or 0),
         annotation_count=int(preview.get("annotation_count") or 0),
         child_note_count=int(preview.get("child_note_count") or 0),
@@ -797,7 +850,7 @@ def register_zotero_selected_book_import_preview(
     with _TOKEN_LOCK:
         _purge_expired_tokens()
         _IMPORT_CONFIRMATIONS[
-            _token_digest(token)
+            token_fingerprint
         ] = record
 
     return {
@@ -960,6 +1013,7 @@ def _commit_confirmed_zotero_import(
                 .commit_selected_book_import_to_production(
                     preview_token=record.preview_token,
                     body_importer=runtime.zotero_body_importer,
+                    import_audit=_zotero_import_audit(record),
                 )
             )
 
@@ -970,6 +1024,7 @@ def _commit_confirmed_zotero_import(
                 db_path=runtime.db_path,
                 data_dir=runtime.data_dir,
                 body_importer=runtime.zotero_body_importer,
+                import_audit=_zotero_import_audit(record),
             )
         )
     except (
@@ -982,6 +1037,39 @@ def _commit_confirmed_zotero_import(
             status_code=exc.status_code,
             details=exc.details,
         ) from exc
+
+
+def _zotero_import_audit(
+    record: ZoteroImportConfirmation,
+) -> dict[str, Any]:
+    confirmed_at = datetime.now(timezone.utc).isoformat()
+    transaction_fingerprint = hashlib.sha256(
+        "|".join(
+            (
+                record.confirmation_token_fingerprint,
+                record.source_revision_fingerprint,
+                record.zotero_item_key,
+                record.zotero_attachment_key,
+                confirmed_at,
+            )
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "confirmation_token_fingerprint": (
+            record.confirmation_token_fingerprint
+        ),
+        "previewed_at": record.previewed_at or "not_recorded",
+        "confirmed_at": confirmed_at,
+        "transaction_fingerprint": transaction_fingerprint,
+        "source_revision_fingerprint": (
+            record.source_revision_fingerprint
+        ),
+        "lifecycle_events": [
+            "previewed",
+            "confirmed",
+            "transaction_started",
+        ],
+    }
 
 
 def _commit_confirmed_import(

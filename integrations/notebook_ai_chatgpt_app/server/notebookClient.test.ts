@@ -51,7 +51,10 @@ test("NotebookClient uses the fixed backend paths and caps search at 20", async 
       return Response.json(validFragment());
     }
     if (String(input).includes("/evidence/export")) {
-      return Response.json({ status: "ok", content: "# Evidence" });
+      return Response.json({
+        status: "ok",
+        content: JSON.stringify({ fragment_id: "fragment/one" }),
+      });
     }
     return Response.json(validSearch());
   };
@@ -139,6 +142,38 @@ test("NotebookClient makes backend-relative open targets absolute without rewrit
   assert.equal(
     "fragment" in fetched ? fetched.fragment?.open_target?.pdf_url : null,
     "http://127.0.0.1:8123/api/v1/library/documents/7/pdf#page=12",
+  );
+});
+
+test("NotebookClient normalizes export open targets to the same public URL", async () => {
+  const content = JSON.stringify({
+    results: [
+      {
+        fragment_id: "fragment-1",
+        open_target: {
+          pdf_url: "/api/v1/library/documents/7/pdf#page=12",
+          zotero_url: "zotero://select/library/items/ABC123",
+        },
+      },
+    ],
+  });
+  const client = new NotebookClient({
+    baseUrl: "http://127.0.0.1:8123",
+    fetchImpl: async () => Response.json({ status: "ok", content }),
+  });
+  const response = await client.exportEvidence({
+    fragment_ids: ["fragment-1"],
+    format: "json",
+  });
+  assert.equal(typeof response, "object");
+  const parsed = JSON.parse(String((response as { content: string }).content));
+  assert.equal(
+    parsed.results[0].open_target.pdf_url,
+    "http://127.0.0.1:8123/api/v1/library/documents/7/pdf#page=12",
+  );
+  assert.equal(
+    parsed.results[0].open_target.zotero_url,
+    "zotero://select/library/items/ABC123",
   );
 });
 

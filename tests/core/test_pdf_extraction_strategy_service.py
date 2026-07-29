@@ -89,6 +89,8 @@ def test_low_quality_text_blocks_when_local_model_cache_is_incomplete(tmp_path):
     assert plan["extractor_strategy"] == service.HIGH_QUALITY_MARKDOWN
     assert plan["converted_markdown_status"] == "converter_unavailable"
     assert plan["extraction_ready"] is False
+    assert plan["estimated_chunks"] == 0
+    assert plan["blockers"][0]["code"] == "required_extraction_models_missing"
     assert plan["high_quality_converter_missing_model_files"]
 
 
@@ -269,10 +271,13 @@ def test_high_quality_conversion_is_quality_gated_before_database_apply(
         "apply_prepared_book_import",
         lambda *_args, **_kwargs: {"document_id": 77, "inserted_chunks": 3},
     )
+    source_traces = []
     monkeypatch.setattr(
         zotero_direction_b_import_service.commit_book_service,
         "_record_document_source",
-        lambda *_args, **_kwargs: True,
+        lambda _db, _document_id, trace, _pdf: (
+            source_traces.append(trace) or True
+        ),
     )
     monkeypatch.setattr(
         zotero_direction_b_import_service.commit_book_service,
@@ -281,7 +286,11 @@ def test_high_quality_conversion_is_quality_gated_before_database_apply(
     )
     result = zotero_direction_b_import_service._default_selected_book_body_importer(
         preview={
-            "zotero_item": {"title": "Converted Book", "library_id": 1},
+                "zotero_item": {
+                    "title": "Converted Book",
+                    "library_id": 1,
+                    "item_type": "book",
+                },
             "selected_attachment": {"pdf_sha256": sha},
             "extractor_strategy": service.HIGH_QUALITY_MARKDOWN,
             "extraction_ready": True,
@@ -289,7 +298,32 @@ def test_high_quality_conversion_is_quality_gated_before_database_apply(
         },
         db_path=tmp_path / "temp.db",
         pdf_path=pdf,
+        import_audit={
+            "confirmation_token_fingerprint": "c" * 64,
+            "previewed_at": "2026-07-30T01:00:00+00:00",
+            "confirmed_at": "2026-07-30T01:01:00+00:00",
+            "transaction_fingerprint": "t" * 64,
+            "source_revision_fingerprint": "r" * 64,
+            "lifecycle_events": [
+                "previewed",
+                "confirmed",
+                "transaction_started",
+                "unsafe_event",
+            ],
+        },
     )
     assert result["document_id"] == 77
     assert result["parser_backend"] == MARKER_SURYA_PAGE_BLOCKS_BACKEND
     assert calls == [{"backend": MARKER_SURYA_PAGE_BLOCKS_BACKEND}]
+    assert source_traces[0]["import_history"] == {
+        "confirmation_token_fingerprint": "c" * 64,
+        "previewed_at": "2026-07-30T01:00:00+00:00",
+        "confirmed_at": "2026-07-30T01:01:00+00:00",
+        "transaction_fingerprint": "t" * 64,
+        "source_revision_fingerprint": "r" * 64,
+        "lifecycle_events": [
+            "previewed",
+            "confirmed",
+            "transaction_started",
+        ],
+    }

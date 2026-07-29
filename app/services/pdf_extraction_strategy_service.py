@@ -80,10 +80,22 @@ def build_pdf_extraction_plan(
         quality["mean_characters_per_sampled_page"] * max(estimated_pages, 1)
     )
     warnings = []
+    blockers: list[dict[str, Any]] = []
     if extraction_error:
         warnings.append("native_text_quality_evaluation_failed")
     if strategy == HIGH_QUALITY_MARKDOWN and not ready:
         warnings.append("high_quality_pdf_to_markdown_unavailable")
+        blockers.append(
+            {
+                "code": "required_extraction_models_missing",
+                "extractor_strategy": HIGH_QUALITY_MARKDOWN,
+                "missing_components": [
+                    Path(str(value)).name
+                    for value in converter.get("missing_model_files") or []
+                    if value
+                ],
+            }
+        )
     if strategy == HIGH_QUALITY_MARKDOWN and reused is None:
         warnings.append("converted_markdown_not_found_for_pdf_sha256")
     return {
@@ -96,8 +108,13 @@ def build_pdf_extraction_plan(
         "converted_markdown_pdf_sha256": source_sha if reused else None,
         "converted_markdown_sha256": converted_sha,
         "estimated_pages": int(estimated_pages),
-        "estimated_chunks": max(1, math.ceil(estimated_characters / 1800)),
+        "estimated_chunks": (
+            max(1, math.ceil(estimated_characters / 1800))
+            if ready
+            else 0
+        ),
         "extraction_ready": ready,
+        "blockers": blockers,
         "high_quality_converter": "marker_surya_page_blocks",
         "high_quality_converter_available": converter_ready,
         "high_quality_converter_missing_model_files": list(
@@ -231,6 +248,12 @@ def extraction_plan_fingerprint(plan: dict[str, Any]) -> str:
             str(plan.get("converted_markdown_pdf_sha256") or ""),
             str(plan.get("converted_markdown_sha256") or ""),
             str(plan.get("extraction_ready") or ""),
+            str(plan.get("estimated_chunks") or 0),
+            ",".join(
+                str(item.get("code") or "")
+                for item in plan.get("blockers") or []
+                if isinstance(item, dict)
+            ),
         ]
     )
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()

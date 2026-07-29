@@ -33,7 +33,9 @@ export const searchOutputShape = {
   reranker_model: z.string(),
   result_count: z.number().int().nonnegative(),
   results: z.array(notebookResultOutputSchema),
-  warnings: z.array(z.string()),
+  warnings: z.array(
+    z.union([z.string(), z.record(z.string(), z.unknown())]),
+  ),
 };
 
 // Research and literature questions search the private corpus before answering; rewriting and casual chat do not require search.
@@ -90,7 +92,7 @@ export async function runSearchTool(client: NotebookClient, rawInput: unknown) {
     };
   } catch (error) {
     logToolInvocation({ tool: "search", duration_ms: elapsedMilliseconds(startedAt), error_code: errorCode(error) });
-    return errorToolResult(error);
+    return errorToolResult(error, { tool: "search" });
   }
 }
 

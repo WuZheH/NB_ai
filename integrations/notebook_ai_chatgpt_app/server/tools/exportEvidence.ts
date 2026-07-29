@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { exportContent } from "../contracts.js";
@@ -33,6 +34,12 @@ export const exportEvidenceOutputShape = {
   content_truncated: z.boolean(),
   next_content_offset: z.number().int().nonnegative().nullable(),
   full_content_retrieval: z.record(z.string(), z.unknown()).nullable(),
+  offset_unit: z.literal("utf16_code_units"),
+  requires_concatenation: z.boolean(),
+  content_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  requested_offset: z.number().int().nonnegative(),
+  offset_out_of_range: z.boolean(),
+  warnings: z.array(z.record(z.string(), z.unknown())),
 };
 
 export async function runExportEvidenceTool(client: NotebookClient, rawInput: unknown) {
@@ -45,8 +52,14 @@ export async function runExportEvidenceTool(client: NotebookClient, rawInput: un
       query: input.query,
     });
     const content = exportContent(response);
-    const start = Math.min(input.content_offset, content.length);
-    const end = Math.min(content.length, start + input.content_limit);
+    const offsetOutOfRange = input.content_offset > content.length;
+    const start = offsetOutOfRange
+      ? content.length
+      : safeUtf16Start(content, input.content_offset);
+    const end = safeUtf16End(
+      content,
+      Math.min(content.length, start + input.content_limit),
+    );
     const contentTruncated = end < content.length;
     const selectedContent = content.slice(start, end);
     const structuredContent = {
@@ -70,6 +83,20 @@ export async function runExportEvidenceTool(client: NotebookClient, rawInput: un
             },
           }
         : null,
+      offset_unit: "utf16_code_units" as const,
+      requires_concatenation: input.content_offset > 0 || contentTruncated,
+      content_sha256: createHash("sha256").update(content, "utf8").digest("hex"),
+      requested_offset: input.content_offset,
+      offset_out_of_range: offsetOutOfRange,
+      warnings: offsetOutOfRange
+        ? [
+            {
+              code: "content_offset_out_of_range",
+              requested_offset: input.content_offset,
+              content_length: content.length,
+            },
+          ]
+        : [],
     };
     logToolInvocation({
       tool: "export_evidence",
@@ -91,8 +118,40 @@ export async function runExportEvidenceTool(client: NotebookClient, rawInput: un
       duration_ms: elapsedMilliseconds(startedAt),
       error_code: errorCode(error),
     });
-    return errorToolResult(error);
+    return errorToolResult(error, { tool: "export_evidence" });
   }
+}
+
+function safeUtf16Start(content: string, offset: number): number {
+  if (
+    offset > 0
+    && offset < content.length
+    && isLowSurrogate(content.charCodeAt(offset))
+    && isHighSurrogate(content.charCodeAt(offset - 1))
+  ) {
+    return offset + 1;
+  }
+  return offset;
+}
+
+function safeUtf16End(content: string, offset: number): number {
+  if (
+    offset > 0
+    && offset < content.length
+    && isLowSurrogate(content.charCodeAt(offset))
+    && isHighSurrogate(content.charCodeAt(offset - 1))
+  ) {
+    return offset - 1;
+  }
+  return offset;
+}
+
+function isHighSurrogate(value: number): boolean {
+  return value >= 0xd800 && value <= 0xdbff;
+}
+
+function isLowSurrogate(value: number): boolean {
+  return value >= 0xdc00 && value <= 0xdfff;
 }
 
 export function registerExportEvidenceTool(server: McpServer, client: NotebookClient): void {

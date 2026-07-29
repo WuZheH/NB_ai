@@ -633,6 +633,25 @@ def no_real_pdf_parser(
             "page_count": 200,
         },
     )
+    monkeypatch.setattr(
+        preview_service.pdf_extraction_strategy_service,
+        "build_pdf_extraction_plan",
+        lambda *_args, **_kwargs: {
+            "extractor_strategy": "native_text",
+            "text_quality_score": 90.0,
+            "quality_reasons": ["native_text_layer_quality_acceptable"],
+            "text_quality_metrics": {},
+            "converted_markdown_status": "not_required",
+            "converted_markdown_path": None,
+            "converted_markdown_pdf_sha256": None,
+            "converted_markdown_sha256": None,
+            "estimated_pages": 200,
+            "estimated_chunks": 20,
+            "extraction_ready": True,
+            "blockers": [],
+            "warnings": [],
+        },
+    )
 
 
 def issue_preview(

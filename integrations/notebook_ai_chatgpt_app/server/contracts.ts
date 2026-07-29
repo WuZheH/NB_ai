@@ -49,7 +49,7 @@ export interface NotebookSearchResponse {
   backend: string;
   result_count: number;
   results: NotebookResult[];
-  warnings: string[];
+  warnings: Array<string | Record<string, unknown>>;
   latency: Record<string, unknown> | number | null;
   [key: string]: unknown;
 }
@@ -106,17 +106,23 @@ export interface CatalogLibraryItem {
 }
 export interface ZoteroLibraryItem {
   kind: "zotero";
-  document_id: null;
+  document_id: number | null;
   title: string;
   item_type: string;
   zotero_item_key: string;
+  parent_key: string;
+  authors: string[];
+  tags?: string[];
+  date: string;
+  attachment_keys: string[];
+  primary_pdf_attachment_key: string | null;
   has_pdf: boolean;
   attachment_count: number;
   attachment_choices: Array<{ zotero_attachment_key: string; file_name: string | null; path_exists: boolean; content_type: string | null }>;
   annotation_count: number;
   child_note_count: number;
   duplicate_status: string;
-  status: "available";
+  status: "available" | "imported";
   source: "zotero_library";
 }
 export type LibraryItem = ImportedLibraryItem | CatalogLibraryItem | ZoteroLibraryItem;
@@ -125,16 +131,19 @@ export interface ListLibraryInput {
   scope: "imported" | "catalog" | "zotero";
   query?: string;
   document_type?: string;
-  status: "active" | "archived" | "all";
+  status: "active" | "archived" | "available" | "imported" | "all";
   limit: number;
 }
 
 export interface ListLibraryResponse {
   status: "ok";
   count: number;
+  total_matches?: number;
   items: LibraryItem[];
   truncated: boolean;
   scope: "imported" | "catalog" | "zotero";
+  warnings?: Array<Record<string, unknown>>;
+  applied_filters?: Record<string, unknown>;
 }
 
 export interface IntegrityReportInput {
@@ -192,6 +201,8 @@ export interface IntegrityReportResponse {
     confirmation_token_fingerprint: string;
     previewed_at: string;
     confirmed_at: string;
+    transaction_fingerprint: string;
+    source_revision_fingerprint: string;
     lifecycle_events: string;
   };
   writes_performed: {
@@ -222,6 +233,9 @@ export interface ImportPreviewResponse {
   filename: string | null;
   title: string;
   item_type: string | null;
+  parent_key?: string | null;
+  zotero_item_key?: string | null;
+  zotero_attachment_key?: string | null;
   pdf_sha256: string | null;
   duplicate_status: string;
   existing_document_id: number | null;
@@ -233,6 +247,7 @@ export interface ImportPreviewResponse {
   converted_markdown_status?: string | null;
   converted_markdown_path?: string | null;
   extraction_ready?: boolean | null;
+  blockers?: Array<Record<string, unknown>>;
   document_type: string;
   warnings: string[];
   confirmation_token: string | null;

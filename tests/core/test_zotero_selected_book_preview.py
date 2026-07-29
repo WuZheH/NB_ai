@@ -413,6 +413,25 @@ def no_pdf_parser(monkeypatch):
             "page_count": 321,
         },
     )
+    monkeypatch.setattr(
+        service.pdf_extraction_strategy_service,
+        "build_pdf_extraction_plan",
+        lambda *_args, **_kwargs: {
+            "extractor_strategy": "native_text",
+            "text_quality_score": 90.0,
+            "quality_reasons": ["native_text_layer_quality_acceptable"],
+            "text_quality_metrics": {},
+            "converted_markdown_status": "not_required",
+            "converted_markdown_path": None,
+            "converted_markdown_pdf_sha256": None,
+            "converted_markdown_sha256": None,
+            "estimated_pages": 321,
+            "estimated_chunks": 36,
+            "extraction_ready": True,
+            "blockers": [],
+            "warnings": [],
+        },
+    )
 
 
 def test_single_pdf_preview_is_ready_and_preserves_note_semantics(
@@ -745,7 +764,7 @@ def test_unknown_attachment_is_rejected(
         == "attachment_not_owned_by_item"
     )
 
-def test_non_book_parent_is_rejected_with_real_item_type(
+def test_non_bibliographic_child_is_rejected_with_real_item_type(
     tmp_path,
 ):
     env = make_environment(tmp_path)
@@ -757,7 +776,7 @@ def test_non_book_parent_is_rejected_with_real_item_type(
             (
                 "INSERT INTO itemTypes("
                 "itemTypeID, typeName"
-                ") VALUES (99, 'journalArticle')"
+                ") VALUES (99, 'annotation')"
             )
         )
         connection.execute(
@@ -784,4 +803,70 @@ def test_non_book_parent_is_rejected_with_real_item_type(
     )
     assert exc_info.value.details[
         "item_type"
-    ] == "journalArticle"
+    ] == "annotation"
+
+
+def test_journal_article_parent_is_supported_for_preview(
+    tmp_path,
+    no_pdf_parser,
+):
+    env = make_environment(tmp_path)
+    with sqlite3.connect(env["snapshot"]) as connection:
+        connection.execute(
+            "INSERT INTO itemTypes(itemTypeID,typeName) VALUES(99,'journalArticle')"
+        )
+        connection.execute(
+            "UPDATE items SET itemTypeID=99 WHERE key='BOOKKEY1'"
+        )
+        connection.commit()
+
+    result = service.build_selected_book_preview(
+        zotero_item_key="BOOKKEY1",
+        snapshot_path=env["snapshot"],
+        db_path=env["research_db"],
+        config=env["config"],
+        now_ts=1000,
+    )
+    assert result["status"] == "ready"
+    assert result["zotero_item"]["item_type"] == "journalArticle"
+    assert result["preview_token"]
+
+
+def test_extraction_blocker_prevents_preview_token(
+    tmp_path,
+    no_pdf_parser,
+    monkeypatch,
+):
+    env = make_environment(tmp_path)
+    monkeypatch.setattr(
+        service.pdf_extraction_strategy_service,
+        "build_pdf_extraction_plan",
+        lambda *_args, **_kwargs: {
+            "extractor_strategy": "high_quality_pdf_to_markdown",
+            "text_quality_score": 10.0,
+            "quality_reasons": ["high_empty_page_ratio:1.000"],
+            "text_quality_metrics": {"empty_page_ratio": 1.0},
+            "converted_markdown_status": "converter_unavailable",
+            "converted_markdown_path": None,
+            "converted_markdown_pdf_sha256": None,
+            "converted_markdown_sha256": None,
+            "estimated_pages": 0,
+            "estimated_chunks": 0,
+            "extraction_ready": False,
+            "blockers": [{"code": "required_extraction_models_missing"}],
+            "warnings": ["high_quality_pdf_to_markdown_unavailable"],
+        },
+    )
+    result = service.build_selected_book_preview(
+        zotero_item_key="BOOKKEY1",
+        snapshot_path=env["snapshot"],
+        db_path=env["research_db"],
+        config=env["config"],
+        now_ts=1000,
+    )
+    assert result["extraction_ready"] is False
+    assert result["estimated_chunks"] == 0
+    assert result["blockers"] == [
+        {"code": "required_extraction_models_missing"}
+    ]
+    assert result["preview_token"] is None

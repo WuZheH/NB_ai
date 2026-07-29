@@ -392,6 +392,52 @@ def test_integrity_report_pdf_sha_is_not_revision_fingerprint(
     assert "pdf_sha256_not_recorded" in result["warnings"]
 
 
+def test_integrity_report_reads_safe_import_history_from_source_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime(tmp_path)
+    _patch_ready_dependencies(monkeypatch)
+    history = {
+        "confirmation_token_fingerprint": "c" * 64,
+        "previewed_at": "2026-07-30T01:00:00+00:00",
+        "confirmed_at": "2026-07-30T01:01:00+00:00",
+        "transaction_fingerprint": "t" * 64,
+        "source_revision_fingerprint": "r" * 64,
+        "lifecycle_events": [
+            "previewed",
+            "confirmed",
+            "transaction_started",
+        ],
+    }
+    with sqlite3.connect(runtime.db_path) as connection:
+        connection.execute(
+            """
+            UPDATE document_sources
+            SET source_trace_json = ?
+            WHERE document_id = 1
+            """,
+            (json.dumps({"import_history": history}),),
+        )
+
+    result = service.build_integrity_report(
+        document_id=1,
+        runtime=runtime,
+    )
+
+    assert result["history"] == {
+        **{key: value for key, value in history.items() if key != "lifecycle_events"},
+        "lifecycle_events": "previewed,confirmed,transaction_started",
+    }
+    assert "historical_events_not_recorded" not in result["warnings"]
+    assert result["writes_performed"] == {
+        "production_db": False,
+        "fts": False,
+        "vector_store": False,
+        "zotero": False,
+    }
+
+
 def test_personal_note_fts_eligibility_uses_nonempty_content() -> None:
     assert (
         personal_note_exclusion_reason(
@@ -441,6 +487,8 @@ def test_integrity_verdict_pass_warn_and_fail_rules() -> None:
             "confirmation_token_fingerprint": "recorded",
             "previewed_at": "recorded",
             "confirmed_at": "recorded",
+            "transaction_fingerprint": "recorded",
+            "source_revision_fingerprint": "recorded",
             "lifecycle_events": "recorded",
         },
         "writes_performed": {

@@ -187,8 +187,8 @@ export async function dispatchAction(
       scope: ["imported", "catalog", "zotero"].includes(String(input.scope)) ? String(input.scope) as "imported" | "catalog" | "zotero" : "imported",
       query: optionalString(input.query, 256),
       document_type: optionalString(input.document_type, 64),
-      status: ["active", "archived", "all"].includes(String(input.status))
-        ? String(input.status) as "active" | "archived" | "all"
+      status: ["active", "archived", "available", "imported", "all"].includes(String(input.status))
+        ? String(input.status) as "active" | "archived" | "available" | "imported" | "all"
         : "active",
       limit: boundedInteger(input.limit, 20, 1, 50),
     });
@@ -423,7 +423,7 @@ function actionInputSchema(name: string): Record<string, unknown> {
     properties.scope = { type: "string", enum: ["imported", "catalog", "zotero"], default: "imported" };
     properties.query = { type: "string", maxLength: 256 };
     properties.document_type = { type: "string", maxLength: 64 };
-    properties.status = { type: "string", enum: ["active", "archived", "all"], default: "active" };
+    properties.status = { type: "string", enum: ["active", "archived", "available", "imported", "all"], default: "active" };
     properties.limit = { type: "integer", minimum: 1, maximum: 50, default: 20 };
   } else if (name === "integrity_report") {
     properties.document_id = { type: "integer", minimum: 1 };

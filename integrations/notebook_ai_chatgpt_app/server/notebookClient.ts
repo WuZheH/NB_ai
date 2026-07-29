@@ -1,5 +1,6 @@
 import {
   NOTEBOOK_SOURCE_TYPES,
+  type EvidenceFormat,
   type EvidenceExportInput,
   type EvidenceExportResponse,
   type FragmentResponse,
@@ -152,7 +153,7 @@ export class NotebookClient {
     ) {
       throw invalidBackendResponse();
     }
-    return response;
+    return this.resolveExportOpenTargets(response, input.format);
   }
 
   async listLibrary(input: ListLibraryInput): Promise<ListLibraryResponse> {
@@ -320,6 +321,73 @@ export class NotebookClient {
       }
     }
     return { ...result, open_target: openTarget };
+  }
+
+  private resolveExportOpenTargets(
+    response: EvidenceExportResponse | string,
+    format: EvidenceFormat,
+  ): EvidenceExportResponse | string {
+    if (typeof response === "string") {
+      return this.normalizeExportContent(response, format);
+    }
+    const normalized = { ...response };
+    for (const key of ["content", "text", "output"] as const) {
+      const value = normalized[key];
+      if (typeof value === "string") {
+        normalized[key] = this.normalizeExportContent(value, format);
+      }
+    }
+    return normalized;
+  }
+
+  private normalizeExportContent(content: string, format: EvidenceFormat): string {
+    if (format === "markdown") {
+      return content.replace(
+        /\]\((\/api\/v1\/library\/documents\/[^)\s]+)\)/g,
+        (_match, target: string) => `](${new URL(target, this.baseUrl).toString()})`,
+      );
+    }
+    try {
+      if (format === "json") {
+        return JSON.stringify(this.normalizeExportValue(JSON.parse(content)), null, 2);
+      }
+      return content
+        .split(/\r?\n/)
+        .filter((line) => line.trim())
+        .map((line) => JSON.stringify(this.normalizeExportValue(JSON.parse(line))))
+        .join("\n");
+    } catch {
+      throw invalidBackendResponse();
+    }
+  }
+
+  private normalizeExportValue(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.normalizeExportValue(item));
+    }
+    if (!isRecord(value)) {
+      return value;
+    }
+    const normalized: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      normalized[key] = this.normalizeExportValue(item);
+    }
+    if (isRecord(normalized.open_target)) {
+      const openTarget = { ...normalized.open_target };
+      for (const key of OPEN_TARGET_URL_KEYS) {
+        const target = openTarget[key];
+        if (typeof target !== "string" || !target.trim()) {
+          continue;
+        }
+        try {
+          new URL(target);
+        } catch {
+          openTarget[key] = new URL(target, this.baseUrl).toString();
+        }
+      }
+      normalized.open_target = openTarget;
+    }
+    return normalized;
   }
 }
 

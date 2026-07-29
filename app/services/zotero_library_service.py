@@ -17,6 +17,7 @@ def list_parent_items(
     *,
     query: str | None = None,
     document_type: str | None = None,
+    status: str = "all",
     limit: int = 20,
     db_path: str | Path | None = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
@@ -36,6 +37,7 @@ def list_parent_items(
 
     query_text = _normalize_search(query)
     requested_type = str(document_type or "").strip().casefold()
+    requested_status = _normalize_status(status)
     requested_limit = max(1, min(int(limit), 50))
     imported = _load_imported_documents(db_path)
 
@@ -77,8 +79,11 @@ def list_parent_items(
         ).fetchall()
 
         candidates: list[dict[str, Any]] = []
+        hidden_empty_title_count = 0
         for parent in parent_rows:
             item_type = str(parent["item_type"] or "unknown")
+            if not _is_bibliographic_parent_type(item_type):
+                continue
             if requested_type and item_type.casefold() != requested_type:
                 continue
 
@@ -87,11 +92,23 @@ def list_parent_items(
             attachment_ids = [int(item["_item_id"]) for item in attachments]
             authors = _author_rows(connection, parent_id)
             metadata_values = _metadata_values(connection, parent_id)
+            tags = _tag_rows(connection, parent_id)
+            title = str(parent["title"] or "").strip()
+            if not title:
+                hidden_empty_title_count += 1
+                continue
+            parent_key = str(parent["parent_key"])
+            attachment_keys = [
+                str(item["zotero_attachment_key"]) for item in attachments
+            ]
             searchable = [
-                str(parent["title"] or ""),
+                title,
                 item_type,
+                parent_key,
+                *attachment_keys,
                 *authors,
                 *metadata_values,
+                *tags,
             ]
             if query_text and not _matches_query(query_text, searchable):
                 continue
@@ -114,22 +131,26 @@ def list_parent_items(
             recent_activity_at = _recent_activity_at(
                 connection, parent_id, attachment_ids, str(parent["date_modified"] or "")
             )
-            imported_document_id = imported.get(str(parent["parent_key"]))
+            imported_document_id = imported.get(parent_key)
+            item_status = (
+                "imported" if imported_document_id is not None else "available"
+            )
+            if requested_status != "all" and item_status != requested_status:
+                continue
 
             candidates.append(
                 {
                     "kind": "zotero",
                     "source": "zotero_library",
                     "document_id": imported_document_id,
-                    "parent_key": str(parent["parent_key"]),
-                    "zotero_item_key": str(parent["parent_key"]),
-                    "title": str(parent["title"] or ""),
+                    "parent_key": parent_key,
+                    "zotero_item_key": parent_key,
+                    "title": title,
                     "item_type": item_type,
                     "authors": authors,
+                    "tags": tags,
                     "date": str(parent["publication_date"] or ""),
-                    "attachment_keys": [
-                        str(item["zotero_attachment_key"]) for item in attachment_choices
-                    ],
+                    "attachment_keys": attachment_keys,
                     "primary_pdf_attachment_key": (
                         str(pdf_choices[0]["zotero_attachment_key"])
                         if pdf_choices
@@ -147,20 +168,66 @@ def list_parent_items(
                     "duplicate_status": (
                         "already_imported"
                         if imported_document_id is not None
-                        else "not_evaluated"
+                        else "not_detected"
                     ),
-                    "status": "available",
+                    "status": item_status,
+                    "_query_rank": _query_rank(
+                        query_text,
+                        title=title,
+                        parent_key=parent_key,
+                        attachment_keys=attachment_keys,
+                        searchable=searchable,
+                    ),
                 }
             )
-            if len(candidates) >= requested_limit:
-                break
+
+        candidates.sort(
+            key=lambda item: (
+                int(item["_query_rank"]),
+                str(item["title"]).casefold(),
+                str(item["parent_key"]),
+            )
+        )
+        total_matches = len(candidates)
+        returned = candidates[:requested_limit]
+        for item in returned:
+            item.pop("_query_rank", None)
+
+        orphan_child_count = sum(
+            _orphan_child_count(connection, table)
+            for table in ("itemAttachments", "itemAnnotations", "itemNotes")
+        )
+
+    warnings: list[dict[str, Any]] = []
+    if hidden_empty_title_count:
+        warnings.append(
+            {
+                "code": "zotero_parent_without_title_hidden",
+                "count": hidden_empty_title_count,
+            }
+        )
+    if orphan_child_count:
+        warnings.append(
+            {
+                "code": "zotero_orphan_child_items_hidden",
+                "count": orphan_child_count,
+            }
+        )
 
     return {
         "status": "ok",
         "scope": "zotero",
-        "count": len(candidates),
-        "items": candidates,
-        "truncated": len(candidates) >= requested_limit,
+        "count": len(returned),
+        "total_matches": total_matches,
+        "items": returned,
+        "truncated": total_matches > len(returned),
+        "warnings": warnings,
+        "applied_filters": {
+            "query": str(query or "").strip() or None,
+            "document_type": str(document_type or "").strip() or None,
+            "status": requested_status,
+            "limit": requested_limit,
+        },
     }
 
 
@@ -247,6 +314,31 @@ def _metadata_values(connection: sqlite3.Connection, parent_id: int) -> list[str
               FROM itemData d
               JOIN itemDataValues v ON v.valueID = d.valueID
              WHERE d.itemID = ?
+            """,
+            (parent_id,),
+        ).fetchall()
+        if row[0]
+    ]
+
+
+def _tag_rows(connection: sqlite3.Connection, parent_id: int) -> list[str]:
+    if not (_table_exists(connection, "itemTags") and _table_exists(connection, "tags")):
+        return []
+    columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(tags)")
+    }
+    name_column = "name" if "name" in columns else "tag" if "tag" in columns else None
+    if name_column is None:
+        return []
+    return [
+        str(row[0])
+        for row in connection.execute(
+            f"""
+            SELECT DISTINCT t.{name_column}
+              FROM itemTags AS it
+              JOIN tags AS t ON t.tagID = it.tagID
+             WHERE it.itemID = ?
+          ORDER BY t.{name_column}
             """,
             (parent_id,),
         ).fetchall()
@@ -353,6 +445,29 @@ def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
     )
 
 
+def _orphan_child_count(connection: sqlite3.Connection, table: str) -> int:
+    if not _table_exists(connection, table):
+        return 0
+    columns = {
+        str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
+    }
+    if "parentItemID" not in columns:
+        return 0
+    row = connection.execute(
+        f"""
+        SELECT COUNT(*)
+          FROM {table} AS child
+         WHERE child.parentItemID IS NULL
+            OR NOT EXISTS (
+                   SELECT 1
+                     FROM items AS parent
+                    WHERE parent.itemID = child.parentItemID
+               )
+        """
+    ).fetchone()
+    return int(row[0] or 0)
+
+
 def _is_pdf_attachment(item: dict[str, Any]) -> bool:
     return (
         str(item.get("content_type") or "").casefold() == "application/pdf"
@@ -367,3 +482,46 @@ def _normalize_search(value: str | None) -> str:
 
 def _matches_query(query: str, values: list[str]) -> bool:
     return any(query in _normalize_search(value) for value in values)
+
+
+def _normalize_status(value: str | None) -> str:
+    normalized = str(value or "all").strip().casefold()
+    aliases = {
+        "active": "available",
+        "archived": "imported",
+        "available": "available",
+        "imported": "imported",
+        "all": "all",
+    }
+    if normalized not in aliases:
+        raise ValueError("zotero_status_invalid")
+    return aliases[normalized]
+
+
+def _is_bibliographic_parent_type(item_type: str) -> bool:
+    return item_type.casefold() not in {
+        "annotation",
+        "attachment",
+        "note",
+    }
+
+
+def _query_rank(
+    query: str,
+    *,
+    title: str,
+    parent_key: str,
+    attachment_keys: list[str],
+    searchable: list[str],
+) -> int:
+    if not query:
+        return 0
+    exact_identity_values = [parent_key, *attachment_keys]
+    if any(query == _normalize_search(value) for value in exact_identity_values):
+        return 0
+    normalized_title = _normalize_search(title)
+    if query == normalized_title:
+        return 1
+    if normalized_title.startswith(query):
+        return 2
+    return 3 if _matches_query(query, searchable) else 4

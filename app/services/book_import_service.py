@@ -737,6 +737,7 @@ def apply_prepared_book_import(
     *,
     db_path: str | Path = DEFAULT_DB_PATH,
     backup: bool = True,
+    document_type: str = "book",
 ) -> dict[str, Any]:
     safety = evaluate_auto_apply_safety(prepared, db_path=db_path)
     if not safety["auto_apply_eligible"]:
@@ -761,9 +762,17 @@ def apply_prepared_book_import(
                 title, document_type, content_layer, source_path, pdf_path, read_status,
                 object_import_mode, object_import_status, created_at, updated_at
             )
-            VALUES (?, 'book', 'evidence', ?, ?, 'read', ?, 'open', ?, ?)
+            VALUES (?, ?, 'evidence', ?, ?, 'read', ?, 'open', ?, ?)
             """,
-            (prepared.title, str(prepared.pdf_path), str(prepared.pdf_path), prepared.object_import_mode, now, now),
+            (
+                prepared.title,
+                str(document_type or "book"),
+                str(prepared.pdf_path),
+                str(prepared.pdf_path),
+                prepared.object_import_mode,
+                now,
+                now,
+            ),
         )
         document_id = int(cursor.lastrowid)
         for chapter in prepared.chapters:
@@ -851,6 +860,7 @@ def apply_prepared_book_import(
         "before_counts": before_counts,
         "after_counts": after_counts,
         "document_id": document_id,
+        "document_type": str(document_type or "book"),
         "book_chapter_ids": chapter_ids,
         "knowledge_chunk_ids": chunk_ids,
         "inserted_chapters": len(chapter_ids),

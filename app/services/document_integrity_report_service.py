@@ -80,6 +80,7 @@ def build_integrity_report(
         actual.db_path,
         document_id,
     )
+    history = _history_from_source(source)
     pdf_sha256, pdf_warning = _resolve_pdf_sha256(source)
     expected_fts, exclusions = _expected_fts_fragments(
         actual.db_path,
@@ -155,12 +156,6 @@ def build_integrity_report(
         "note_indexed_count": len(indexed_note_ids),
         "note_missing_count": note_missing_count,
         "note_orphan_count": "not_available",
-    }
-    history = {
-        "confirmation_token_fingerprint": "not_recorded",
-        "previewed_at": "not_recorded",
-        "confirmed_at": "not_recorded",
-        "lifecycle_events": "not_recorded",
     }
     writes_performed = {
         "production_db": False,
@@ -375,6 +370,8 @@ def _source_row(connection: sqlite3.Connection, document_id: int) -> dict[str, A
                     parsed.get("source_pdf_path")
                     or parsed.get("managed_pdf_path")
                 )
+                if isinstance(parsed.get("import_history"), dict):
+                    trace["_import_history"] = parsed["import_history"]
         except json.JSONDecodeError:
             pass
     else:
@@ -386,6 +383,36 @@ def _source_row(connection: sqlite3.Connection, document_id: int) -> dict[str, A
         **{key: value for key, value in values.items() if value not in (None, "")},
         **{key: value for key, value in trace.items() if value not in (None, "")},
     }
+
+
+def _history_from_source(source: dict[str, Any]) -> dict[str, str]:
+    value = source.pop("_import_history", None)
+    fields = (
+        "confirmation_token_fingerprint",
+        "previewed_at",
+        "confirmed_at",
+        "transaction_fingerprint",
+        "source_revision_fingerprint",
+    )
+    history = {
+        key: "not_recorded"
+        for key in fields
+    }
+    history["lifecycle_events"] = "not_recorded"
+    if not isinstance(value, dict):
+        return history
+    for key in fields:
+        recorded = str(value.get(key) or "").strip()
+        if recorded:
+            history[key] = recorded
+    events = [
+        str(item).strip()
+        for item in value.get("lifecycle_events") or []
+        if str(item).strip()
+    ]
+    if events:
+        history["lifecycle_events"] = ",".join(events)
+    return history
 
 
 def _resolve_pdf_sha256(

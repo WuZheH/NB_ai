@@ -45,7 +45,7 @@ export async function runImportDocumentTool(client: NotebookClient, rawInput: un
       duration_ms: elapsedMilliseconds(startedAt),
       error_code: errorCode(error),
     });
-    return errorToolResult(error);
+    return errorToolResult(error, { tool: "import_document", writeOperation: true });
   } finally {
     if (confirmationToken) {
       await releaseStagedImport(confirmationToken);
