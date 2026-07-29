@@ -81,6 +81,10 @@ export function errorToolResult(error: unknown): {
   const message =
     code === "BACKEND_TIMEOUT"
       ? "Search backend request timed out."
+      : code === "zotero_direction_b_body_import_failed"
+        ? "Selected-book body extraction failed and the import was rolled back."
+      : code.endsWith("_index_sync_failed") || code.endsWith("_index_publish_failed")
+        ? "Selected-book index publication failed and the import was rolled back."
       : [
           "config_missing",
           "config_invalid_json",

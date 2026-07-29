@@ -227,6 +227,12 @@ export interface ImportPreviewResponse {
   existing_document_id: number | null;
   estimated_pages: number | null;
   estimated_chunks: number | null;
+  extractor_strategy?: "native_text" | "high_quality_pdf_to_markdown" | null;
+  text_quality_score?: number | null;
+  quality_reasons?: string[];
+  converted_markdown_status?: string | null;
+  converted_markdown_path?: string | null;
+  extraction_ready?: boolean | null;
   document_type: string;
   warnings: string[];
   confirmation_token: string | null;

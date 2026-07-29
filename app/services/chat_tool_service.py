@@ -157,7 +157,11 @@ def list_library(
     if scope == "catalog":
         return chat_import_catalog_service.list_catalog(inbox_root=actual_runtime.resolved_inbox_root(), query=query, limit=limit)
     if scope == "zotero":
-        return zotero_library_service.list_parent_items(query=query, limit=limit)
+        return zotero_library_service.list_parent_items(
+            query=query,
+            document_type=document_type,
+            limit=limit,
+        )
     if scope != "imported":
         raise ChatToolError("library_scope_invalid", "Library scope is invalid.", status_code=422)
     normalized_status = str(status or "active").strip().lower()
@@ -416,6 +420,12 @@ def import_preview(
         "existing_document_id": classification.get("existing_document_id") if duplicate else None,
         "estimated_pages": page_count,
         "estimated_chunks": None,
+        "extractor_strategy": None,
+        "text_quality_score": None,
+        "quality_reasons": [],
+        "converted_markdown_status": None,
+        "converted_markdown_path": None,
+        "extraction_ready": None,
         "document_type": str(classification.get("document_type") or "paper"),
         "warnings": (
             [str(value) for value in classification.get("reasons") or []][:7]
@@ -563,13 +573,28 @@ def _import_zotero_selected_book_preview(
             "filename": str(selected.get("file_name") or "") or None,
             "pdf_sha256": str(selected.get("pdf_sha256") or "") or None,
             "estimated_pages": selected.get("page_count"),
-            "estimated_chunks": None,
+            "estimated_chunks": preview.get("estimated_chunks"),
+            "extractor_strategy": preview.get("extractor_strategy"),
+            "text_quality_score": preview.get("text_quality_score"),
+            "quality_reasons": list(preview.get("quality_reasons") or []),
+            "converted_markdown_status": preview.get(
+                "converted_markdown_status"
+            ),
+            "converted_markdown_path": _safe_project_relative_path(
+                preview.get("converted_markdown_path")
+            ),
+            "extraction_ready": bool(
+                preview.get("extraction_ready", True)
+            ),
         }
     )
 
     if bool(duplicate.get("duplicate_found")):
         base["duplicate_status"] = "duplicate"
         base["existing_document_id"] = unique_document_id
+        return base
+
+    if not bool(preview.get("extraction_ready", True)):
         return base
 
     preview_token = str(preview.get("preview_token") or "")
@@ -611,6 +636,17 @@ def _safe_zotero_error_details(value: Any) -> Any:
     if isinstance(value, list):
         return [_safe_zotero_error_details(item) for item in value]
     return value
+
+
+def _safe_project_relative_path(value: Any) -> str | None:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return None
+    try:
+        path = Path(cleaned).resolve(strict=False)
+        return path.relative_to(Path(DATA_PROJECT_ROOT).resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
 
 
 

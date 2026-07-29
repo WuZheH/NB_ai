@@ -627,6 +627,23 @@ test("machine configuration failures remain structured and path-free", () => {
   assert.doesNotMatch(JSON.stringify(result), /D:\\\\private/);
 });
 
+test("selected-book failures preserve a safe actionable stage", () => {
+  const result = errorToolResult(
+    new NotebookBackendError(
+      "D:\\private\\book.pdf parser traceback",
+      500,
+      "zotero_direction_b_body_import_failed",
+    ),
+  );
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.error_code, "zotero_direction_b_body_import_failed");
+  assert.equal(
+    payload.message,
+    "Selected-book body extraction failed and the import was rolled back.",
+  );
+  assert.doesNotMatch(JSON.stringify(result), /D:\\\\private/);
+});
+
 test("all tool failures use isError content without output-schema mismatch", async () => {
   const scenarios = [
     ["BACKEND_UNAVAILABLE", 503],

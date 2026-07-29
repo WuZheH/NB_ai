@@ -14,7 +14,7 @@ from typing import Any, Callable
 from app.core.paths import DATA_PROJECT_ROOT, DEFAULT_DB_PATH, RUNTIME_STATE_DIR
 from app.services.book_import_contract import OBJECT_IMPORT_MODE_CHAPTERED, PdfLayoutBlock, PdfLayoutLine, PdfLayoutSpan
 from app.services.chunk_splitter import TextChunk, split_nodes
-from app.services.markdown_parser import PDF_PAGE_RE, parse_markdown
+from app.services.markdown_parser import PDF_PAGE_RE, ParsedMarkdownNode, parse_markdown
 from app.services.pdf_layout_service import insert_pdf_page_text_layer_cache, persist_layout_blocks_and_links
 from app.services.pdf_parser_backends import (
     MARKER_SURYA_PAGE_BLOCKS_BACKEND,
@@ -98,6 +98,84 @@ class PreparedBookImport:
     @property
     def estimated_chunk_count(self) -> int:
         return len(self.chunks)
+
+
+def prepare_book_import_from_markdown(
+    pdf_path: str | Path,
+    markdown_text: str,
+    *,
+    title: str | None = None,
+    backend: str = MARKER_SURYA_PAGE_BLOCKS_BACKEND,
+) -> PreparedBookImport:
+    """Prepare an import from already converted, SHA-verified Markdown."""
+
+    pdf = resolve_pdf_path(pdf_path)
+    normalized = _ensure_pdf_path_marker(str(markdown_text), pdf)
+    page_count = _count_page_markers(normalized)
+    parse_result = PdfParseResult(
+        markdown_text=normalized,
+        page_markers_present=page_count > 0,
+        page_count=page_count,
+        parser_backend=backend,
+        warnings=[],
+    )
+    detection = detect_book_chapters(
+        normalized,
+        pdf_path=pdf,
+        page_count=page_count,
+    )
+    chapters = list(detection["chapters"])
+    detection_method = str(detection["detection_method"])
+    warnings: list[str] = []
+    if not chapters:
+        detection_method = "synthetic_full_text"
+        chapters = [
+            DetectedChapter(
+                chapter_index=1,
+                title=title or pdf.stem,
+                heading_path=title or pdf.stem,
+                pdf_page_start=1,
+                pdf_page_end=page_count or None,
+                detection_method=detection_method,
+                source="synthetic",
+                confidence=0.0,
+            )
+        ]
+        warnings.append("synthetic_full_text: no chapter heading candidates detected")
+    chapters = _with_page_ends(chapters, page_count)
+    parsed = parse_markdown(normalized, source_path=str(pdf))
+    parsed_nodes = parsed.nodes or _plain_text_page_nodes(
+        normalized,
+        chapters=chapters,
+        pdf_path=pdf,
+    )
+    if not parsed.nodes and parsed_nodes:
+        warnings.append("plain_text_page_fallback_used")
+    chunks = split_nodes(parsed_nodes)
+    chunk_chapter_indexes, binding_warnings = _bind_chunks_to_outline_units(
+        chunks, chapters
+    )
+    warnings.extend(binding_warnings)
+    bound_count = sum(
+        1 for chapter_index in chunk_chapter_indexes if chapter_index is not None
+    )
+    return PreparedBookImport(
+        pdf_path=pdf,
+        title=title or _guess_title(parsed.title, pdf),
+        backend=backend,
+        parse_result=parse_result,
+        markdown_text=normalized,
+        detection_method=detection_method,
+        chapters=chapters,
+        chunks=chunks,
+        chunk_chapter_indexes=chunk_chapter_indexes,
+        binding_rate=bound_count / len(chunks) if chunks else 0.0,
+        warnings=warnings,
+        rejected_candidates_summary=dict(
+            detection.get("rejected_candidates_summary") or {}
+        ),
+        rejected_candidates=list(detection.get("rejected_candidates") or []),
+    )
 
 
 def prepare_book_import(
@@ -206,7 +284,14 @@ def prepare_book_import(
     chapters = _with_page_ends(chapters, parse_result.page_count)
 
     parsed = parse_markdown(markdown_text, source_path=str(pdf))
-    chunks = split_nodes(parsed.nodes)
+    parsed_nodes = parsed.nodes or _plain_text_page_nodes(
+        markdown_text,
+        chapters=chapters,
+        pdf_path=pdf,
+    )
+    if not parsed.nodes and parsed_nodes:
+        warnings.append("plain_text_page_fallback_used")
+    chunks = split_nodes(parsed_nodes)
     chunk_chapter_indexes, binding_warnings = _bind_chunks_to_outline_units(chunks, chapters)
     warnings.extend(binding_warnings)
     bound_count = sum(1 for chapter_index in chunk_chapter_indexes if chapter_index is not None)
@@ -1366,6 +1451,80 @@ def _chapter_detection_payload(
         "rejected_candidates": rejected,
         "rejected_candidates_summary": _rejected_summary(rejected),
     }
+
+
+def _plain_text_page_nodes(
+    markdown_text: str,
+    *,
+    chapters: list[DetectedChapter],
+    pdf_path: Path,
+) -> list[ParsedMarkdownNode]:
+    """Turn page-marked native text into chunkable nodes when it has no headings."""
+
+    matches = list(PDF_PAGE_RE.finditer(markdown_text))
+    if not matches:
+        return []
+    pages: list[tuple[int, list[str]]] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown_text)
+        lines = [
+            re.sub(r"[ \t]+", " ", line).strip()
+            for line in markdown_text[start:end].splitlines()
+            if line.strip() and not line.lstrip().startswith("<!-- PDF_PATH:")
+        ]
+        pages.append((int(match.group(1)), lines))
+
+    repeated = _repeated_page_edge_lines(pages)
+    nodes: list[ParsedMarkdownNode] = []
+    for page_number, lines in pages:
+        cleaned_lines = [
+            line
+            for line in lines
+            if _normalized_repeated_line(line) not in repeated
+        ]
+        content = "\n".join(cleaned_lines).strip()
+        if not content:
+            continue
+        chapter = _chapter_for_page(page_number, chapters)
+        heading = chapter.title if chapter else pdf_path.stem
+        nodes.append(
+            ParsedMarkdownNode(
+                order_index=len(nodes),
+                parent_order_index=None,
+                heading_level=1,
+                heading_title=heading,
+                heading_path=heading,
+                raw_content=content,
+                pdf_page_start=page_number,
+                pdf_path=str(pdf_path),
+            )
+        )
+    return nodes
+
+
+def _repeated_page_edge_lines(
+    pages: list[tuple[int, list[str]]],
+) -> set[str]:
+    occurrences: dict[str, int] = {}
+    for _page_number, lines in pages:
+        edges = [*lines[:2], *lines[-2:]]
+        for normalized in {
+            _normalized_repeated_line(line)
+            for line in edges
+            if 4 <= len(line.strip()) <= 160
+        }:
+            occurrences[normalized] = occurrences.get(normalized, 0) + 1
+    threshold = max(3, int(len(pages) * 0.35))
+    return {
+        line
+        for line, count in occurrences.items()
+        if line and count >= threshold
+    }
+
+
+def _normalized_repeated_line(value: str) -> str:
+    return re.sub(r"\d+", "#", value.strip().casefold())
 
 
 def _bind_chunks_to_outline_units(

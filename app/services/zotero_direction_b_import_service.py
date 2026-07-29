@@ -33,8 +33,11 @@ from app.services.retrieval.source_registry import (
     RetrievalSourceRegistry,
 )
 from app.services.pdf_parser_backends import (
+    MARKER_SURYA_PAGE_BLOCKS_BACKEND,
     PYMUPDF_BACKEND,
+    parse_pdf_to_markdown,
 )
+from app.services import pdf_extraction_strategy_service
 
 
 class DirectionBSelectedBookImportError(RuntimeError):
@@ -1342,17 +1345,73 @@ def _default_selected_book_body_importer(
         or pdf_path.stem
     )
 
-    # Explicitly use the existing lightweight
-    # PyMuPDF backend in B4. No Marker/Surya
-    # model download or LLM call is introduced.
-    prepared = (
-        book_import_service
-        .prepare_book_import(
-            pdf_path,
-            title=title,
-            backend=PYMUPDF_BACKEND,
-        )
+    strategy = str(
+        preview.get("extractor_strategy")
+        or pdf_extraction_strategy_service.NATIVE_TEXT
     )
+    if not bool(preview.get("extraction_ready", True)):
+        raise pdf_extraction_strategy_service.PdfExtractionStrategyError(
+            "pdf_extraction_strategy_unavailable"
+        )
+    if strategy == pdf_extraction_strategy_service.NATIVE_TEXT:
+        # The source-revision fingerprint binds this native strategy to the
+        # confirmation token. Low-quality PDFs cannot silently fall back here.
+        prepared = (
+            book_import_service
+            .prepare_book_import(
+                pdf_path,
+                title=title,
+                backend=PYMUPDF_BACKEND,
+            )
+        )
+    elif strategy == pdf_extraction_strategy_service.HIGH_QUALITY_MARKDOWN:
+        markdown_path_text = str(
+            preview.get("converted_markdown_path") or ""
+        ).strip()
+        if markdown_path_text:
+            markdown_path = Path(
+                markdown_path_text
+            ).resolve(strict=False)
+            if not markdown_path.is_file():
+                raise pdf_extraction_strategy_service.PdfExtractionStrategyError(
+                    "verified_converted_markdown_missing"
+                )
+            markdown_text = markdown_path.read_text(encoding="utf-8")
+        elif (
+            preview.get("converted_markdown_status")
+            == "conversion_required"
+        ):
+            converted = parse_pdf_to_markdown(
+                pdf_path,
+                backend=MARKER_SURYA_PAGE_BLOCKS_BACKEND,
+            )
+            markdown_text = (
+                "<!-- SOURCE_PDF_SHA256: "
+                f"{attachment.get('pdf_sha256') or ''} -->\n\n"
+                + converted.markdown_text
+            )
+        else:
+            raise pdf_extraction_strategy_service.PdfExtractionStrategyError(
+                "verified_converted_markdown_missing"
+            )
+        pdf_extraction_strategy_service.validate_markdown_for_import(
+            markdown_text,
+            expected_pdf_sha256=str(
+                attachment.get("pdf_sha256") or ""
+            ),
+        )
+        prepared = (
+            book_import_service
+            .prepare_book_import_from_markdown(
+                pdf_path,
+                markdown_text,
+                title=title,
+            )
+        )
+    else:
+        raise pdf_extraction_strategy_service.PdfExtractionStrategyError(
+            "unsupported_pdf_extraction_strategy"
+        )
 
     apply_result = (
         book_import_service
@@ -1466,6 +1525,8 @@ def _default_selected_book_body_importer(
         ),
         "parser_backend": (
             PYMUPDF_BACKEND
+            if strategy == pdf_extraction_strategy_service.NATIVE_TEXT
+            else MARKER_SURYA_PAGE_BLOCKS_BACKEND
         ),
         "document_source_written": bool(
             document_source_written

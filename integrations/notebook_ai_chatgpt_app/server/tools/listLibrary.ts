@@ -44,9 +44,13 @@ const catalogLibraryItemSchema = z.object({
   source: z.literal("search_import_catalog"),
 });
 const zoteroLibraryItemSchema = z.object({
-  kind: z.literal("zotero"), document_id: z.null(), title: z.string(), item_type: z.string(), zotero_item_key: z.string(),
+  kind: z.literal("zotero"), document_id: z.number().int().positive().nullable(), title: z.string(), item_type: z.string(), zotero_item_key: z.string(),
+  parent_key: z.string(), authors: z.array(z.string()), date: z.string(),
+  attachment_keys: z.array(z.string()), primary_pdf_attachment_key: z.string().nullable(),
   has_pdf: z.boolean(), attachment_count: z.number().int().nonnegative(), attachment_choices: z.array(z.object({ zotero_attachment_key: z.string(), file_name: z.string().nullable(), path_exists: z.boolean(), content_type: z.string().nullable() })), annotation_count: z.number().int().nonnegative(),
-  child_note_count: z.number().int().nonnegative(), duplicate_status: z.string(), status: z.literal("available"),
+  child_note_count: z.number().int().nonnegative(), date_modified: z.string(), recent_activity_at: z.string(),
+  already_imported: z.boolean(), imported_document_id: z.number().int().positive().nullable(),
+  duplicate_status: z.string(), status: z.literal("available"),
   source: z.literal("zotero_library"),
 });
 

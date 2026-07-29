@@ -13,6 +13,7 @@ from typing import Any
 from app.core.paths import DEFAULT_DB_PATH
 from app.services import (
     import_duplicate_check_service,
+    pdf_extraction_strategy_service,
     zotero_source_cache_service,
 )
 from app.services.retrieval.fragment_normalizer import (
@@ -226,6 +227,19 @@ def build_selected_book_preview(
                 str(pdf_meta["warning"])
             )
 
+        extraction_plan = (
+            pdf_extraction_strategy_service
+            .build_pdf_extraction_plan(
+                pdf_path,
+                pdf_sha256=pdf_sha256,
+            )
+        )
+        warnings.extend(
+            str(value)
+            for value in extraction_plan.get("warnings") or []
+            if value
+        )
+
         annotations = _read_annotations(
             connection,
             attachment_item_id=int(selected["item_id"]),
@@ -261,6 +275,7 @@ def build_selected_book_preview(
         pdf_sha256=pdf_sha256,
         annotations=annotations,
         child_notes=child_notes,
+        extraction_plan=extraction_plan,
     )
 
     timestamp = float(
@@ -337,6 +352,7 @@ def build_selected_book_preview(
             ),
         },
         "warnings": _dedupe(warnings),
+        **extraction_plan,
         "source_revision": source_revision,
         "preview_token": preview_token,
         "preview_expires_at": (
@@ -1118,6 +1134,7 @@ def _build_source_revision(
     pdf_sha256: str,
     annotations: list[dict[str, Any]],
     child_notes: list[dict[str, Any]],
+    extraction_plan: dict[str, Any],
 ) -> dict[str, Any]:
     payload = {
         "parent": {
@@ -1175,6 +1192,29 @@ def _build_source_revision(
             }
             for item in child_notes
         ],
+        "extraction_plan": {
+            "fingerprint": (
+                pdf_extraction_strategy_service
+                .extraction_plan_fingerprint(
+                    extraction_plan
+                )
+            ),
+            "extractor_strategy": extraction_plan[
+                "extractor_strategy"
+            ],
+            "converted_markdown_status": extraction_plan[
+                "converted_markdown_status"
+            ],
+            "converted_markdown_pdf_sha256": extraction_plan.get(
+                "converted_markdown_pdf_sha256"
+            ),
+            "converted_markdown_sha256": extraction_plan.get(
+                "converted_markdown_sha256"
+            ),
+            "extraction_ready": bool(
+                extraction_plan["extraction_ready"]
+            ),
+        },
     }
 
     return {
