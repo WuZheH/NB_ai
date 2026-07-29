@@ -334,7 +334,7 @@ function isNotebookFragment(value: unknown): value is NotebookFragment {
     && (NOTEBOOK_SOURCE_TYPES as readonly string[]).includes(value.source_type)
     && Array.isArray(value.tags)
     && value.tags.every((tag) => typeof tag === "string")
-    && Array.isArray(value.provenance);
+    && isRecord(value.provenance);
 }
 
 function invalidBackendResponse(): NotebookBackendError {

@@ -24,14 +24,14 @@ test("production renderer renders a readable local PDF preview at supported desk
     assert.equal(payload.metrics.first.strategy, "exact", diagnostic);
     assert.ok(payload.metrics.first.highlightCount > 0, JSON.stringify(payload.metrics));
     assert.equal(payload.metrics.first.pageNumber, 2, diagnostic);
-    assert.equal(payload.metrics.first.chunkId, 1, diagnostic);
+    assert.equal(payload.metrics.first.chunkId, 0, diagnostic);
     assert.ok(payload.metrics.first.canvasRectWidth > 0 && payload.metrics.first.canvasRectHeight > 0, diagnostic);
     assert.equal(payload.metrics.textInitial.allInside, true, JSON.stringify(payload.metrics.textInitial));
     assert.equal(payload.metrics.textInitial.targetIntersected, true, JSON.stringify(payload.metrics.textInitial));
     assert.equal(payload.metrics.second.strategy, "exact", diagnostic);
     assert.equal(payload.metrics.second.highlightCount, 2);
     assert.equal(payload.metrics.second.pageNumber, 2, diagnostic);
-    assert.equal(payload.metrics.second.chunkId, 2, diagnostic);
+    assert.equal(payload.metrics.second.chunkId, 0, diagnostic);
     assert.ok(payload.metrics.zoomed.scale > payload.metrics.second.scale, diagnostic);
     assert.equal(payload.metrics.bboxInitial.allInside, true, JSON.stringify(payload.metrics.bboxInitial));
     assert.equal(payload.metrics.bboxInitial.targetIntersected, true, JSON.stringify(payload.metrics.bboxInitial));

@@ -294,6 +294,8 @@ def _to_notebook_fragment(
         chunk_id=chunk_id,
         pdf_page=item.page_number,
         page_label=item.page_label,
+        heading=" > ".join(item.heading_path) if item.heading_path else item.section,
+        section=item.section,
         text=text,
         selected_text=selected_text,
         note_text=note_text,

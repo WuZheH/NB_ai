@@ -22,26 +22,23 @@ export interface NotebookFragment {
   document_id: number | null;
   document_title: string | null;
   document_type: string | null;
-  chunk_id: number | null;
   pdf_page: number | null;
   page_label: string | null;
-  text: string | null;
-  selected_text: string | null;
-  note_text: string | null;
+  heading: string | null;
+  section: string | null;
+  coherent_text: string | null;
+  selected_source_text: string | null;
+  user_note: string | null;
   context_before: string | null;
   context_after: string | null;
   tags: string[];
-  provenance: Array<Record<string, unknown>>;
+  provenance: Record<string, unknown>;
   open_target: Record<string, unknown> | null;
+  selection_rank: number | null;
   [key: string]: unknown;
 }
 
-export interface NotebookResult extends NotebookFragment {
-  final_rank: number | null;
-  final_score: number | null;
-  reranker_score: number | null;
-  semantic_score: number | null;
-}
+export type NotebookResult = NotebookFragment;
 
 export interface NotebookSearchResponse {
   status: string;

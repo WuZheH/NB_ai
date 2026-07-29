@@ -63,8 +63,9 @@ def test_result_card_uses_preview_and_fragment_id_handoff_without_direct_navigat
         assert label in card
     assert "SourceBadge" in card
     assert "FragmentIdBlock" in card
-    assert "displayResult.reranker_score" in card
-    assert "displayResult.final_score" in card
+    assert "displayResult.selection_rank" in card
+    assert "displayResult.reranker_score" not in card
+    assert "displayResult.final_score" not in card
     assert "对应选中文本" in preview
     assert "前文" in preview and "后文" in preview
     assert "来源摘要" in preview

@@ -99,21 +99,27 @@ async function runProbe() {
       const afterResize = await readFocusRecoverySnapshot();
       layoutRecovery = { before, afterResize };
     }
-    const first = await waitForPreviewReady({ chunkId: 1, pageNumber: 2, strategy: "exact", highlightCount: 1 }, 16000, "pdf_first_preview");
+    const first = await waitForPreviewReady({ chunkId: 0, pageNumber: 2, strategy: "exact", highlightCount: 1 }, 16000, "pdf_first_preview");
     if (layoutRecovery) layoutRecovery.ready = await readFocusRecoverySnapshot();
     const textInitial = await waitForHighlightGeometry("text_initial");
     await recordProbeStage("first_snapshot_completed");
     await clickPreview(2);
-    const second = await waitForPreviewReady({ chunkId: 2, pageNumber: 2, strategy: "exact", highlightCount: 2 }, 16000, "pdf_second_preview");
+    const second = await waitForPreviewReady({ chunkId: 0, pageNumber: 2, strategy: "exact", highlightCount: 2 }, 16000, "pdf_second_preview");
     const bboxInitial = await waitForHighlightGeometry("bbox_initial");
     const resultScrollAfterSwitch = await window.webContents.executeJavaScript(`(() => { const pane=document.querySelector('[data-testid="retrieval-results-scroll"]'); return { after: pane.scrollTop, sameNode: globalThis.__pdfPreviewResultsPane === pane }; })()`);
     await recordProbeStage("second_snapshot_completed");
     await addSecondResultToBasket();
+    await window.webContents.executeJavaScript(`(() => {
+      const scroller=document.querySelector('.searchPreviewPdfStage .pdfPreviewScroller');
+      scroller.scrollTop=Math.min(220, Math.max(0, scroller.scrollHeight-scroller.clientHeight));
+      scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    })()`);
+    await delay(50);
     const roundTrips = await runWorkspaceRoundTrips(VIEWPORT_WIDTH === 1600 ? 5 : 1);
     const zoomBefore = await window.webContents.executeJavaScript("Number.parseInt(document.querySelector('.pdfZoomControls span')?.textContent || '0', 10)");
     await window.webContents.executeJavaScript(`(() => { const button=[...document.querySelectorAll('.pdfZoomControls button')].find((item)=>item.textContent.trim()==='+'); if(!button) throw new Error('pdf_zoom_button_missing'); button.click(); })()`);
     await waitFor(`Number.parseInt(document.querySelector('.pdfZoomControls span')?.textContent || '0', 10) > ${zoomBefore}`, 8000, "pdf_zoom");
-    const zoomed = await waitForPreviewReady({ chunkId: 2, pageNumber: 2, strategy: "exact", highlightCount: 2 }, 8000, "pdf_zoom_ready");
+    const zoomed = await waitForPreviewReady({ chunkId: 0, pageNumber: 2, strategy: "exact", highlightCount: 2 }, 8000, "pdf_zoom_ready");
     const bboxZoomed = await waitForHighlightGeometry("bbox_zoomed");
     const metrics = await window.webContents.executeJavaScript(`(() => {
       const pane=document.querySelector('[data-testid="retrieval-results-scroll"]');
@@ -347,7 +353,7 @@ function searchFixture() {
 }
 
 function resultFixture(rank) {
-  return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, chunk_id: rank, document_title: `PDF fixture document ${rank}`, pdf_page: 2, final_rank: rank, final_score: 0.9, reranker_score: 0.8, semantic_score: 0.7, tags: [], provenance: [], text: "PDF preview target text across the rendered page" };
+  return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, document_title: `PDF fixture document ${rank}`, pdf_page: 2, selection_rank: rank, tags: [], provenance: { source: "pdf", document_title: `PDF fixture document ${rank}`, page: 2, fragment_id: `fixture-${String(rank).padStart(2, "0")}` }, coherent_text: "PDF preview target text across the rendered page", open_target: { pdf_url: "/api/v1/library/documents/1/pdf#page=2", can_open_pdf: true, can_open_zotero: false } };
 }
 
 function positiveInteger(value, fallback) {
@@ -356,11 +362,13 @@ function positiveInteger(value, fallback) {
 }
 
 function detailFixture(rank) {
-  return { ...resultFixture(rank), text: "PDF preview target text across the rendered page", context_before: "fixture before", context_after: "fixture after", content_hash: "a".repeat(64), open_target: { pdf_url: "/api/v1/library/documents/1/pdf#page=2", can_open_pdf: true, can_open_zotero: false } };
+  return { ...resultFixture(rank), context_before: "fixture before", context_after: "fixture after" };
 }
 
 function locatorFixture(rank) {
-  const bbox = rank === 2 ? [{ x0: 72, y0: 190, x1: 200, y1: 212 }, { x0: 205, y0: 190, x1: 300, y1: 212 }] : [];
+  const bbox = rank === 2
+    ? [{ x0: 72, y0: 190, x1: 200, y1: 212 }, { x0: 205, y0: 190, x1: 300, y1: 212 }]
+    : [{ x0: 72, y0: 190, x1: 300, y1: 212 }];
   return { fragment_id: `fixture-${String(rank).padStart(2, "0")}`, source_type: "pdf_chunk", document_id: 1, pdf_page: 2, page_index: 1, page_label: "2", bbox: bbox.length ? { pageIndex: 1, rects: bbox.map((rect) => [rect.x0, rect.y0, rect.x1, rect.y1]) } : null, rects: bbox, selected_text: "PDF preview target text across the rendered page", locator_strategy: bbox.length ? "bbox" : "text", pdf_available: true, pdf_endpoint: "/api/v1/library/documents/1/pdf#page=2", warnings: [] };
 }
 
@@ -458,7 +466,7 @@ async function runWorkspaceRoundTrips(count) {
       button.click();
     })()`);
     await waitFor("document.querySelector('[data-testid=\"retrieval-results-scroll\"]')", 8000, `workspace_return_${index + 1}`);
-    const ready = await waitForPreviewReady({ chunkId: 2, pageNumber: 2, strategy: "exact", highlightCount: 2 }, 16000, `workspace_restore_${index + 1}`);
+    const ready = await waitForPreviewReady({ chunkId: 0, pageNumber: 2, strategy: "exact", highlightCount: 2 }, 16000, `workspace_restore_${index + 1}`);
     const geometry = await waitForHighlightGeometry(`workspace_restore_geometry_${index + 1}`);
     const restored = await readRestoreSnapshot();
     if (Math.abs(restored.scale - baseline.scale) > 0.001) throw new Error(`workspace_scale_not_restored:${JSON.stringify({ baseline, restored })}`);

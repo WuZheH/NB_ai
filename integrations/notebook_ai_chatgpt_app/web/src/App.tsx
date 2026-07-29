@@ -144,8 +144,8 @@ export default function App() {
 
   async function copyFragment(result: SearchResult) {
     const content = result.source_type === "pdf_chunk"
-      ? String(result.text || "").trim()
-      : [result.note_text, result.selected_text].map((value) => String(value || "").trim()).filter(Boolean).join("\n\n");
+      ? String(result.coherent_text || "").trim()
+      : [result.user_note, result.selected_source_text].map((value) => String(value || "").trim()).filter(Boolean).join("\n\n");
     if (!content) {
       setBasketStatus("该结果没有可复制的片段正文。");
       return;

@@ -54,6 +54,8 @@ class NotebookFragment(BaseModel):
     chunk_id: int | None = None
     pdf_page: int | None = None
     page_label: str | None = None
+    heading: str | None = None
+    section: str | None = None
     text: str | None = None
     selected_text: str | None = None
     note_text: str | None = None
@@ -73,6 +75,31 @@ class NotebookSearchResult(NotebookFragment):
     raw_rank: int | None = Field(default=None, ge=1)
 
 
+class PublicEvidence(BaseModel):
+    """User-visible evidence with an explicit semantic-only field whitelist."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fragment_id: str
+    source_type: NotebookSourceType
+    document_id: int | None = None
+    document_title: str | None = None
+    document_type: str | None = None
+    pdf_page: int | None = None
+    page_label: str | None = None
+    heading: str | None = None
+    section: str | None = None
+    coherent_text: str | None = None
+    user_note: str | None = None
+    selected_source_text: str | None = None
+    context_before: str | None = None
+    context_after: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    open_target: OpenTarget
+    selection_rank: int | None = Field(default=None, ge=1)
+
+
 class NotebookSearchResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -83,7 +110,7 @@ class NotebookSearchResponse(BaseModel):
     reranker_model: str
     backend: str
     result_count: int = Field(..., ge=0)
-    results: list[NotebookSearchResult] = Field(default_factory=list)
+    results: list[PublicEvidence] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     latency: dict[str, float] = Field(default_factory=dict)
     db_write_performed: bool = False

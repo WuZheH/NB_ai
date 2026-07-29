@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import re
 from typing import Any
 
 from app.domains.retrieval.fragment_repository import (
@@ -16,8 +17,9 @@ from app.domains.retrieval.result_contracts import (
     NOTE_SOURCE_TYPES,
     NotebookFragment,
     NotebookSearchResponse,
-    NotebookSearchResult,
+    PublicEvidence,
 )
+from app.domains.retrieval.public_evidence import serialize_public_evidence
 from app.schemas.notebook_search import NotebookSearchRequest
 from app.services import (
     high_quality_search_service,
@@ -103,6 +105,9 @@ def search_notebook(
 
     if requested_note_types:
         ranked = _rerank_unified(search_request.query, candidates)
+        ranked = _filter_relevant_notes_and_duplicates(search_request.query, ranked)
+        if not any(item["kind"] == "note" for item in ranked):
+            warnings.append("没有高相关用户笔记")
     else:
         ranked = candidates
     limited = ranked[: search_request.limit]
@@ -222,39 +227,86 @@ def _result_from_candidate(
     *,
     final_rank: int,
     include_context: bool,
-) -> NotebookSearchResult:
+) -> PublicEvidence:
     fragment: NotebookFragment = candidate["fragment"]
-    payload = fragment.model_dump(mode="python")
     if candidate["kind"] == "pdf":
-        payload.update(
-            {
+        fragment = fragment.model_copy(
+            update={
                 "document_title": candidate.get("document_title") or fragment.document_title,
                 "document_type": candidate.get("document_type") or fragment.document_type,
                 "chunk_id": candidate.get("chunk_id") or fragment.chunk_id,
                 "pdf_page": candidate.get("pdf_page") or fragment.pdf_page,
-                # Keep the exact passage text exposed by the legacy high-quality endpoint.
+                "heading": candidate.get("heading_path") or fragment.heading,
                 "text": candidate.get("passage_text") or fragment.text,
-                "provenance": [
-                    *fragment.provenance,
-                    {
-                        "store": "legacy_high_quality_search",
-                        "source_trace": candidate.get("legacy_source_trace") or {},
-                    },
-                ],
             }
         )
-    if not include_context:
-        payload["context_before"] = None
-        payload["context_after"] = None
-    reranker_score = float(candidate.get("reranker_score") or 0.0)
-    return NotebookSearchResult(
-        **payload,
-        final_rank=final_rank,
-        final_score=reranker_score,
-        reranker_score=reranker_score,
-        semantic_score=float(candidate.get("semantic_score") or 0.0),
-        raw_rank=int(candidate.get("raw_rank") or final_rank),
+    return serialize_public_evidence(
+        fragment,
+        selection_rank=final_rank,
+        include_context=include_context,
     )
+
+
+def _filter_relevant_notes_and_duplicates(
+    query: str,
+    ranked: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen_note_identities: set[tuple[Any, ...]] = set()
+    for candidate in ranked:
+        if candidate["kind"] != "note":
+            result.append(candidate)
+            continue
+        if not _note_is_relevant(query, candidate):
+            continue
+        identity = _note_identity(candidate["fragment"])
+        if identity in seen_note_identities:
+            continue
+        seen_note_identities.add(identity)
+        result.append(candidate)
+    return result
+
+
+def _note_is_relevant(query: str, candidate: dict[str, Any]) -> bool:
+    reranker_score = float(candidate.get("reranker_score") or 0.0)
+    semantic_score = float(candidate.get("semantic_score") or 0.0)
+    if reranker_score < 0.0:
+        return False
+    fragment: NotebookFragment = candidate["fragment"]
+    evidence = " ".join(
+        value
+        for value in (fragment.note_text, fragment.selected_text)
+        if value
+    )
+    coverage = len(_concept_terms(query).intersection(_concept_terms(evidence)))
+    return coverage >= 2 or (reranker_score >= 0.5 and semantic_score >= 0.65)
+
+
+def _note_identity(fragment: NotebookFragment) -> tuple[Any, ...]:
+    text = " ".join(
+        value.strip().casefold()
+        for value in (fragment.note_text, fragment.selected_text)
+        if value and value.strip()
+    )
+    if fragment.zotero_annotation_key:
+        return fragment.document_id, fragment.zotero_annotation_key, text
+    return fragment.document_id, fragment.content_hash, text
+
+
+def _concept_terms(value: str) -> set[str]:
+    normalized = value.casefold()
+    english = {
+        token
+        for token in re.findall(r"[a-z0-9]+", normalized)
+        if len(token) >= 3
+    }
+    chinese_runs = re.findall(r"[\u3400-\u9fff]+", normalized)
+    chinese = {
+        run[index : index + 2]
+        for run in chinese_runs
+        for index in range(max(0, len(run) - 1))
+    }
+    return english | chinese
 
 
 def _elapsed_ms(started: float) -> float:

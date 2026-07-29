@@ -54,23 +54,23 @@ export function ResultCard({
 
       {showDocumentTitle && <h2>{result.document_title || "未命名文档"}</h2>}
       <p className="result-summary">
-        {String(isPdf ? result.text : result.note_text || result.selected_text || "暂无命中摘要").trim()}
+        {String(isPdf ? result.coherent_text : result.user_note || result.selected_source_text || "暂无命中摘要").trim()}
       </p>
 
       {isPdf ? (
         <section className="evidence-section">
           <h3>PDF 原文</h3>
-          <p>{result.text || "此结果没有可显示的 PDF 文本。"}</p>
+          <p>{result.coherent_text || "此结果没有可显示的 PDF 文本。"}</p>
         </section>
       ) : (
         <>
           <section className="evidence-section user-note">
             <h3>用户笔记</h3>
-            <p>{result.note_text || "此笔记没有正文。"}</p>
+            <p>{result.user_note || "此笔记没有正文。"}</p>
           </section>
           <section className="evidence-section selected-source">
             <h3>对应选中文本</h3>
-            <p>{result.selected_text || "此笔记没有关联的选中文本。"}</p>
+            <p>{result.selected_source_text || "此笔记没有关联的选中文本。"}</p>
           </section>
         </>
       )}

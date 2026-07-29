@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.api import retrieval_api
 from app.domains.retrieval import notebook_search_service
-from app.domains.retrieval.result_contracts import NotebookFragment, OpenTarget
+from app.domains.retrieval.result_contracts import NotebookFragment, OpenTarget, PublicEvidence
 from app.main import app
 from app.runtime.machine_config import MachineConfigUnavailable
 
@@ -34,7 +34,7 @@ def test_notebook_routes_and_response_models_are_registered() -> None:
     search = routes[("/api/v1/retrieval/notebook-search", "POST")]
     fetch = routes[("/api/v1/retrieval/fragments/{fragment_id}", "GET")]
     assert search.response_model.__name__ == "NotebookSearchResponse"
-    assert fetch.response_model is NotebookFragment
+    assert fetch.response_model is PublicEvidence
     assert ("/api/v1/retrieval/search", "POST") in routes
     assert ("/api/v1/library/search/high-quality", "GET") in routes
 
@@ -77,7 +77,9 @@ def test_api_limit_and_read_only_fields(monkeypatch) -> None:
     ).status_code == 422
     fetched = client.get(f"/api/v1/retrieval/fragments/{fragment.fragment_id}")
     assert fetched.status_code == 200
-    assert fetched.json()["note_text"] == "My note"
+    assert fetched.json()["user_note"] == "My note"
+    assert "content_hash" not in fetched.json()
+    assert "chunk_id" not in fetched.json()
 
 
 def test_notebook_high_quality_service_has_no_fts_or_bm25_fallback() -> None:

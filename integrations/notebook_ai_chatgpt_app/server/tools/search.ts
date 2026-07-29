@@ -42,21 +42,22 @@ function compactResult(result: NotebookResult, includeContext: boolean): Record<
   return {
     fragment_id: result.fragment_id,
     source_type: result.source_type,
-    final_rank: result.final_rank,
-    final_score: result.final_score,
-    reranker_score: result.reranker_score,
-    semantic_score: result.semantic_score,
+    selection_rank: result.selection_rank,
     document_id: result.document_id,
     document_title: result.document_title,
+    document_type: result.document_type,
     pdf_page: result.pdf_page,
     page_label: result.page_label,
-    text: truncate(result.text),
-    note_text: truncate(result.note_text),
-    selected_text: truncate(result.selected_text),
+    heading: result.heading,
+    section: result.section,
+    coherent_text: truncate(result.coherent_text, 2_400),
+    user_note: truncate(result.user_note, 2_400),
+    selected_source_text: truncate(result.selected_source_text, 2_400),
     context_before: includeContext ? truncate(result.context_before, 600) : null,
     context_after: includeContext ? truncate(result.context_after, 600) : null,
     tags: result.tags,
     provenance: result.provenance,
+    open_target: result.open_target,
   };
 }
 
@@ -81,7 +82,7 @@ export async function runSearchTool(client: NotebookClient, rawInput: unknown) {
       content: jsonContent(structuredContent),
       structuredContent,
       _meta: {
-        "notebookAi/results": results,
+        "notebookAi/results": structuredContent.results,
         "notebookAi/backend": response.backend,
         "notebookAi/latency": response.latency,
         "notebookAi/sourceTypes": input.source_types,

@@ -15,6 +15,7 @@ import { requireUnauthenticatedDevelopment } from "./security";
 import { NOTEBOOK_TOOL_NAMES } from "./tools";
 import { runImportDocumentTool } from "./tools/importDocument";
 import { runImportPreviewTool } from "./tools/importPreview";
+import { runExportEvidenceTool } from "./tools/exportEvidence";
 import { errorCode, errorToolResult } from "./tools/shared";
 import { RESOURCE_MIME_TYPE } from "./widgetResource";
 
@@ -22,31 +23,27 @@ function result(sourceType: NotebookResult["source_type"] = "pdf_chunk"): Notebo
   return {
     fragment_id: "fragment-1",
     source_type: sourceType,
-    final_rank: 1,
-    final_score: 0.9,
-    reranker_score: 0.8,
-    semantic_score: 0.7,
+    selection_rank: 1,
     document_id: 1,
     document_title: "Paper",
     document_type: "pdf",
-    chunk_id: 1,
     pdf_page: 4,
     page_label: "4",
-    text: sourceType === "pdf_chunk" ? "PDF source" : null,
-    selected_text: sourceType === "pdf_chunk" ? null : "Selected source",
-    note_text: sourceType === "pdf_chunk" ? null : "My note",
+    heading: "Section",
+    section: "Section",
+    coherent_text: sourceType === "pdf_chunk" ? "PDF source" : null,
+    selected_source_text: sourceType === "pdf_chunk" ? null : "Selected source",
+    user_note: sourceType === "pdf_chunk" ? null : "My note",
     context_before: "Before",
     context_after: "After",
     tags: [],
-    provenance: [{ source: "test" }],
+    provenance: { source: "test", fragment_id: "fragment-1" },
     open_target: null,
   };
 }
 
 function fragment(sourceType: NotebookFragment["source_type"] = "zotero_child_note"): NotebookFragment {
-  const { final_rank: _rank, final_score: _score, reranker_score: _reranker, semantic_score: _semantic, ...value } =
-    result(sourceType);
-  return value;
+  return { ...result(sourceType), selection_rank: null };
 }
 
 class MockNotebookClient extends NotebookClient {
@@ -340,19 +337,24 @@ test("all nine tools call only the backend adapter", async () => {
     assert.equal(search.isError, undefined);
     assert.equal((search.structuredContent as { result_count: number }).result_count, 2);
     const modelResults = (search.structuredContent as { results: NotebookResult[] }).results;
-    assert.equal(modelResults[1].note_text, "My note");
-    assert.equal(modelResults[1].selected_text, "Selected source");
+    assert.equal(modelResults[1].user_note, "My note");
+    assert.equal(modelResults[1].selected_source_text, "Selected source");
+    assert.equal("chunk_id" in modelResults[0], false);
+    assert.equal("content_hash" in modelResults[0], false);
+    assert.equal("reranker_score" in modelResults[0], false);
 
     const fetched = await client.callTool({ name: "fetch", arguments: { fragment_id: "fragment-1" } });
     const fetchedFragment = (fetched.structuredContent as { fragment: NotebookFragment }).fragment;
-    assert.deepEqual(fetchedFragment.provenance, [{ source: "test" }]);
-    assert.equal("final_rank" in fetchedFragment, false, "fetch accepts the real unranked fragment contract");
+    assert.deepEqual(fetchedFragment.provenance, { source: "test", fragment_id: "fragment-1" });
+    assert.equal(fetchedFragment.selection_rank, null, "fetch accepts the public unranked fragment contract");
 
     const exported = await client.callTool({
       name: "export_evidence",
       arguments: { fragment_ids: ["fragment-1"], format: "markdown", query: "foot skating" },
     });
     assert.equal((exported.structuredContent as { item_count: number }).item_count, 1);
+    assert.equal((exported.structuredContent as { content: string }).content, "# Evidence");
+    assert.equal((exported.structuredContent as { content_truncated: boolean }).content_truncated, false);
     const library = await client.callTool({ name: "list_library", arguments: { query: "motion" } });
     assert.equal((library.structuredContent as { count: number }).count, 1);
     const integrity = await client.callTool({ name: "integrity_report", arguments: { document_id: 1 } });
@@ -396,6 +398,46 @@ test("all nine tools call only the backend adapter", async () => {
     await client.close();
     await server.close();
   }
+});
+
+test("export_evidence returns small content completely and paginates only above the safe limit", async () => {
+  class LargeExportClient extends MockNotebookClient {
+    override async exportEvidence(input: { fragment_ids: string[]; format: "markdown" | "jsonl" | "json"; query?: string }) {
+      this.calls.push({ tool: "export_evidence", input });
+      return { status: "ok", content: "x".repeat(40_000) };
+    }
+  }
+  const backend = new LargeExportClient();
+  const first = await runExportEvidenceTool(backend, {
+    fragment_ids: ["fragment-1"],
+    format: "json",
+    content_limit: 32_000,
+  });
+  const firstPayload = first.structuredContent as {
+    content: string | null;
+    content_preview: string | null;
+    content_truncated: boolean;
+    next_content_offset: number | null;
+    full_content_retrieval: { arguments: { content_offset: number } } | null;
+  };
+  assert.equal(firstPayload.content, null);
+  assert.equal(firstPayload.content_preview?.length, 32_000);
+  assert.equal(firstPayload.content_truncated, true);
+  assert.equal(firstPayload.next_content_offset, 32_000);
+  assert.equal(firstPayload.full_content_retrieval?.arguments.content_offset, 32_000);
+
+  const second = await runExportEvidenceTool(backend, {
+    fragment_ids: ["fragment-1"],
+    format: "json",
+    content_offset: 32_000,
+    content_limit: 32_000,
+  });
+  const secondPayload = second.structuredContent as {
+    content: string | null;
+    content_truncated: boolean;
+  };
+  assert.equal(secondPayload.content?.length, 8_000);
+  assert.equal(secondPayload.content_truncated, false);
 });
 
 test("anonymous startup is refused without the explicit development switch", () => {

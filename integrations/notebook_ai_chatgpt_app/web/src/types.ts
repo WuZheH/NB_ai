@@ -9,34 +9,26 @@ export type EvidenceFormat = "markdown" | "jsonl" | "json";
 export interface SearchResult {
   fragment_id: string;
   source_type: SourceType;
-  final_rank: number | null;
-  final_score: number | null;
-  reranker_score: number | null;
-  semantic_score: number | null;
+  selection_rank: number | null;
   document_id: number | null;
   document_title: string | null;
   document_type: string | null;
-  chunk_id: number | null;
   pdf_page: number | null;
   page_label: string | null;
-  text: string | null;
-  selected_text: string | null;
-  note_text: string | null;
+  heading: string | null;
+  section: string | null;
+  coherent_text: string | null;
+  selected_source_text: string | null;
+  user_note: string | null;
   context_before: string | null;
   context_after: string | null;
   tags: string[];
-  provenance: Array<Record<string, unknown>>;
+  provenance: Record<string, unknown>;
   open_target: Record<string, unknown> | null;
   [key: string]: unknown;
 }
 
-export type FragmentDetail = Omit<
-  SearchResult,
-  "final_rank" | "final_score" | "reranker_score" | "semantic_score"
-> &
-  Partial<
-    Pick<SearchResult, "final_rank" | "final_score" | "reranker_score" | "semantic_score">
-  >;
+export type FragmentDetail = SearchResult;
 
 export interface ToolEnvelope {
   content?: Array<{ type: string; text?: string }>;

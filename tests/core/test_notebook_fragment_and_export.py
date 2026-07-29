@@ -70,6 +70,9 @@ def test_notebook_markdown_jsonl_and_json_export_are_read_only_and_ordered() -> 
     assert [row["fragment_id"] for row in rows] == ids
     assert rows[0]["user_note"] == note.note_text
     assert rows[0]["selected_source_text"] == note.selected_text
+    assert "content_hash" not in rows[0]
+    assert "chunk_id" not in rows[0]
+    assert "production_db" not in jsonl["content"]
 
     payload = export_evidence({"fragment_ids": ids, "format": "json", "save_to_file": False})
     assert [item["fragment_id"] for item in json.loads(payload["content"])["results"]] == ids

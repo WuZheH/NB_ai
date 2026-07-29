@@ -65,22 +65,22 @@ test("PDF and user-note fields remain separate", () => {
   const pdf = normalizeRetrievalResult({
     fragment_id: "pdf-1",
     source_type: "pdf_chunk",
-    text: "PDF source text",
-    note_text: null,
-    selected_text: null,
+    coherent_text: "PDF source text",
+    user_note: null,
+    selected_source_text: null,
   });
   const note = normalizeRetrievalResult({
     fragment_id: "note-1",
     source_type: "zotero_annotation_comment",
-    text: null,
-    note_text: "My reading note",
-    selected_text: "Quoted paper text",
+    coherent_text: null,
+    user_note: "My reading note",
+    selected_source_text: "Quoted paper text",
   });
-  assert.equal(pdf.text, "PDF source text");
-  assert.equal(pdf.note_text, null);
-  assert.equal(note.text, null);
-  assert.equal(note.note_text, "My reading note");
-  assert.equal(note.selected_text, "Quoted paper text");
+  assert.equal(pdf.coherent_text, "PDF source text");
+  assert.equal(pdf.user_note, null);
+  assert.equal(note.coherent_text, null);
+  assert.equal(note.user_note, "My reading note");
+  assert.equal(note.selected_source_text, "Quoted paper text");
   const copy = buildEvidenceCopyText(note);
   assert.match(copy, /User note:\nMy reading note/);
   assert.match(copy, /Selected source text:\nQuoted paper text/);

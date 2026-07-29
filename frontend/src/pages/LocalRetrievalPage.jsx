@@ -240,10 +240,7 @@ export default function LocalRetrievalPage() {
         data: {
           ...item,
           ...detail,
-          final_rank: item.final_rank,
-          final_score: item.final_score,
-          reranker_score: item.reranker_score,
-          semantic_score: item.semantic_score,
+          selection_rank: item.selection_rank,
           locator,
           pdf_location: pdfLocation,
           locator_error: locatorError,
@@ -573,6 +570,6 @@ function positiveInteger(value) {
 }
 
 export function copyableFragmentText(item = {}) {
-  if (item.source_type === "pdf_chunk") return String(item.text || "").trim();
-  return [item.note_text, item.selected_text].map((value) => String(value || "").trim()).filter(Boolean).join("\n\n");
+  if (item.source_type === "pdf_chunk") return String(item.coherent_text || "").trim();
+  return [item.user_note, item.selected_source_text].map((value) => String(value || "").trim()).filter(Boolean).join("\n\n");
 }

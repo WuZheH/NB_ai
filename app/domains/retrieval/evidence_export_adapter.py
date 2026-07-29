@@ -5,6 +5,7 @@ import json
 from typing import Any, Literal
 
 from app.domains.retrieval.fragment_repository import get_notebook_fragments
+from app.domains.retrieval.public_evidence import serialize_public_evidence
 from app.domains.retrieval.result_contracts import NotebookFragment
 
 
@@ -84,28 +85,18 @@ def _record(
     include_context_after: bool,
     include_provenance: bool,
 ) -> dict[str, Any]:
-    return {
-        "fragment_id": fragment.fragment_id,
-        "source_type": fragment.source_type,
-        "document_id": fragment.document_id,
-        "document_title": fragment.document_title,
-        "document_type": fragment.document_type,
-        "chunk_id": fragment.chunk_id,
-        "pdf_page": fragment.pdf_page,
-        "page_label": fragment.page_label,
-        "selection_rank": selection_rank,
-        "final_rank": selection_rank,
-        "reranker_score": None,
-        "pdf_text": fragment.text if fragment.source_type == "pdf_chunk" else None,
-        "user_note": fragment.note_text,
-        "selected_source_text": fragment.selected_text,
-        "context_before": fragment.context_before if include_context_before else None,
-        "context_after": fragment.context_after if include_context_after else None,
-        "tags": fragment.tags,
-        "provenance": fragment.provenance if include_provenance else [],
-        "open_target": fragment.open_target.model_dump(mode="json"),
-        "content_hash": fragment.content_hash,
-    }
+    record = serialize_public_evidence(
+        fragment,
+        selection_rank=selection_rank,
+        include_context=include_context_before or include_context_after,
+    ).model_dump(mode="json")
+    if not include_context_before:
+        record["context_before"] = None
+    if not include_context_after:
+        record["context_after"] = None
+    if not include_provenance:
+        record["provenance"] = {}
+    return record
 
 
 def _markdown(records: list[dict[str, Any]], *, query: str | None) -> str:
@@ -121,13 +112,12 @@ def _markdown(records: list[dict[str, Any]], *, query: str | None) -> str:
                 f"Document: {_single_line(record.get('document_title') or 'Unknown')}",
                 f"Page: {_single_line(record.get('page_label') or record.get('pdf_page') or 'Unknown')}",
                 f"Fragment ID: {_single_line(record['fragment_id'])}",
-                f"Final rank: {record['final_rank']} (selection order)",
-                "Reranker score: unavailable (scores are not persisted by evidence export)",
+                f"Selection rank: {record['selection_rank']}",
                 "",
             ]
         )
         if record["source_type"] == "pdf_chunk":
-            lines.extend(["### PDF text", "", record.get("pdf_text") or "", ""])
+            lines.extend(["### PDF text", "", record.get("coherent_text") or "", ""])
         else:
             lines.extend(["### User note", "", record.get("user_note") or "(not available)", ""])
             lines.extend(
@@ -145,16 +135,17 @@ def _markdown(records: list[dict[str, Any]], *, query: str | None) -> str:
         )
         if context:
             lines.extend(["### Context", "", context, ""])
-        lines.extend(
-            [
-                "### Provenance",
-                "",
-                "```json",
-                json.dumps(record.get("provenance") or [], ensure_ascii=False, indent=2),
-                "```",
-                "",
-            ]
-        )
+        provenance = record.get("provenance") or {}
+        lines.extend(["### Source", ""])
+        for label, key in (
+            ("Source", "source"),
+            ("Zotero item", "zotero_item_key"),
+            ("Zotero attachment", "zotero_attachment_key"),
+            ("Annotation", "annotation_key"),
+        ):
+            if provenance.get(key) is not None:
+                lines.append(f"{label}: {_single_line(provenance[key])}")
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 

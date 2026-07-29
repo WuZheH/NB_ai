@@ -3,7 +3,7 @@ import FragmentIdBlock from "../../../shared/components/FragmentIdBlock.jsx";
 import SourceBadge from "../../../shared/components/SourceBadge.jsx";
 import PdfLocationPreview from "../../../PdfLocationPreview.jsx";
 import { buildSearchPdfLocationPreview } from "../adapters/searchPdfLocationPreview.js";
-import { formatScore, pageLabel } from "../utils/notebookSearch.js";
+import { pageLabel } from "../utils/notebookSearch.js";
 
 export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onCopiedId, onViewChange }) {
   const result = state?.data;
@@ -79,7 +79,7 @@ export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onC
           {view === "pdf" && (
             <section className="searchPreviewHitText">
               <h3>命中原文</h3>
-              <p>{result.selected_text || result.text || "该 fragment 没有可显示的命中原文。"}</p>
+              <p>{result.selected_source_text || result.coherent_text || "该 fragment 没有可显示的命中原文。"}</p>
             </section>
           )}
 
@@ -95,10 +95,7 @@ export default function SearchPreviewPanel({ state, onClose, onCopyFragment, onC
               <summary>技术详情</summary>
               <dl>
                 <MetaRow label="document_id" value={result.document_id} />
-                <MetaRow label="chunk_id" value={result.chunk_id} />
-                <MetaRow label="content_hash" value={result.content_hash} />
-                <MetaRow label="final_rank" value={result.final_rank} />
-                <MetaRow label="reranker" value={result.reranker_score === null || result.reranker_score === undefined ? null : formatScore(result.reranker_score)} />
+                <MetaRow label="selection_rank" value={result.selection_rank} />
               </dl>
               <FragmentIdBlock fragmentId={result.fragment_id} onCopied={onCopiedId} />
             </details>
@@ -114,11 +111,11 @@ function TextPreview({ result, isPdf }) {
   return (
     <>
       {isPdf ? (
-        <PreviewText title="PDF 原文" value={result.text} empty="该 fragment 没有可显示的 PDF 文本。" />
+        <PreviewText title="PDF 原文" value={result.coherent_text} empty="该 fragment 没有可显示的 PDF 文本。" />
       ) : (
         <>
-          <PreviewText title="用户笔记" value={result.note_text} empty="该 fragment 没有用户笔记正文。" />
-          <PreviewText title="对应选中文本" value={result.selected_text} empty="该笔记没有关联的选中文本。" />
+          <PreviewText title="用户笔记" value={result.user_note} empty="该 fragment 没有用户笔记正文。" />
+          <PreviewText title="对应选中文本" value={result.selected_source_text} empty="该笔记没有关联的选中文本。" />
         </>
       )}
       <PreviewText title="前文" value={result.context_before} />

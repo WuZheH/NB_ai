@@ -9,8 +9,8 @@ const pdf = {
   source_type: "pdf_chunk",
   document_title: "Motion Paper",
   page_label: "12",
-  text: "private PDF text",
-  provenance: [{ private: true }],
+  coherent_text: "private PDF text",
+  provenance: { source: "pdf", fragment_id: "pdf-1" },
 } as SearchResult;
 
 test("evidence selection toggles without changing result order", () => {

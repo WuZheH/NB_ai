@@ -19,7 +19,8 @@ from app.domains.retrieval.notebook_search_service import (
     NotebookSearchUnavailable,
     search_notebook,
 )
-from app.domains.retrieval.result_contracts import NotebookFragment, NotebookSearchResponse
+from app.domains.retrieval.public_evidence import serialize_public_evidence
+from app.domains.retrieval.result_contracts import NotebookSearchResponse, PublicEvidence
 from app.schemas.notebook_search import NotebookSearchRequest
 from app.schemas.retrieval_search import (
     RetrievalSearchRequest,
@@ -95,10 +96,12 @@ def search_notebook_retrieval(
         ) from exc
 
 
-@router.get("/fragments/{fragment_id}", response_model=NotebookFragment)
+@router.get("/fragments/{fragment_id}", response_model=PublicEvidence)
 def fetch_notebook_fragment(fragment_id: str) -> dict[str, Any]:
     try:
-        return get_notebook_fragment(fragment_id).model_dump(mode="json")
+        return serialize_public_evidence(
+            get_notebook_fragment(fragment_id),
+        ).model_dump(mode="json")
     except NotebookFragmentNotFound as exc:
         raise HTTPException(
             status_code=404,

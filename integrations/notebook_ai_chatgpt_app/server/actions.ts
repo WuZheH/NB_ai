@@ -319,9 +319,11 @@ function compactSearchResult(result: NotebookResult, includeContext: boolean): R
     document_title: result.document_title,
     pdf_page: result.pdf_page,
     page_label: result.page_label,
-    final_rank: result.final_rank,
-    final_score: result.final_score,
-    snippet: truncate(result.text ?? result.selected_text ?? result.note_text, 1_200),
+    selection_rank: result.selection_rank,
+    snippet: truncate(
+      result.coherent_text ?? result.selected_source_text ?? result.user_note,
+      1_200,
+    ),
     context_before: includeContext ? truncate(result.context_before, 600) : null,
     context_after: includeContext ? truncate(result.context_after, 600) : null,
   };

@@ -17,24 +17,24 @@ export const notebookFragmentOutputSchema = z
     source_type: z.enum(NOTEBOOK_SOURCE_TYPES),
     document_id: z.number().int().nullable(),
     document_title: z.string().nullable(),
+    document_type: z.string().nullable(),
     pdf_page: z.number().int().nullable(),
     page_label: z.string().nullable(),
-    text: z.string().nullable(),
-    note_text: z.string().nullable(),
-    selected_text: z.string().nullable(),
+    heading: z.string().nullable(),
+    section: z.string().nullable(),
+    coherent_text: z.string().nullable(),
+    user_note: z.string().nullable(),
+    selected_source_text: z.string().nullable(),
     context_before: z.string().nullable(),
     context_after: z.string().nullable(),
     tags: z.array(z.string()),
-    provenance: z.unknown(),
+    provenance: z.record(z.string(), z.unknown()),
+    open_target: z.record(z.string(), z.unknown()).nullable(),
+    selection_rank: z.number().int().positive().nullable(),
   })
-  .passthrough();
+  .strict();
 
-export const notebookResultOutputSchema = notebookFragmentOutputSchema.extend({
-  final_rank: z.number().nullable(),
-  final_score: z.number().nullable(),
-  reranker_score: z.number().nullable(),
-  semantic_score: z.number().nullable(),
-});
+export const notebookResultOutputSchema = notebookFragmentOutputSchema;
 
 export const WRITE_ANNOTATIONS = Object.freeze({
   readOnlyHint: false,

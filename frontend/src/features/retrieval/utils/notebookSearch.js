@@ -88,11 +88,13 @@ export function normalizeRetrievalResult(result = {}) {
     title: documentTitle,
     pdf_page: pdfPage,
     page_number: pdfPage,
-    final_score: finiteNumberOrNull(result.final_score ?? result.score),
-    reranker_score: finiteNumberOrNull(result.reranker_score),
-    semantic_score: finiteNumberOrNull(result.semantic_score),
-    final_rank: positiveInteger(result.final_rank),
-    provenance: Array.isArray(result.provenance) ? result.provenance : [],
+    coherent_text: result.coherent_text ?? result.text ?? null,
+    user_note: result.user_note ?? result.note_text ?? null,
+    selected_source_text: result.selected_source_text ?? result.selected_text ?? null,
+    selection_rank: positiveInteger(result.selection_rank ?? result.final_rank),
+    provenance: result.provenance && typeof result.provenance === "object" && !Array.isArray(result.provenance)
+      ? result.provenance
+      : {},
     tags: Array.isArray(result.tags) ? result.tags : [],
     warnings: Array.isArray(result.warnings) ? result.warnings : [],
   };
@@ -145,15 +147,12 @@ export function buildEvidenceCopyText(result = {}) {
     `Page: ${pageLabel(normalized)}`,
     `Fragment ID: ${normalized.fragment_id || "n/a"}`,
   ];
-  if (normalized.final_rank) lines.push(`Final rank: ${normalized.final_rank}`);
-  if (normalized.reranker_score !== null) {
-    lines.push(`Reranker score: ${formatScore(normalized.reranker_score)}`);
-  }
+  if (normalized.selection_rank) lines.push(`Selection rank: ${normalized.selection_rank}`);
   if (normalized.source_type === "pdf_chunk") {
-    lines.push("", "PDF text:", normalized.text || "");
+    lines.push("", "PDF text:", normalized.coherent_text || "");
   } else {
-    lines.push("", "User note:", normalized.note_text || "");
-    lines.push("", "Selected source text:", normalized.selected_text || "");
+    lines.push("", "User note:", normalized.user_note || "");
+    lines.push("", "Selected source text:", normalized.selected_source_text || "");
   }
   if (normalized.context_before || normalized.context_after) {
     lines.push("", "Context:");

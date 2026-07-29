@@ -126,8 +126,9 @@ def test_pdf_only_uses_legacy_order_scores_and_defaults(monkeypatch: pytest.Monk
         _pdf_id(1, 101),
         _pdf_id(2, 202),
     ]
-    assert [item["final_score"] for item in response["results"]] == [0.9, 0.8]
-    assert response["results"][0]["text"] == "legacy first passage"
+    assert [item["selection_rank"] for item in response["results"]] == [1, 2]
+    assert response["results"][0]["coherent_text"]
+    assert "final_score" not in response["results"][0]
     assert response["warnings"] == ["legacy_pdf_fallback:vector_store_source_drift"]
 
 
@@ -137,8 +138,8 @@ def test_mixed_search_preserves_note_roles_filters_and_unified_reranker(
     note = _fragment(
         "11111111-1111-5111-8111-111111111111",
         source_type="zotero_annotation_comment",
-        note_text="my interpretation",
-        selected_text="quoted paper text",
+        note_text="foot sliding interpretation",
+        selected_text="quoted foot sliding artifact",
     )
     observed: dict[str, Any] = {}
     monkeypatch.setattr(
@@ -176,7 +177,7 @@ def test_mixed_search_preserves_note_roles_filters_and_unified_reranker(
             "results": [
                 {
                     "fragment": note.model_dump(mode="json"),
-                    "passage_text": "[User note]\nmy interpretation\n\n[Selected source text]\nquoted paper text",
+                    "passage_text": "[User note]\nfoot sliding interpretation\n\n[Selected source text]\nquoted foot sliding artifact",
                     "semantic_score": 0.75,
                 }
             ],
@@ -204,11 +205,11 @@ def test_mixed_search_preserves_note_roles_filters_and_unified_reranker(
     assert observed["document_ids"] == [1]
     assert observed["limit"] == 30
     assert response["results"][0]["source_type"] == "zotero_annotation_comment"
-    assert response["results"][0]["note_text"] == "my interpretation"
-    assert response["results"][0]["selected_text"] == "quoted paper text"
+    assert response["results"][0]["user_note"] == "foot sliding interpretation"
+    assert response["results"][0]["selected_source_text"] == "quoted foot sliding artifact"
     assert response["results"][0]["context_before"] is None
-    assert response["results"][0]["final_rank"] == 1
-    assert response["results"][0]["reranker_score"] == 0.95
+    assert response["results"][0]["selection_rank"] == 1
+    assert "reranker_score" not in response["results"][0]
     assert len(response["results"]) == 2
     assert response["llm_called"] is False
     assert response["production_db_write_performed"] is False
@@ -224,6 +225,88 @@ def test_request_limit_and_source_contract() -> None:
         NotebookSearchRequest(query="x", source_types=[])
     with pytest.raises(ValueError):
         NotebookSearchRequest(query="x", source_types=["personal_note"])
+
+
+def test_note_relevance_filters_single_word_noise_without_forced_fill() -> None:
+    weak = _fragment(
+        "33333333-3333-5333-8333-333333333333",
+        source_type="zotero_child_note",
+        note_text="gradient",
+    )
+    relevant = _fragment(
+        "44444444-4444-5444-8444-444444444444",
+        source_type="zotero_child_note",
+        note_text="Posterior predictive variance combines observation noise and parameter uncertainty.",
+    )
+    ranked = [
+        {
+            "kind": "note",
+            "fragment": weak,
+            "reranker_score": 0.1,
+            "semantic_score": 0.2,
+        },
+        {
+            "kind": "note",
+            "fragment": relevant,
+            "reranker_score": 0.8,
+            "semantic_score": 0.8,
+        },
+    ]
+
+    filtered = service._filter_relevant_notes_and_duplicates(
+        "How does posterior predictive variance combine observation noise and parameter uncertainty?",
+        ranked,
+    )
+
+    assert [item["fragment"].fragment_id for item in filtered] == [
+        relevant.fragment_id
+    ]
+
+
+def test_annotation_and_inspiration_duplicate_is_returned_once() -> None:
+    annotation = _fragment(
+        "55555555-5555-5555-8555-555555555555",
+        source_type="zotero_annotation_comment",
+        note_text="Parameter uncertainty broadens the posterior predictive distribution.",
+    ).model_copy(
+        update={
+            "zotero_annotation_key": "ANN1",
+            "content_hash": "b" * 64,
+        }
+    )
+    inspiration = _fragment(
+        "66666666-6666-5666-8666-666666666666",
+        source_type="zotero_inspiration_note",
+        note_text="Parameter uncertainty broadens the posterior predictive distribution.",
+    ).model_copy(
+        update={
+            "zotero_annotation_key": "ANN1",
+            "content_hash": "b" * 64,
+        }
+    )
+    ranked = [
+        {
+            "kind": "note",
+            "fragment": annotation,
+            "reranker_score": 0.9,
+            "semantic_score": 0.8,
+        },
+        {
+            "kind": "note",
+            "fragment": inspiration,
+            "reranker_score": 0.8,
+            "semantic_score": 0.8,
+        },
+    ]
+
+    filtered = service._filter_relevant_notes_and_duplicates(
+        "posterior predictive parameter uncertainty",
+        ranked,
+    )
+
+    assert [item["fragment"].fragment_id for item in filtered] == [
+        annotation.fragment_id
+    ]
 
 
 def _pdf_id(document_id: int, chunk_id: int) -> str:

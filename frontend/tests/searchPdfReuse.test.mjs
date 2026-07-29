@@ -57,13 +57,14 @@ test("legacy pdf-location payload remains authoritative for Search PDF props", (
   assert.equal(preview.props.fitWidthOnLoad, true);
 });
 
-test("Search keeps developer identifiers and raw ranking values inside collapsed technical details", async () => {
+test("Search keeps only public evidence identifiers inside collapsed technical details", async () => {
   const card = await readFile(new URL("../src/components/retrieval/RetrievalResultCard.jsx", import.meta.url), "utf8");
   const panel = await readFile(new URL("../src/features/retrieval/components/SearchPreviewPanel.jsx", import.meta.url), "utf8");
   assert.match(card, /<details className="searchTechnicalDetails localRetrievalTechnicalDetails">/);
   assert.match(panel, /<details className="searchTechnicalDetails searchPreviewTechnicalDetails">/);
   assert.match(panel, /<MetaRow label="document_id"/);
-  assert.match(panel, /<MetaRow label="content_hash"/);
+  assert.match(panel, /<MetaRow label="selection_rank"/);
+  assert.doesNotMatch(panel, /<MetaRow label="(?:content_hash|chunk_id|reranker_score|score)"/);
   assert.doesNotMatch(panel, /<h3>来源摘要<\/h3>/);
 });
 
@@ -88,7 +89,7 @@ test("PDF preview readiness waits for the final rendered selection and committed
   ]) {
     assert.match(preview, new RegExp(contractPart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(probe, /waitForPreviewReady\(\{ chunkId: 1, pageNumber: 2, strategy: "exact", highlightCount: 1 \}/);
+  assert.match(probe, /waitForPreviewReady\(\{ chunkId: 0, pageNumber: 2, strategy: "exact", highlightCount: 1 \}/);
   assert.match(probe, /runWorkspaceRoundTrips\(VIEWPORT_WIDTH === 1600 \? 5 : 1\)/);
   assert.match(probe, /snapshot\?\.ready/);
   assert.match(probe, /snapshot\.canvasRectWidth > 0/);

@@ -1,7 +1,6 @@
 import FragmentIdBlock from "../../shared/components/FragmentIdBlock.jsx";
 import SourceBadge from "../../shared/components/SourceBadge.jsx";
 import {
-  formatScore,
   normalizeRetrievalResult,
   pageLabel,
 } from "../../features/retrieval/utils/notebookSearch.js";
@@ -18,8 +17,8 @@ export default function RetrievalResultCard({
   const displayResult = normalizeRetrievalResult(result);
   const isPdf = displayResult.source_type === "pdf_chunk";
   const excerpt = isPdf
-    ? displayResult.text
-    : displayResult.note_text || displayResult.selected_text;
+    ? displayResult.coherent_text
+    : displayResult.user_note || displayResult.selected_source_text;
 
   return (
     <article
@@ -61,9 +60,7 @@ export default function RetrievalResultCard({
       <details className="searchTechnicalDetails localRetrievalTechnicalDetails">
         <summary>技术详情</summary>
         <div className="localRetrievalResultMeta">
-          {displayResult.final_rank && <span>最终排名 #{displayResult.final_rank}</span>}
-          {displayResult.final_score !== null && <span className="search-mono">相关分数 {formatScore(displayResult.final_score)}</span>}
-          {displayResult.reranker_score !== null && <span className="search-mono">reranker {formatScore(displayResult.reranker_score)}</span>}
+          {displayResult.selection_rank && <span>选择顺序 #{displayResult.selection_rank}</span>}
         </div>
         <FragmentIdBlock fragmentId={displayResult.fragment_id} onCopied={onCopiedId} />
       </details>
