@@ -32,6 +32,7 @@ The stable tool surface is:
 - `fetch`: one stable `fragment_id`.
 - `export_evidence`: at most 50 fragment ids in `markdown`, `jsonl`, or `json` format.
 - `list_library`: compact active/archived library results.
+- `integrity_report`: read-only DB/FTS/vector verdict for one exact document id.
 - `import_preview`: ChatGPT PDF attachment or Search Import Inbox preview.
 - `import_document`: confirmed import through the existing Core pipeline.
 - `delete_preview`: compact Candidate10 deletion preview.

@@ -17,6 +17,14 @@ from app.services.retrieval.sources._common import make_fragment
 ADAPTER_VERSION = "personal_note_adapter.v1"
 
 
+def personal_note_exclusion_reason(data: dict[str, object]) -> str | None:
+    """Return the stable FTS exclusion reason for one personal-note row."""
+
+    if not normalize_text(data.get("content")):
+        return "empty_content"
+    return None
+
+
 def read_personal_note_fragments(
     conn: sqlite3.Connection,
     resolver: RetrievalMetadataResolver,
@@ -45,9 +53,10 @@ def read_personal_note_fragments(
         document_id = _int_or_none(data.get("document_id"))
         if selected_ids and document_id not in selected_ids:
             continue
-        text = normalize_text(data.get("content"))
-        if not text:
+        if personal_note_exclusion_reason(data) is not None:
             continue
+        text = normalize_text(data.get("content"))
+        assert text
         metadata = (
             resolver.for_document(document_id)
             if document_id is not None

@@ -147,12 +147,50 @@ export interface IntegrityReportInput {
 export interface IntegrityReportResponse {
   status: "ok";
   read_only: true;
+  verdict: "pass" | "warn" | "fail";
+  warnings: string[];
   document_id: number;
+  pdf_sha256: string;
   document: Record<string, unknown>;
   source: Record<string, unknown>;
-  database: Record<string, unknown>;
-  fts: Record<string, unknown>;
-  vectors: Record<string, unknown>;
+  database: {
+    document_count: number;
+    chunk_count: number;
+    chapter_count: number;
+    source_binding_count: number;
+    personal_note_count: number;
+    evidence_link_count: number;
+    integrity_check: string;
+    foreign_key_issue_count: number;
+  };
+  fts: {
+    status: string;
+    ready: boolean;
+    expected_pdf_chunk_count: number;
+    indexed_pdf_chunk_count: number;
+    missing_pdf_chunk_count: number;
+    orphan_pdf_chunk_count: number;
+    eligible_personal_note_count: number;
+    indexed_personal_note_count: number;
+    missing_personal_note_count: number;
+    orphan_personal_note_count: number;
+    excluded_personal_note_count: number;
+    exclusion_reasons: Record<string, number>;
+    fragment_count: number;
+    source_type_counts: Record<string, number>;
+    reasons: string[];
+  };
+  vectors: {
+    status: string;
+    passage_expected_count: number;
+    passage_indexed_count: number;
+    passage_missing_count: number;
+    passage_orphan_count: number | "not_available";
+    note_expected_count: number;
+    note_indexed_count: number;
+    note_missing_count: number;
+    note_orphan_count: number | "not_available";
+  };
   history: {
     confirmation_token_fingerprint: string;
     previewed_at: string;

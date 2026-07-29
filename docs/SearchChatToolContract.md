@@ -45,7 +45,14 @@ It never returns a path, username, schema detail, or vector internals.
 read-only DB, FTS, passage-vector, and note-vector inspection. It never returns
 absolute paths or a confirmation token. Historical fields that were not
 persisted are returned as `not_recorded`; the report never reconstructs or
-replays events.
+replays events. Its top-level `verdict` is `pass`, `warn`, or `fail`, with
+stable `warnings`. FTS expectations use the same adapters as the live index, so
+personal notes with no normalized `content` are reported under
+`excluded_personal_note_count` rather than misclassified as missing. Vector
+missing counts use exact source identities; an orphan count is
+`not_available` when the read-only vector API cannot safely enumerate it.
+`pdf_sha256` is independent from the source-revision fingerprint and is
+`not_recorded` or `not_available` when an exact PDF digest cannot be proven.
 
 `delete_preview` returns only:
 

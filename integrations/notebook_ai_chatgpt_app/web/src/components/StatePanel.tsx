@@ -5,3 +5,7 @@ export function StatePanel({ kind, children }: { kind: "loading" | "error" | "em
     </div>
   );
 }
+
+export function WaitingState() {
+  return <StatePanel kind="loading">等待 Search 检索结果…</StatePanel>;
+}

@@ -5,9 +5,40 @@ import test from "node:test";
 
 import { renderToStaticMarkup } from "react-dom/server";
 
+import type { SearchResult } from "../types";
 import { EvidenceBasket } from "./EvidenceBasket";
+import { WaitingState } from "./StatePanel";
 
-test("empty evidence basket explains the next action and remains keyboard-native", () => {
+const selectedResult: SearchResult = {
+  fragment_id: "fragment-1",
+  source_type: "pdf_chunk",
+  final_rank: 1,
+  final_score: 1,
+  reranker_score: 0.5,
+  semantic_score: 0.4,
+  document_id: 1,
+  document_title: "Fixture document",
+  document_type: "book",
+  chunk_id: 11,
+  pdf_page: 1,
+  page_label: "1",
+  text: "Evidence",
+  selected_text: null,
+  note_text: null,
+  context_before: null,
+  context_after: null,
+  tags: [],
+  provenance: [],
+  open_target: null,
+};
+
+const handlers = {
+  onClear: () => undefined,
+  onExport: () => undefined,
+  onPin: () => undefined,
+};
+
+test("empty evidence basket is absent from the DOM", () => {
   const html = renderToStaticMarkup(
     <EvidenceBasket
       selected={[]}
@@ -15,20 +46,56 @@ test("empty evidence basket explains the next action and remains keyboard-native
       canPin={false}
       exporting={false}
       status=""
-      onClear={() => undefined}
-      onExport={() => undefined}
-      onPin={() => undefined}
+      {...handlers}
     />,
   );
-  assert.match(html, /尚未选择证据/);
-  assert.match(html, /加入证据/);
-  assert.match(html, /disabled/);
-  assert.doesNotMatch(html, /tabindex="0"/i);
+  assert.equal(html, "");
+  assert.doesNotMatch(html, /证据篮子|尚未选择证据|固定选择到聊天|复制 Markdown|更多/);
 });
 
-test("responsive widget contract uses one scroll surface and visible focus states", () => {
-  const css = readFileSync(resolve(process.cwd(), "web", "src", "styles.css"), "utf8");
-  assert.match(css, /body\s*\{[^}]*overflow-y:\s*auto/s);
+test("selected evidence basket keeps count, pin, copy, and export controls", () => {
+  const html = renderToStaticMarkup(
+    <EvidenceBasket
+      selected={[selectedResult]}
+      selectedCount={1}
+      canPin
+      exporting={false}
+      status=""
+      {...handlers}
+    />,
+  );
+  assert.match(html, /证据篮子/);
+  assert.match(html, /1 条/);
+  assert.match(html, /固定选择到聊天/);
+  assert.match(html, /复制 Markdown/);
+  assert.match(html, /导出 JSONL/);
+  assert.match(html, /导出 JSON/);
+  assert.doesNotMatch(html, /尚未选择证据/);
+});
+
+test("waiting state appears exactly once", () => {
+  const html = renderToStaticMarkup(<WaitingState />);
+  assert.equal(
+    html.match(/等待 Search 检索结果/g)?.length,
+    1,
+  );
+  const appSource = readFileSync(
+    resolve(process.cwd(), "web", "src", "App.tsx"),
+    "utf8",
+  );
+  assert.equal(
+    appSource.match(/<WaitingState \/>/g)?.length,
+    1,
+  );
+  assert.doesNotMatch(appSource, /等待检索问题|正在等待 Search 检索结果/);
+});
+
+test("390 and 1024 px responsive contract uses one scroll surface and visible focus states", () => {
+  const css = readFileSync(
+    resolve(process.cwd(), "web", "src", "styles.css"),
+    "utf8",
+  );
+  assert.match(css, /body\s*\{[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto/s);
   assert.match(css, /\.widget-scroll-region\s*\{[^}]*overflow:\s*visible/s);
   assert.match(css, /\.evidence-basket\s*\{[^}]*overflow:\s*visible/s);
   assert.match(css, /button:focus-visible/);

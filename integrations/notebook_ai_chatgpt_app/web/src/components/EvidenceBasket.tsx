@@ -12,22 +12,19 @@ interface EvidenceBasketProps {
 }
 
 export function EvidenceBasket({ selected, selectedCount, canPin, exporting, status, onClear, onExport, onPin }: EvidenceBasketProps) {
+  if (selected.length === 0) return null;
+
   return (
     <aside className="evidence-basket" aria-label="证据选择篮子">
       <div>
         <strong>证据篮子</strong>
         <span>{selectedCount} 条</span>
       </div>
-      {selected.length > 0 && (
-        <ol aria-label="已选证据列表">
-          {selected.map((result) => (
-            <li key={result.fragment_id}>{result.document_title || result.fragment_id}</li>
-          ))}
-        </ol>
-      )}
-      {selected.length === 0 && (
-        <p className="basket-empty">尚未选择证据。可在命中卡片中选择“加入证据”。</p>
-      )}
+      <ol aria-label="已选证据列表">
+        {selected.map((result) => (
+          <li key={result.fragment_id}>{result.document_title || result.fragment_id}</li>
+        ))}
+      </ol>
       <div className="basket-actions">
         <button type="button" className="search-button search-button-primary search-button-compact" disabled={!canPin || exporting} onClick={onPin}>
           固定选择到聊天

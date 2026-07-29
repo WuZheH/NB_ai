@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { EvidenceBasket } from "./components/EvidenceBasket";
 import { ResultCard } from "./components/ResultCard";
 import { SourceFilters } from "./components/SourceFilters";
-import { StatePanel } from "./components/StatePanel";
+import { StatePanel, WaitingState } from "./components/StatePanel";
 import { NOTEBOOK_SOURCES } from "./constants";
 import { pinnedEvidence, selectedEvidence, toggleEvidence } from "./state/evidenceSelection";
 import { mcpBridge } from "./state/mcpBridge";
@@ -177,7 +177,7 @@ export default function App() {
       </header>
 
       <section className="search-summary" aria-label="检索摘要">
-        <strong>{view.query || "等待检索问题"}</strong>
+        <strong>{view.query || "检索摘要"}</strong>
         <span>{displayedResults.length} / {view.resultCount} 条可见结果</span>
         <span>PDF 原文与 Zotero 用户笔记保持独立</span>
       </section>
@@ -191,7 +191,7 @@ export default function App() {
         {view.error ? (
           <StatePanel kind="error">{view.error}</StatePanel>
         ) : view.status === "loading" ? (
-          <StatePanel kind="loading">正在等待 Search 检索结果…</StatePanel>
+          <WaitingState />
         ) : displayedResults.length === 0 ? (
           <StatePanel kind="empty">当前来源筛选下没有结果。</StatePanel>
         ) : (
@@ -229,16 +229,18 @@ export default function App() {
         )}
       </div>
 
-      <EvidenceBasket
-        selected={selected}
-        selectedCount={selectedIds.length}
-        canPin={selected.length > 0 && selected.length === selectedIds.length}
-        exporting={exporting}
-        status={basketStatus}
-        onClear={() => setSelectedIds([])}
-        onExport={(format) => void exportSelection(format)}
-        onPin={() => void pinSelection()}
-      />
+      {selected.length > 0 && (
+        <EvidenceBasket
+          selected={selected}
+          selectedCount={selectedIds.length}
+          canPin={selected.length === selectedIds.length}
+          exporting={exporting}
+          status={basketStatus}
+          onClear={() => setSelectedIds([])}
+          onExport={(format) => void exportSelection(format)}
+          onPin={() => void pinSelection()}
+        />
+      )}
 
     </main>
   );
