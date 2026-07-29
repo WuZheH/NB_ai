@@ -154,7 +154,7 @@ def test_fastapi_readiness_accepts_only_a_safe_empty_library(monkeypatch) -> Non
     assert observed == [True, False, True, False, False, False, False]
 
 
-def test_mcp_contract_requires_eight_annotated_tools_and_widget_mime(monkeypatch) -> None:
+def test_mcp_contract_requires_nine_annotated_tools_and_widget_mime(monkeypatch) -> None:
     monkeypatch.setattr(runtime_health, "check_mcp_health", lambda port: HealthResult(True))
 
     def request(port: int, method: str, params: dict[str, object], *, timeout_seconds: float):

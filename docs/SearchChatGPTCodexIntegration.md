@@ -56,7 +56,7 @@ creates that App, the repository intentionally does not fabricate an ID.
 
 ## Actions fallback
 
-The thin Actions adapter exposes the same eight operations under
+The thin Actions adapter exposes the same nine operations under
 `/actions/v1/*`, requires an explicit bearer token, caps request bodies, and
 returns compact stable errors. Its OpenAPI document includes the server only
 when `SEARCH_ACTIONS_PUBLIC_BASE_URL` is an explicit HTTPS URL.
@@ -81,7 +81,7 @@ manual acceptance must use the user's real account:
 
 1. enable Developer mode;
 2. create/select the Secure MCP Tunnel;
-3. create the private Search app and refresh eight tools;
+3. create the private Search app and refresh nine tools;
 4. copy the real App ID into the plugin;
 5. run search, fetch, export, and list-library prompts;
 6. run import and delete only against an isolated fixture with separate user
@@ -95,7 +95,7 @@ Production import/delete are outside Candidate12 development acceptance.
 - Desktop: 77/77.
 - MCP/Actions/widget: 32/32.
 - Frontend and MCP widget/server builds: passed.
-- Source Runtime read-only smoke: authoritative retrieval ready, all eight MCP
+- Source Runtime read-only smoke: authoritative retrieval ready, all nine MCP
   tools listed, three `motion diffusion` results, fetch provenance present,
   evidence export produced, and five compact library rows returned.
 - Runtime stopped through its own supervisor; ports 18000 and 18787 returned

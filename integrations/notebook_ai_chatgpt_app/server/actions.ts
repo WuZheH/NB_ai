@@ -17,6 +17,7 @@ const ACTION_NAMES = new Set([
   "fetch",
   "export_evidence",
   "list_library",
+  "integrity_report",
   "import_preview",
   "import_document",
   "delete_preview",
@@ -190,6 +191,11 @@ export async function dispatchAction(
         ? String(input.status) as "active" | "archived" | "all"
         : "active",
       limit: boundedInteger(input.limit, 20, 1, 50),
+    });
+  }
+  if (action === "integrity_report") {
+    return await client.integrityReport({
+      document_id: boundedInteger(input.document_id, 0, 1, Number.MAX_SAFE_INTEGER),
     });
   }
   if (action === "import_preview") {
@@ -417,6 +423,9 @@ function actionInputSchema(name: string): Record<string, unknown> {
     properties.document_type = { type: "string", maxLength: 64 };
     properties.status = { type: "string", enum: ["active", "archived", "all"], default: "active" };
     properties.limit = { type: "integer", minimum: 1, maximum: 50, default: 20 };
+  } else if (name === "integrity_report") {
+    properties.document_id = { type: "integer", minimum: 1 };
+    required.push("document_id");
   } else if (name === "import_preview") {
     properties.source_type = {
       type: "string",

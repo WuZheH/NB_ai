@@ -2,7 +2,7 @@
 
 ## Stable surface
 
-Search exposes exactly eight tools:
+Search exposes exactly nine tools:
 
 | Tool | Mutation | Purpose |
 |---|---:|---|
@@ -10,6 +10,7 @@ Search exposes exactly eight tools:
 | `fetch` | no | one selected full evidence fragment |
 | `export_evidence` | no | evidence pack for selected fragment IDs |
 | `list_library` | no | compact library summary and filters |
+| `integrity_report` | no | path-free integrity state for one exact document |
 | `import_preview` | no library write | inspect one attached or Inbox PDF |
 | `import_document` | yes | confirm and run the existing import pipeline |
 | `delete_preview` | no | compact Candidate10 deletion impact |
@@ -33,11 +34,18 @@ non-idempotent destructive write.
   "chunk_count": 20,
   "has_pdf": true,
   "duplicate_status": "not_evaluated",
-  "status": "active"
+  "status": "active",
+  "source": "search_library"
 }
 ```
 
 It never returns a path, username, schema detail, or vector internals.
+
+`integrity_report` accepts one exact positive `document_id`. It performs
+read-only DB, FTS, passage-vector, and note-vector inspection. It never returns
+absolute paths or a confirmation token. Historical fields that were not
+persisted are returned as `not_recorded`; the report never reconstructs or
+replays events.
 
 `delete_preview` returns only:
 
@@ -87,6 +95,6 @@ raw PDF/note content.
 
 ## Adapter separation
 
-The Actions adapter publishes the same eight operation IDs and uses bearer
+The Actions adapter publishes the same nine operation IDs and uses bearer
 authentication. It is a fallback only. It does not duplicate Core logic and it
 cannot be enabled in the same GPT as Apps.

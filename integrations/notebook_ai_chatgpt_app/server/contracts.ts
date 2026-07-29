@@ -90,6 +90,7 @@ export interface ImportedLibraryItem {
   has_pdf: boolean;
   duplicate_status: string;
   status: "active" | "archived";
+  source: "search_library";
 }
 export interface CatalogLibraryItem {
   kind: "catalog";
@@ -104,6 +105,7 @@ export interface CatalogLibraryItem {
   note_files: string[];
   status: "available";
   duplicate_status: string;
+  source: "search_import_catalog";
 }
 export interface ZoteroLibraryItem {
   kind: "zotero";
@@ -118,6 +120,7 @@ export interface ZoteroLibraryItem {
   child_note_count: number;
   duplicate_status: string;
   status: "available";
+  source: "zotero_library";
 }
 export type LibraryItem = ImportedLibraryItem | CatalogLibraryItem | ZoteroLibraryItem;
 
@@ -135,6 +138,33 @@ export interface ListLibraryResponse {
   items: LibraryItem[];
   truncated: boolean;
   scope: "imported" | "catalog" | "zotero";
+}
+
+export interface IntegrityReportInput {
+  document_id: number;
+}
+
+export interface IntegrityReportResponse {
+  status: "ok";
+  read_only: true;
+  document_id: number;
+  document: Record<string, unknown>;
+  source: Record<string, unknown>;
+  database: Record<string, unknown>;
+  fts: Record<string, unknown>;
+  vectors: Record<string, unknown>;
+  history: {
+    confirmation_token_fingerprint: string;
+    previewed_at: string;
+    confirmed_at: string;
+    lifecycle_events: string;
+  };
+  writes_performed: {
+    production_db: false;
+    fts: false;
+    vector_store: false;
+    zotero: false;
+  };
 }
 
 export interface ImportPreviewInput {

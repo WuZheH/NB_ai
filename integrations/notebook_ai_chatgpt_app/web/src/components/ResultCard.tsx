@@ -7,14 +7,11 @@ interface ResultCardProps {
   selected: boolean;
   expanded: boolean;
   loadingDetail: boolean;
+  showDocumentTitle?: boolean;
   onSelect: () => void;
   onExpand: () => void;
   onCopyFragment: () => void;
   onCopyId: () => void;
-}
-
-function score(value: number | null): string {
-  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(4) : "—";
 }
 
 function resultPage(result: SearchResult): string {
@@ -27,6 +24,7 @@ export function ResultCard({
   selected,
   expanded,
   loadingDetail,
+  showDocumentTitle = true,
   onSelect,
   onExpand,
   onCopyFragment,
@@ -54,11 +52,10 @@ export function ResultCard({
         </button>
       </header>
 
-      <h2>{result.document_title || "未命名文档"}</h2>
-      <div className="result-meta">
-        <span>最终排名 #{result.final_rank ?? "—"}</span>
-        <span>reranker {score(result.reranker_score)}</span>
-      </div>
+      {showDocumentTitle && <h2>{result.document_title || "未命名文档"}</h2>}
+      <p className="result-summary">
+        {String(isPdf ? result.text : result.note_text || result.selected_text || "暂无命中摘要").trim()}
+      </p>
 
       {isPdf ? (
         <section className="evidence-section">

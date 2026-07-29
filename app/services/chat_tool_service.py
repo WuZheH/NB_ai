@@ -17,6 +17,7 @@ from app.core.paths import DATA_DIR, DATA_PROJECT_ROOT, DEFAULT_DB_PATH
 from app.schemas.library_deletion import DeletionOptions
 from app.services import (
     chat_import_catalog_service,
+    document_integrity_report_service,
     zotero_library_service,
     chat_pdf_production_import_service,
     commit_book_service,
@@ -117,6 +118,7 @@ class ChatToolRuntime:
     commit_import: Callable[..., dict[str, Any]] | None = None
     zotero_body_importer: Callable[..., dict[str, Any]] | None = None
     commit_zotero_import: Callable[..., dict[str, Any]] | None = None
+    integrity_runtime: document_integrity_report_service.IntegrityReportRuntime | None = None
 
     def resolved_inbox_root(self) -> Path:
         if self.inbox_root is not None:
@@ -217,6 +219,7 @@ def list_library(
             "has_pdf": _pdf_exists(row["pdf_path"], data_dir=actual_runtime.data_dir),
             "duplicate_status": "not_evaluated",
             "status": "archived" if str(row["read_status"] or "") == "archived" else "active",
+            "source": "search_library",
         }
         for row in rows
     ]
@@ -227,6 +230,29 @@ def list_library(
         "items": items,
         "truncated": len(items) >= bounded_limit,
     }
+
+
+def integrity_report(
+    document_id: int,
+    *,
+    runtime: ChatToolRuntime | None = None,
+) -> dict[str, Any]:
+    actual_runtime = runtime or ChatToolRuntime()
+    report_runtime = actual_runtime.integrity_runtime
+    if report_runtime is None:
+        report_runtime = document_integrity_report_service.IntegrityReportRuntime.production()
+    try:
+        return document_integrity_report_service.build_integrity_report(
+            document_id=document_id,
+            runtime=report_runtime,
+        )
+    except document_integrity_report_service.IntegrityReportError as exc:
+        raise ChatToolError(
+            exc.error_code,
+            str(exc),
+            status_code=exc.status_code,
+            details=exc.details,
+        ) from exc
 
 
 def delete_preview(

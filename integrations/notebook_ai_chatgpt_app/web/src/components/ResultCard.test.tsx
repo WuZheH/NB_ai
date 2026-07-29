@@ -77,3 +77,30 @@ test("card exposes preview, fragment copy, and ID copy without direct app naviga
   assert.match(html, /aria-pressed="false"/);
   assert.doesNotMatch(html, /search-button-primary/);
 });
+
+test("card leads with a visible summary and does not expose internal ranking scores", () => {
+  const html = render({ ...base, source_type: "pdf_chunk", text: "First-screen summary", selected_text: null, note_text: null });
+  assert.match(html, /result-summary/);
+  assert.match(html, /First-screen summary/);
+  assert.doesNotMatch(html, /reranker/);
+  assert.doesNotMatch(html, /最终排名/);
+  assert.doesNotMatch(html, /0\.5000/);
+});
+
+test("repeated document headings can be suppressed without hiding the source summary", () => {
+  const html = renderToStaticMarkup(
+    <ResultCard
+      result={{ ...base, source_type: "pdf_chunk", text: "Second result", selected_text: null, note_text: null }}
+      selected={false}
+      expanded={false}
+      loadingDetail={false}
+      showDocumentTitle={false}
+      onSelect={() => undefined}
+      onExpand={() => undefined}
+      onCopyFragment={() => undefined}
+      onCopyId={() => undefined}
+    />,
+  );
+  assert.doesNotMatch(html, /<h2>Paper<\/h2>/);
+  assert.match(html, /Second result/);
+});

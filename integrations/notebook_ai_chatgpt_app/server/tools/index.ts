@@ -7,6 +7,7 @@ import { registerExportEvidenceTool } from "./exportEvidence.js";
 import { registerFetchTool } from "./fetch.js";
 import { registerImportDocumentTool } from "./importDocument.js";
 import { registerImportPreviewTool } from "./importPreview.js";
+import { registerIntegrityReportTool } from "./integrityReport.js";
 import { registerListLibraryTool } from "./listLibrary.js";
 import { registerSearchTool } from "./search.js";
 
@@ -15,6 +16,7 @@ export const NOTEBOOK_TOOL_NAMES = [
   "fetch",
   "export_evidence",
   "list_library",
+  "integrity_report",
   "import_preview",
   "import_document",
   "delete_preview",
@@ -26,6 +28,7 @@ export function registerNotebookTools(server: McpServer, client: NotebookClient)
   registerFetchTool(server, client);
   registerExportEvidenceTool(server, client);
   registerListLibraryTool(server, client);
+  registerIntegrityReportTool(server, client);
   registerImportPreviewTool(server, client);
   registerImportDocumentTool(server, client);
   registerDeletePreviewTool(server, client);

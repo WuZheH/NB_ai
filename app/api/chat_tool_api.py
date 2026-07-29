@@ -11,6 +11,7 @@ from app.schemas.chat_tools import (
     DeletePreviewRequest,
     ImportDocumentRequest,
     ImportPreviewRequest,
+    IntegrityReportRequest,
     ListLibraryRequest,
 )
 from app.services import chat_tool_service
@@ -48,6 +49,12 @@ def list_library(payload: ListLibraryRequest, request: Request) -> dict[str, Any
         status=payload.status,
         limit=payload.limit,
     )
+
+
+@router.post("/integrity-report")
+def integrity_report(payload: IntegrityReportRequest, request: Request) -> dict[str, Any]:
+    require_chat_adapter(request)
+    return _call(chat_tool_service.integrity_report, payload.document_id)
 
 
 @router.post("/import-preview")

@@ -118,9 +118,9 @@ It does not copy an external PDF, unrelated production rows, credentials, tokens
 
 Mutation and preview routes require a loopback client, a loopback API Host, an exact local renderer Origin, no Forwarded/Cloudflare headers, a bounded request size, and per-scope rate limits. Archive/delete POST requests additionally require a short-lived mutation token bound to client and Origin. Public/tunnel calls are rejected before service execution.
 
-The MCP server keeps its existing eight-tool surface: `search`, `fetch`,
-`list_library`, `import_preview`, `import_document`, `delete_preview`,
-`delete_document`, and `export_evidence`. This change adds no MCP tool.
+The MCP server now exposes nine tools: `search`, `fetch`, `list_library`,
+`integrity_report`, `import_preview`, `import_document`, `delete_preview`,
+`delete_document`, and `export_evidence`. The integrity report is read-only.
 Manual-preservation artifact paths and acknowledgment fields are accepted only
 by the local library deletion API; they are not exposed through a new MCP
 capability. Archive, cleanup, and recovery remain unavailable through MCP.

@@ -15,6 +15,7 @@ EXPECTED_MCP_TOOLS = frozenset(
         "fetch",
         "export_evidence",
         "list_library",
+        "integrity_report",
         "import_preview",
         "import_document",
         "delete_preview",
@@ -166,7 +167,7 @@ def check_mcp_health(port: int) -> HealthResult:
 
 
 def check_mcp_contract(port: int, *, timeout_seconds: float = 2.0) -> HealthResult:
-    """Verify health, all eight Chat-first tools, annotations, and widget MIME."""
+    """Verify health, all nine Chat-first tools, annotations, and widget MIME."""
 
     started = time.monotonic()
     health = check_mcp_health(port)

@@ -96,8 +96,36 @@ class MockNotebookClient extends NotebookClient {
         has_pdf: true,
         duplicate_status: "not_evaluated",
         status: "active" as const,
+        source: "search_library" as const,
       }],
       truncated: false,
+      scope: "imported" as const,
+    };
+  }
+
+  override async integrityReport(input: { document_id: number }) {
+    this.calls.push({ tool: "integrity_report", input });
+    return {
+      status: "ok" as const,
+      read_only: true as const,
+      document_id: input.document_id,
+      document: { title: "Paper" },
+      source: { recorded: true },
+      database: { document_count: 1 },
+      fts: { ready: true },
+      vectors: { status: "ready" },
+      history: {
+        confirmation_token_fingerprint: "not_recorded",
+        previewed_at: "not_recorded",
+        confirmed_at: "not_recorded",
+        lifecycle_events: "not_recorded",
+      },
+      writes_performed: {
+        production_db: false as const,
+        fts: false as const,
+        vector_store: false as const,
+        zotero: false as const,
+      },
     };
   }
 
@@ -162,7 +190,7 @@ class MockNotebookClient extends NotebookClient {
   }
 }
 
-test("tools/list exposes eight annotated tools and widget resource", async () => {
+test("tools/list exposes nine annotated tools and widget resource", async () => {
   const backend = new MockNotebookClient();
   const server = createNotebookMcpServer({ client: backend, widget: { html: "<html><body>widget</body></html>" } });
   const client = new Client({ name: "notebook-ai-test", version: "0.1.0" });
@@ -227,19 +255,19 @@ test("tools/list exposes eight annotated tools and widget resource", async () =>
     assert.deepEqual(resourceMeta?.ui?.permissions, { clipboardWrite: {} });
     assert.deepEqual(resourceMeta?.ui?.csp, { connectDomains: [], resourceDomains: [] });
     assert.deepEqual(resourceMeta?.["openai/widgetCSP"], { connect_domains: [], resource_domains: [] });
-    assert.equal(resourceMeta?.ui?.domain, undefined);
-    assert.equal(resourceMeta?.["notebookAi/widgetDomainMode"], "development-only");
+    assert.equal(resourceMeta?.ui?.domain, "https://cread-search-widget.openaiusercontent.com");
+    assert.equal(resourceMeta?.["notebookAi/widgetDomainMode"], "configured");
   } finally {
     await client.close();
     await server.close();
   }
 });
 
-test("widget domain is emitted only for an explicitly configured HTTPS origin", async () => {
+test("widget domain and CSP are fixed to the unique production contract", async () => {
   const backend = new MockNotebookClient();
   const server = createNotebookMcpServer({
     client: backend,
-    widget: { html: "<html></html>", widgetDomain: "https://widget.example/some/path" },
+    widget: { html: "<html></html>" },
   });
   const client = new Client({ name: "notebook-ai-test", version: "0.1.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -250,21 +278,16 @@ test("widget domain is emitted only for an explicitly configured HTTPS origin", 
     const meta = resource.contents[0]?._meta as
       | { ui?: { domain?: string }; "openai/widgetDomain"?: string; "notebookAi/widgetDomainMode"?: string }
       | undefined;
-    assert.equal(meta?.ui?.domain, "https://widget.example");
-    assert.equal(meta?.["openai/widgetDomain"], "https://widget.example");
+    assert.equal(meta?.ui?.domain, "https://cread-search-widget.openaiusercontent.com");
+    assert.equal(meta?.["openai/widgetDomain"], "https://cread-search-widget.openaiusercontent.com");
     assert.equal(meta?.["notebookAi/widgetDomainMode"], "configured");
   } finally {
     await client.close();
     await server.close();
   }
-
-  assert.throws(
-    () => createNotebookMcpServer({ client: backend, widget: { html: "<html></html>", widgetDomain: "http://widget.example" } }),
-    /must use HTTPS/,
-  );
 });
 
-test("all eight tools call only the backend adapter", async () => {
+test("all nine tools call only the backend adapter", async () => {
   const backend = new MockNotebookClient();
   const server = createNotebookMcpServer({ client: backend, widget: { html: "<html></html>" } });
   const client = new Client({ name: "notebook-ai-test", version: "0.1.0" });
@@ -291,6 +314,8 @@ test("all eight tools call only the backend adapter", async () => {
     assert.equal((exported.structuredContent as { item_count: number }).item_count, 1);
     const library = await client.callTool({ name: "list_library", arguments: { query: "motion" } });
     assert.equal((library.structuredContent as { count: number }).count, 1);
+    const integrity = await client.callTool({ name: "integrity_report", arguments: { document_id: 1 } });
+    assert.equal((integrity.structuredContent as { read_only: boolean }).read_only, true);
     const importPreview = await client.callTool({ name: "import_preview", arguments: { inbox_filename: "fixture.pdf" } });
     assert.equal((importPreview.structuredContent as { title: string }).title, "Fixture");
     const imported = await client.callTool({
@@ -319,6 +344,7 @@ test("all eight tools call only the backend adapter", async () => {
         "fetch",
         "export_evidence",
         "list_library",
+        "integrity_report",
         "import_preview",
         "import_document",
         "delete_preview",
@@ -352,7 +378,7 @@ test("anonymous startup is refused without the explicit development switch", () 
   }).port, 9876);
 });
 
-test("Actions OpenAPI exposes the same eight operations with bearer authentication", () => {
+test("Actions OpenAPI exposes the same nine operations with bearer authentication", () => {
   const document = actionsOpenApiDocument({
     SEARCH_ACTIONS_PUBLIC_BASE_URL: "https://search-actions.example/private",
   }) as {
@@ -533,6 +559,7 @@ test("all tool failures use isError content without output-schema mismatch", asy
     { name: "fetch", arguments: { fragment_id: "missing" } },
     { name: "export_evidence", arguments: { fragment_ids: ["missing"], format: "markdown" } },
     { name: "list_library", arguments: {} },
+    { name: "integrity_report", arguments: { document_id: 1 } },
     { name: "import_preview", arguments: {} },
     { name: "import_document", arguments: { confirmation_token: "i".repeat(40), confirmed: true } },
     { name: "delete_preview", arguments: { document_id: 1 } },
@@ -556,6 +583,9 @@ test("all tool failures use isError content without output-schema mismatch", asy
         return this.fail();
       }
       override async listLibrary(_input: Parameters<MockNotebookClient["listLibrary"]>[0]): Promise<never> {
+        return this.fail();
+      }
+      override async integrityReport(_input: Parameters<MockNotebookClient["integrityReport"]>[0]): Promise<never> {
         return this.fail();
       }
       override async importPreview(_input: Parameters<MockNotebookClient["importPreview"]>[0]): Promise<never> {

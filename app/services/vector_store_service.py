@@ -1060,6 +1060,31 @@ def inspect_document_vector_impact(
     }
 
 
+def inspect_note_vector_impact(
+    *,
+    note_source_ids: list[str],
+    store_path: Path | None = None,
+) -> dict[str, Any]:
+    """Read only: count exact personal-note vector identities."""
+
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    if not actual_store_path.exists():
+        raise VectorStoreUnavailable(f"vector store path missing: {actual_store_path}")
+    db = _connect_existing_vector_store(actual_store_path)
+    requested = sorted({str(value) for value in note_source_ids if str(value)})
+    records = (
+        _existing_records_by_source_ids(db, NOTE_TABLE, requested)
+        if requested
+        else {}
+    )
+    return {
+        "status": "ok",
+        "read_only": True,
+        "note_vector_count": len(records),
+        "note_source_ids": sorted(records),
+    }
+
+
 def cleanup_document_vectors(
     *,
     passage_source_ids: list[str],

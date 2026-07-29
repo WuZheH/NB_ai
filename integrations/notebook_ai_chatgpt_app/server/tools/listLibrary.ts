@@ -30,6 +30,7 @@ const importedLibraryItemSchema = z.object({
   has_pdf: z.boolean(),
   duplicate_status: z.string(),
   status: z.string(),
+  source: z.literal("search_library"),
   kind: z.string().optional(),
   import_ref: z.string().optional(),
   relative_path: z.string().optional(),
@@ -40,11 +41,13 @@ const catalogLibraryItemSchema = z.object({
   kind: z.literal("catalog"), document_id: z.null(), title: z.string(), type: z.literal("pdf"), has_pdf: z.literal(true),
   import_ref: z.string(), file_name: z.string(), relative_path: z.string(), note_count: z.number().int().nonnegative(), note_files: z.array(z.string()),
   status: z.literal("available"), duplicate_status: z.string(),
+  source: z.literal("search_import_catalog"),
 });
 const zoteroLibraryItemSchema = z.object({
   kind: z.literal("zotero"), document_id: z.null(), title: z.string(), item_type: z.string(), zotero_item_key: z.string(),
   has_pdf: z.boolean(), attachment_count: z.number().int().nonnegative(), attachment_choices: z.array(z.object({ zotero_attachment_key: z.string(), file_name: z.string().nullable(), path_exists: z.boolean(), content_type: z.string().nullable() })), annotation_count: z.number().int().nonnegative(),
   child_note_count: z.number().int().nonnegative(), duplicate_status: z.string(), status: z.literal("available"),
+  source: z.literal("zotero_library"),
 });
 
 export const listLibraryOutputShape = {
@@ -89,7 +92,7 @@ export function registerListLibraryTool(server: McpServer, client: NotebookClien
     {
       title: "List the private Search library",
       description:
-        "List imported Search documents, or scan the controlled import catalog with scope=catalog. Returns compact metadata only and never exposes absolute paths.",
+        "List imported Search documents, the controlled import catalog, or Zotero candidates. Each item includes a non-path source label and never exposes absolute paths.",
       inputSchema: listLibraryInputShape,
       outputSchema: listLibraryOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,

@@ -60,6 +60,7 @@ def list_catalog(*, inbox_root: Path, query: str | None = None, limit: int = 50)
         notes = _notes_for_pdf(resolved, root)
         items.append({
             "kind": "catalog", "document_id": None, "title": title, "type": "pdf", "has_pdf": True,
+            "source": "search_import_catalog",
             "import_ref": relative, "file_name": resolved.name, "relative_path": relative,
             "note_count": len(notes), "note_files": [p.relative_to(root).as_posix() for p in notes],
             "status": "available", "duplicate_status": "not_evaluated",

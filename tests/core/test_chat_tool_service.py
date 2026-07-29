@@ -75,8 +75,9 @@ def test_list_library_is_compact_and_filters_archived(tmp_path: Path) -> None:
         "imported_at": "2026-01-02",
         "chunk_count": 2,
         "has_pdf": False,
-        "duplicate_status": "not_evaluated",
-        "status": "active",
+            "duplicate_status": "not_evaluated",
+            "status": "active",
+            "source": "search_library",
     }
     assert [item["document_id"] for item in archived["items"]] == [2]
     assert "pdf_path" not in str(active)

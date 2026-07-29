@@ -4,7 +4,7 @@ import test from "node:test";
 import { actionsOpenApiDocument, dispatchAction } from "./actions";
 import { NotebookClient } from "./notebookClient";
 
-test("Actions forwards Zotero import_preview and keeps exactly eight actions", async () => {
+test("Actions forwards Zotero import_preview and keeps exactly nine actions", async () => {
   const calls: unknown[] = [];
   const client = {
     importPreview: async (input: unknown) => {
@@ -33,7 +33,7 @@ test("Actions forwards Zotero import_preview and keeps exactly eight actions", a
       post: { requestBody: { content: { "application/json": { schema: Record<string, unknown> } } } };
     }>;
   };
-  assert.equal(Object.keys(document.paths).length, 8);
+  assert.equal(Object.keys(document.paths).length, 9);
   const schema = document.paths["/actions/v1/import_preview"].post
     .requestBody.content["application/json"].schema;
   assert.deepEqual(

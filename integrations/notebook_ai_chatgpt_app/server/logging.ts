@@ -4,6 +4,7 @@ export interface ToolLogRecord {
     | "fetch"
     | "export_evidence"
     | "list_library"
+    | "integrity_report"
     | "import_preview"
     | "import_document"
     | "delete_preview"

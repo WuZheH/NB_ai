@@ -63,3 +63,7 @@ class DeletePreviewRequest(StrictChatToolRequest):
 class DeleteDocumentRequest(StrictChatToolRequest):
     confirmation_token: str = Field(..., min_length=32, max_length=256)
     confirmed: bool
+
+
+class IntegrityReportRequest(StrictChatToolRequest):
+    document_id: int = Field(..., ge=1)

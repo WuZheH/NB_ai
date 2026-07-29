@@ -136,7 +136,12 @@ In Inspector:
 1. Select **Streamable HTTP**.
 2. Enter `http://127.0.0.1:8787/mcp`.
 3. Connect and run **List Tools**.
-4. Confirm all eight tools and their read/write/destructive annotations.
+4. Confirm all nine tools and their read/write/destructive annotations.
+
+The results widget uses the dedicated
+`https://cread-search-widget.openaiusercontent.com` origin with an empty,
+least-privilege network/resource CSP because the packaged widget is
+self-contained.
 5. Call `search`, `fetch`, `export_evidence`, and `list_library`. Use only
    isolated fixtures for confirmed import/delete tests.
 6. Open the widget resource and confirm the MIME type is `text/html;profile=mcp-app`.

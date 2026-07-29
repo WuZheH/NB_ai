@@ -19,7 +19,7 @@ try {
   await client.connect(transport);
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name).sort();
-  if (names.join(",") !== "delete_document,delete_preview,export_evidence,fetch,import_document,import_preview,list_library,search") {
+  if (names.join(",") !== "delete_document,delete_preview,export_evidence,fetch,import_document,import_preview,integrity_report,list_library,search") {
     throw new Error(`Unexpected MCP tools: ${names.join(", ")}`);
   }
 
@@ -66,6 +66,16 @@ try {
   if (library.isError || !Array.isArray(library.structuredContent?.items)) {
     throw new Error("list_library returned an invalid response");
   }
+  const firstDocumentId = library.structuredContent?.items?.[0]?.document_id;
+  const integrity = Number.isInteger(firstDocumentId)
+    ? await client.callTool({
+        name: "integrity_report",
+        arguments: { document_id: firstDocumentId },
+      })
+    : null;
+  if (integrity?.isError || (integrity && integrity.structuredContent?.read_only !== true)) {
+    throw new Error("integrity_report returned an invalid response");
+  }
 
   console.log(JSON.stringify({
     status: "ok",
@@ -77,6 +87,7 @@ try {
     export_format: exported.structuredContent?.format,
     export_content_length: exported.structuredContent?.content_length,
     library_count: library.structuredContent?.count,
+    integrity_report_read_only: integrity?.structuredContent?.read_only ?? null,
   }, null, 2));
 } finally {
   await client.close();

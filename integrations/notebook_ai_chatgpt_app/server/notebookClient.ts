@@ -7,6 +7,8 @@ import {
   type ImportDocumentResponse,
   type ImportPreviewInput,
   type ImportPreviewResponse,
+  type IntegrityReportInput,
+  type IntegrityReportResponse,
   type ListLibraryInput,
   type ListLibraryResponse,
   type DeleteDocumentInput,
@@ -155,6 +157,14 @@ export class NotebookClient {
 
   async listLibrary(input: ListLibraryInput): Promise<ListLibraryResponse> {
     return this.requestChatTool<ListLibraryResponse>("/api/v1/chat-tools/list-library", { scope: input.scope ?? "imported", ...input }, "ok");
+  }
+
+  async integrityReport(input: IntegrityReportInput): Promise<IntegrityReportResponse> {
+    return this.requestChatTool<IntegrityReportResponse>(
+      "/api/v1/chat-tools/integrity-report",
+      input,
+      "ok",
+    );
   }
 
   async importPreview(input: ImportPreviewInput): Promise<ImportPreviewResponse> {

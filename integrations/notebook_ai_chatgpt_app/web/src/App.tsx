@@ -172,13 +172,18 @@ export default function App() {
       <header className="app-header">
         <div>
           <p className="eyebrow">Search · 高质量资料搜索</p>
-          <h1>{view.query || "研究资料检索"}</h1>
-          <p>{view.resultCount} 条结果 · PDF 原文与 Zotero 用户笔记保持独立</p>
+          <h1>研究资料检索</h1>
         </div>
       </header>
 
+      <section className="search-summary" aria-label="检索摘要">
+        <strong>{view.query || "等待检索问题"}</strong>
+        <span>{displayedResults.length} / {view.resultCount} 条可见结果</span>
+        <span>PDF 原文与 Zotero 用户笔记保持独立</span>
+      </section>
+
       <SourceFilters active={activeSources} onToggle={toggleSource} />
-      <div className="widget-scroll-region search-scroll-region" tabIndex={0} role="region" aria-label="可滚动的 Search 检索结果">
+      <div className="widget-scroll-region search-scroll-region" role="region" aria-label="Search 检索结果">
         {view.warnings.length > 0 && (
           <div className="warnings" role="status">{view.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>
         )}
@@ -191,9 +196,10 @@ export default function App() {
           <StatePanel kind="empty">当前来源筛选下没有结果。</StatePanel>
         ) : (
           <section className="results" aria-label="检索结果">
-            {displayedResults.map((baseResult) => {
+            {displayedResults.map((baseResult, index) => {
               const detail = details[baseResult.fragment_id];
               const result = detail ? { ...baseResult, ...detail } : baseResult;
+              const previous = displayedResults[index - 1];
               return (
                 <ResultCard
                   key={result.fragment_id}
@@ -201,6 +207,7 @@ export default function App() {
                   selected={selectedIds.includes(result.fragment_id)}
                   expanded={expandedIds.has(result.fragment_id)}
                   loadingDetail={loadingDetail.has(result.fragment_id)}
+                  showDocumentTitle={!previous || previous.document_id !== result.document_id}
                   onSelect={() => setSelectedIds((current) => toggleEvidence(current, result.fragment_id))}
                   onExpand={() => void toggleExpanded(result)}
                   onCopyFragment={() => void copyFragment(result)}
