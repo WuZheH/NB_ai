@@ -306,20 +306,7 @@ export class NotebookClient {
     if (!result.open_target) {
       return result;
     }
-    const openTarget = { ...result.open_target };
-    for (const key of OPEN_TARGET_URL_KEYS) {
-      const value = openTarget[key];
-      if (typeof value !== "string" || !value.trim()) {
-        continue;
-      }
-      try {
-        // Preserve absolute HTTPS, loopback, and custom-scheme targets such as
-        // zotero:// exactly as the backend returned them.
-        new URL(value);
-      } catch {
-        openTarget[key] = new URL(value, this.baseUrl).toString();
-      }
-    }
+    const openTarget = this.normalizeOpenTarget(result.open_target);
     return { ...result, open_target: openTarget };
   }
 
@@ -373,26 +360,48 @@ export class NotebookClient {
       normalized[key] = this.normalizeExportValue(item);
     }
     if (isRecord(normalized.open_target)) {
-      const openTarget = { ...normalized.open_target };
-      for (const key of OPEN_TARGET_URL_KEYS) {
-        const target = openTarget[key];
-        if (typeof target !== "string" || !target.trim()) {
-          continue;
-        }
-        try {
-          new URL(target);
-        } catch {
-          openTarget[key] = new URL(target, this.baseUrl).toString();
-        }
-      }
-      normalized.open_target = openTarget;
+      normalized.open_target = this.normalizeOpenTarget(normalized.open_target);
     }
     return normalized;
+  }
+
+  private normalizeOpenTarget(value: Record<string, unknown>): Record<string, unknown> {
+    const openTarget = { ...value };
+    for (const key of OPEN_TARGET_URL_KEYS) {
+      const target = openTarget[key];
+      if (typeof target !== "string" || !target.trim()) {
+        continue;
+      }
+      try {
+        // Preserve absolute HTTPS, loopback, and custom-scheme targets such as
+        // zotero:// exactly as the backend returned them.
+        new URL(target);
+      } catch {
+        openTarget[key] = new URL(target, this.baseUrl).toString();
+      }
+    }
+
+    const pdfUrl = openTarget.pdf_url;
+    if (typeof pdfUrl === "string" && isLoopbackHttpUrl(pdfUrl)) {
+      openTarget.can_open_pdf = false;
+      openTarget.pdf_disabled_reason = "PDF opening is available in Search Desktop.";
+    }
+    return openTarget;
   }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isLoopbackHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:")
+      && ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 function isNotebookFragment(value: unknown): value is NotebookFragment {

@@ -100,6 +100,14 @@ class McpAppsBridge {
     return persistHostWidgetState(state);
   }
 
+  async openExternal(href: string): Promise<void> {
+    if (window.openai?.openExternal) {
+      await window.openai.openExternal({ href });
+      return;
+    }
+    throw this.connectionError ?? new Error("当前宿主不支持安全打开该 PDF。");
+  }
+
   private async connectedApp(): Promise<App | null> {
     if (!this.app || !this.ready) {
       return null;

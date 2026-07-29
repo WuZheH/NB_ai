@@ -167,6 +167,15 @@ export default function App() {
     }
   }
 
+  async function openResultTarget(href: string) {
+    try {
+      await mcpBridge.openExternal(href);
+      setBasketStatus("已交由宿主安全打开 PDF。");
+    } catch (error) {
+      setBasketStatus(error instanceof Error ? error.message : "当前宿主无法打开该 PDF。");
+    }
+  }
+
   return (
     <main className="app-shell search-host-theme-aware">
       <header className="app-header">
@@ -212,6 +221,7 @@ export default function App() {
                   onExpand={() => void toggleExpanded(result)}
                   onCopyFragment={() => void copyFragment(result)}
                   onCopyId={() => void copyFragmentId(result.fragment_id)}
+                  onOpenTarget={(href) => void openResultTarget(href)}
                 />
               );
             })}

@@ -13,7 +13,8 @@ test("widget bridge uses the official ext-apps handshake before receiving tool r
   assert.match(source, /app\.callServerTool\(\{ name, arguments: args \}\)/);
   assert.match(source, /app\.updateModelContext\(params\)/);
   assert.match(source, /window\.openai\.sendFollowUpMessage\(\{ prompt, scrollToBottom: true \}\)/);
-  assert.doesNotMatch(source, /\.openLink\(|openExternal|window\.open\(/);
+  assert.match(source, /window\.openai\.openExternal\(\{ href \}\)/);
+  assert.doesNotMatch(source, /\.openLink\(|window\.open\(/);
 });
 
 test("widget state uses the documented compact ChatGPT persistence surface", async () => {

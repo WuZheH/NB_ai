@@ -12,11 +12,19 @@ interface ResultCardProps {
   onExpand: () => void;
   onCopyFragment: () => void;
   onCopyId: () => void;
+  onOpenTarget?: (href: string) => void;
 }
 
 function resultPage(result: SearchResult): string {
   if (result.page_label) return result.page_label;
   return result.pdf_page === null ? "页码未知" : `第 ${result.pdf_page} 页`;
+}
+
+function pdfOpenTarget(result: SearchResult): string | null {
+  const target = result.open_target;
+  if (!target || target.can_open_pdf !== true) return null;
+  const href = target.pdf_url;
+  return typeof href === "string" && href.trim() ? href.trim() : null;
 }
 
 export function ResultCard({
@@ -29,9 +37,11 @@ export function ResultCard({
   onExpand,
   onCopyFragment,
   onCopyId,
+  onOpenTarget,
 }: ResultCardProps) {
   const isPdf = result.source_type === "pdf_chunk";
   const contextAvailable = Boolean(result.context_before || result.context_after);
+  const openTarget = pdfOpenTarget(result);
 
   return (
     <article className={`result-card${selected ? " is-selected" : ""}`}>
@@ -104,6 +114,15 @@ export function ResultCard({
         <button type="button" className="search-button search-button-subtle search-button-compact" onClick={onExpand}>
           {expanded ? "收起预览" : "预览"}
         </button>
+        {openTarget && onOpenTarget && (
+          <button
+            type="button"
+            className="search-button search-button-subtle search-button-compact"
+            onClick={() => onOpenTarget(openTarget)}
+          >
+            打开 PDF
+          </button>
+        )}
         <button type="button" className="search-button search-button-transparent search-button-compact" onClick={onCopyFragment}>复制片段</button>
       </footer>
     </article>

@@ -118,6 +118,7 @@ test("NotebookClient makes backend-relative open targets absolute without rewrit
     open_target: {
       pdf_url: "/api/v1/library/documents/7/pdf#page=12",
       zotero_url: "zotero://select/library/items/ABC123",
+      can_open_pdf: true,
     },
   });
   const fetchImpl: typeof fetch = async (input) => {
@@ -137,6 +138,11 @@ test("NotebookClient makes backend-relative open targets absolute without rewrit
   });
   assert.equal(search.results[0].open_target?.pdf_url, "http://127.0.0.1:8123/api/v1/library/documents/7/pdf#page=12");
   assert.equal(search.results[0].open_target?.zotero_url, "zotero://select/library/items/ABC123");
+  assert.equal(search.results[0].open_target?.can_open_pdf, false);
+  assert.equal(
+    search.results[0].open_target?.pdf_disabled_reason,
+    "PDF opening is available in Search Desktop.",
+  );
 
   const fetched = await client.fetchFragment("fragment-1");
   assert.equal(
@@ -153,6 +159,7 @@ test("NotebookClient normalizes export open targets to the same public URL", asy
         open_target: {
           pdf_url: "/api/v1/library/documents/7/pdf#page=12",
           zotero_url: "zotero://select/library/items/ABC123",
+          can_open_pdf: true,
         },
       },
     ],
@@ -174,6 +181,11 @@ test("NotebookClient normalizes export open targets to the same public URL", asy
   assert.equal(
     parsed.results[0].open_target.zotero_url,
     "zotero://select/library/items/ABC123",
+  );
+  assert.equal(parsed.results[0].open_target.can_open_pdf, false);
+  assert.equal(
+    parsed.results[0].open_target.pdf_disabled_reason,
+    "PDF opening is available in Search Desktop.",
   );
 });
 
