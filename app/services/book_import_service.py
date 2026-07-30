@@ -503,7 +503,10 @@ def evaluate_auto_apply_safety(
     prepared: PreparedBookImport,
     *,
     db_path: str | Path = DEFAULT_DB_PATH,
+    document_type: str = "book",
 ) -> dict[str, Any]:
+    normalized_document_type = str(document_type or "book").strip() or "book"
+    is_journal_article = normalized_document_type == "journalArticle"
     reasons: list[str] = []
     structured_blockers: list[dict[str, Any]] = []
     db = Path(db_path)
@@ -527,26 +530,42 @@ def evaluate_auto_apply_safety(
                 "parsed_page_count": parsed_page_count,
             }
         )
-    if prepared.detection_method == "synthetic_full_text":
+    if not is_journal_article and prepared.detection_method == "synthetic_full_text":
         reasons.append("synthetic_full_text_not_apply_safe")
         structured_blockers.append({"code": "synthetic_full_text_not_apply_safe"})
-    chapter_safety = evaluate_book_chapter_safety(prepared)
-    for blocker in chapter_safety["book_safety_blockers"]:
-        reasons.append(str(blocker.get("legacy_reason") or blocker.get("code")))
-        structured_blockers.append(blocker)
-    if len(prepared.chapters) > 120:
-        reasons.append("chapter_count_above_120")
-        structured_blockers.append(
-            {
-                "code": "chapter_count_above_120",
-                "detected_chapter_count": len(prepared.chapters),
-                "legacy_reason": "chapter_count_above_120",
-            }
-        )
-    if prepared.chapters and all(chapter.source == "section_header" for chapter in prepared.chapters):
-        if max(chapter.confidence for chapter in prepared.chapters) < 0.80:
-            reasons.append("low_confidence_section_header_only_detection")
-            structured_blockers.append({"code": "selected_outline_unreliable", "legacy_reason": "low_confidence_section_header_only_detection"})
+    if is_journal_article:
+        chapter_safety = {
+            "book_safety_decision": "allowed",
+            "book_safety_blockers": [],
+            "book_safety_warnings": [],
+            "detected_chapter_count": len(prepared.chapters),
+            "chapter_title_quality": "not_applicable",
+        }
+    else:
+        chapter_safety = evaluate_book_chapter_safety(prepared)
+        for blocker in chapter_safety["book_safety_blockers"]:
+            reasons.append(str(blocker.get("legacy_reason") or blocker.get("code")))
+            structured_blockers.append(blocker)
+        if len(prepared.chapters) > 120:
+            reasons.append("chapter_count_above_120")
+            structured_blockers.append(
+                {
+                    "code": "chapter_count_above_120",
+                    "detected_chapter_count": len(prepared.chapters),
+                    "legacy_reason": "chapter_count_above_120",
+                }
+            )
+        if prepared.chapters and all(
+            chapter.source == "section_header" for chapter in prepared.chapters
+        ):
+            if max(chapter.confidence for chapter in prepared.chapters) < 0.80:
+                reasons.append("low_confidence_section_header_only_detection")
+                structured_blockers.append(
+                    {
+                        "code": "selected_outline_unreliable",
+                        "legacy_reason": "low_confidence_section_header_only_detection",
+                    }
+                )
     if len(prepared.chunks) <= 0:
         reasons.append("chunk_count_zero")
         structured_blockers.append({"code": "chunk_count_zero"})
@@ -555,15 +574,31 @@ def evaluate_auto_apply_safety(
         structured_blockers.append({"code": "chunk_count_above_8000"})
     if prepared.binding_rate < 0.80:
         reasons.append("chunk_binding_rate_below_80_percent")
-        structured_blockers.append({"code": "chunk_binding_rate_below_80_percent", "binding_rate": prepared.binding_rate})
+        structured_blockers.append(
+            {
+                "code": "chunk_binding_rate_below_80_percent",
+                "binding_rate": prepared.binding_rate,
+            }
+        )
     duplicate = find_duplicate_book(db, prepared.pdf_path, prepared.title)
     if duplicate:
-        reasons.append(f"duplicate_book:{duplicate['reason']}:document_id={duplicate['document_id']}")
+        reasons.append(
+            f"duplicate_book:{duplicate['reason']}:document_id={duplicate['document_id']}"
+        )
         structured_blockers.append({"code": "duplicate_book", **duplicate})
     for warning in prepared.warnings:
-        if warning.startswith(HIGH_RISK_WARNING_PREFIXES):
-            reasons.append(f"high_risk_warning:{warning}")
-            structured_blockers.append({"code": "high_risk_warning", "warning": warning})
+        if not warning.startswith(HIGH_RISK_WARNING_PREFIXES):
+            continue
+        if (
+            is_journal_article
+            and warning
+            == "synthetic_full_text: no chapter heading candidates detected"
+        ):
+            continue
+        reasons.append(f"high_risk_warning:{warning}")
+        structured_blockers.append(
+            {"code": "high_risk_warning", "warning": warning}
+        )
     decision = "blocked" if reasons else chapter_safety["book_safety_decision"]
     return {
         "auto_apply_eligible": not reasons,
@@ -573,7 +608,9 @@ def evaluate_auto_apply_safety(
         "book_safety_blockers": structured_blockers,
         "book_safety_warnings": chapter_safety["book_safety_warnings"],
         "detected_chapter_count": len(prepared.chapters),
-        "chapter_title_quality": "blocked" if reasons else chapter_safety["chapter_title_quality"],
+        "chapter_title_quality": (
+            "blocked" if reasons else chapter_safety["chapter_title_quality"]
+        ),
     }
 
 
@@ -739,7 +776,11 @@ def apply_prepared_book_import(
     backup: bool = True,
     document_type: str = "book",
 ) -> dict[str, Any]:
-    safety = evaluate_auto_apply_safety(prepared, db_path=db_path)
+    safety = evaluate_auto_apply_safety(
+        prepared,
+        db_path=db_path,
+        document_type=document_type,
+    )
     if not safety["auto_apply_eligible"]:
         raise ValueError("book import is not safe to apply: " + "; ".join(safety["reasons"]))
 
