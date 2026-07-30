@@ -194,4 +194,3 @@ def test_reference_heading_is_rejected_by_real_detection(
 
     assert len(rejected) == 1
     assert rejected[0].rejected_reason == "pseudocode"
-
