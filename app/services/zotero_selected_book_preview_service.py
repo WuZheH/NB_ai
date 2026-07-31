@@ -12,6 +12,7 @@ from typing import Any
 
 from app.core.paths import DEFAULT_DB_PATH
 from app.services import (
+    book_import_service,
     import_duplicate_check_service,
     pdf_extraction_strategy_service,
     zotero_source_cache_service,
@@ -241,6 +242,15 @@ def build_selected_book_preview(
                 pdf_sha256=pdf_sha256,
             )
         )
+        if (
+            extraction_plan.get("converted_markdown_status")
+            == "reused_sha_verified"
+        ):
+            extraction_plan = _prepare_reused_markdown_preview(
+                extraction_plan=extraction_plan,
+                pdf_path=pdf_path,
+                title=str(parent_payload.get("title") or pdf_path.stem),
+            )
         warnings.extend(
             str(value)
             for value in extraction_plan.get("warnings") or []
@@ -374,6 +384,60 @@ def build_selected_book_preview(
             else None
         ),
         **_no_write_flags(),
+    }
+
+
+def _prepare_reused_markdown_preview(
+    *,
+    extraction_plan: dict[str, Any],
+    pdf_path: Path,
+    title: str,
+) -> dict[str, Any]:
+    converted_path_text = str(
+        extraction_plan.get("converted_markdown_path") or ""
+    ).strip()
+    converted_path = Path(converted_path_text).resolve(strict=False)
+
+    if not converted_path.is_file():
+        raise ZoteroSelectedBookPreviewError(
+            status_code=503,
+            code="verified_converted_markdown_missing",
+            message=(
+                "The SHA-verified converted Markdown is no longer "
+                "available."
+            ),
+        )
+
+    try:
+        markdown_text = converted_path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        )
+        prepared = book_import_service.prepare_book_import_from_markdown(
+            pdf_path,
+            markdown_text,
+            title=title,
+        )
+    except Exception as exc:
+        raise ZoteroSelectedBookPreviewError(
+            status_code=503,
+            code="converted_markdown_preparation_failed",
+            message=(
+                "Search could not prepare the SHA-verified converted "
+                "Markdown for import preview."
+            ),
+            details={
+                "error_type": type(exc).__name__,
+            },
+        ) from exc
+
+    return {
+        **extraction_plan,
+        "estimated_chunks": prepared.estimated_chunk_count,
+        "chapter_count": len(prepared.chapters),
+        "page_marker_count": prepared.page_marker_count,
+        "detection_method": prepared.detection_method,
+        "binding_rate": prepared.binding_rate,
     }
 
 

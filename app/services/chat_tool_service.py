@@ -34,9 +34,11 @@ from app.services.library import document_deletion_service
 DELETE_CONFIRMATION_TTL_SECONDS = document_deletion_service.PREVIEW_TTL_SECONDS
 IMPORT_CONFIRMATION_TTL_SECONDS = 10 * 60
 IMPORT_COMPLETION_REPLAY_TTL_SECONDS = 60 * 60
+IMPORT_CONCURRENT_WAIT_SECONDS = 5.0
 MAX_IMPORT_BYTES = 200 * 1024 * 1024
 _SAFE_FILENAME = re.compile(r"^[^\\/:*?\"<>|\x00-\x1f]{1,255}$")
 _TOKEN_LOCK = threading.RLock()
+_IMPORT_CONDITION = threading.Condition(_TOKEN_LOCK)
 _DELETE_CONFIRMATIONS: dict[str, "DeleteConfirmation"] = {}
 _IMPORT_CONFIRMATIONS: dict[
     str,
@@ -434,6 +436,10 @@ def import_preview(
         "existing_document_id": classification.get("existing_document_id") if duplicate else None,
         "estimated_pages": page_count,
         "estimated_chunks": None,
+        "chapter_count": None,
+        "page_marker_count": None,
+        "detection_method": None,
+        "binding_rate": None,
         "extractor_strategy": None,
         "text_quality_score": None,
         "quality_reasons": [],
@@ -541,6 +547,10 @@ def _import_zotero_selected_book_preview(
         "existing_document_id": None,
         "estimated_pages": None,
         "estimated_chunks": None,
+        "chapter_count": None,
+        "page_marker_count": None,
+        "detection_method": None,
+        "binding_rate": None,
         "document_type": document_type,
         "warnings": [
             str(value)
@@ -600,6 +610,13 @@ def _import_zotero_selected_book_preview(
                 selected.get("page_count"),
             ),
             "estimated_chunks": preview.get("estimated_chunks"),
+            "chapter_count": preview.get("chapter_count"),
+            "page_marker_count": preview.get(
+                "page_marker_count",
+                preview.get("converted_markdown_page_markers"),
+            ),
+            "detection_method": preview.get("detection_method"),
+            "binding_rate": preview.get("binding_rate"),
             "extractor_strategy": preview.get("extractor_strategy"),
             "text_quality_score": preview.get("text_quality_score"),
             "quality_reasons": list(preview.get("quality_reasons") or []),
@@ -889,12 +906,40 @@ def import_document(
 
     actual_runtime = runtime or ChatToolRuntime()
 
-    token_digest, record, replay = _begin_import_confirmation(
+    (
+        token_digest,
+        record,
+        replay,
+        concurrent_owner,
+    ) = _begin_import_confirmation(
         confirmation_token
     )
 
     if replay is not None:
         return replay
+
+    if concurrent_owner:
+        resolution, resolved = _wait_for_import_resolution(
+            token_digest
+        )
+        if resolution == "completed":
+            assert resolved is not None
+            return resolved
+        if resolution == "failed":
+            raise ChatToolError(
+                "chat_import_owner_failed",
+                (
+                    "The original confirmed import "
+                    "failed before producing a receipt."
+                ),
+                status_code=409,
+                details={
+                    "safe_to_retry": False,
+                    "token_consumed": True,
+                    "writes_performed": None,
+                },
+            )
+        return _import_in_progress_response(record)
 
     assert record is not None
 
@@ -971,6 +1016,12 @@ def import_document(
             ),
             "already_completed": False,
             "replayed_receipt": False,
+            "operation_in_progress": False,
+            "token_consumed": True,
+            "writes_performed": result.get(
+                "writes_performed"
+            ),
+            "safe_to_retry": False,
         }
 
     except ChatToolError:
@@ -1189,6 +1240,7 @@ def _begin_import_confirmation(
     str,
     ImportConfirmation | ZoteroImportConfirmation | None,
     dict[str, Any] | None,
+    bool,
 ]:
     digest = _token_digest(token)
 
@@ -1206,16 +1258,14 @@ def _begin_import_confirmation(
             replay["already_completed"] = True
             replay["replayed_receipt"] = True
 
-            return digest, None, replay
+            return digest, None, replay, False
 
         if digest in _IMPORT_IN_PROGRESS:
-            raise ChatToolError(
-                "chat_import_operation_in_progress",
-                (
-                    "The confirmed import "
-                    "is already in progress."
-                ),
-                status_code=409,
+            return (
+                digest,
+                _IMPORT_CONFIRMATIONS.get(digest),
+                None,
+                True,
             )
 
         record = _IMPORT_CONFIRMATIONS.get(
@@ -1239,14 +1289,71 @@ def _begin_import_confirmation(
             digest
         )
 
-        return digest, record, None
+        return digest, record, None, False
+
+
+def _wait_for_import_resolution(
+    digest: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    timeout = (
+        IMPORT_CONCURRENT_WAIT_SECONDS
+        if timeout_seconds is None
+        else max(0.0, float(timeout_seconds))
+    )
+    deadline = time.monotonic() + timeout
+
+    with _IMPORT_CONDITION:
+        while digest in _IMPORT_IN_PROGRESS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "in_progress", None
+            _IMPORT_CONDITION.wait(remaining)
+
+        completion = _IMPORT_COMPLETIONS.get(digest)
+        if completion is not None:
+            replay = dict(completion.response)
+            replay["already_completed"] = True
+            replay["replayed_receipt"] = True
+            replay["operation_in_progress"] = False
+            return "completed", replay
+
+        return "failed", None
+
+
+def _import_in_progress_response(
+    record: ImportConfirmation | ZoteroImportConfirmation | None,
+) -> dict[str, Any]:
+    duplicate_status = (
+        record.duplicate_status
+        if isinstance(record, ZoteroImportConfirmation)
+        else "not_detected"
+    )
+    return {
+        "status": "in_progress",
+        "document_id": None,
+        "title": str(record.title if record is not None else ""),
+        "document_type": str(
+            record.document_type if record is not None else ""
+        ),
+        "chunk_count": 0,
+        "duplicate_status": duplicate_status,
+        "error_code": None,
+        "already_completed": False,
+        "replayed_receipt": False,
+        "operation_in_progress": True,
+        "token_consumed": True,
+        "writes_performed": None,
+        "safe_to_retry": False,
+    }
 
 
 def _complete_import_confirmation(
     digest: str,
     response: dict[str, Any],
 ) -> None:
-    with _TOKEN_LOCK:
+    with _IMPORT_CONDITION:
         _IMPORT_CONFIRMATIONS.pop(
             digest,
             None,
@@ -1263,12 +1370,13 @@ def _complete_import_confirmation(
                 ),
             )
         )
+        _IMPORT_CONDITION.notify_all()
 
 
 def _fail_import_confirmation(
     digest: str,
 ) -> None:
-    with _TOKEN_LOCK:
+    with _IMPORT_CONDITION:
         _IMPORT_CONFIRMATIONS.pop(
             digest,
             None,
@@ -1276,6 +1384,8 @@ def _fail_import_confirmation(
         _IMPORT_IN_PROGRESS.discard(
             digest
         )
+        _IMPORT_CONDITION.notify_all()
+
 
 def _purge_expired_tokens() -> None:
     now = time.monotonic()

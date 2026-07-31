@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+import time
 import json
 import sqlite3
 from pathlib import Path
@@ -236,16 +238,25 @@ def test_import_preview_reads_inbox_without_writing_and_commit_uses_confirmation
     assert len(committed) == 1
 
 
-def test_import_rejects_same_token_while_operation_in_progress(
+def test_import_reports_same_token_as_in_progress_without_second_commit(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     inbox = tmp_path / "inbox"
     inbox.mkdir()
-
     pdf = inbox / "fixture.pdf"
-    pdf.write_bytes(
-        b"%PDF-1.4\nfixture"
-    )
+    pdf.write_bytes(b"%PDF-1.4\\nfixture")
+
+    commit_count = 0
+
+    def commit(**_kwargs):
+        nonlocal commit_count
+        commit_count += 1
+        return {
+            "status": "committed",
+            "document_id": 1,
+            "chunk_count": 1,
+        }
 
     runtime = chat_tool_service.ChatToolRuntime(
         db_path=tmp_path / "data" / "db.sqlite",
@@ -256,47 +267,136 @@ def test_import_rejects_same_token_while_operation_in_progress(
             "document_type": "paper",
             "object_import_mode": "full_document",
             "duplicate": False,
-            "signals": {
-                "page_count": 1,
-            },
+            "signals": {"page_count": 1},
         },
-        commit_import=lambda **_kwargs: {
-            "status": "committed",
-            "document_id": 1,
-            "chunk_count": 1,
-        },
+        commit_import=commit,
     )
-
-    preview = chat_tool_service.import_preview(
-        runtime=runtime
-    )
+    preview = chat_tool_service.import_preview(runtime=runtime)
     token = preview["confirmation_token"]
-    digest = chat_tool_service._token_digest(
-        token
-    )
+    digest = chat_tool_service._token_digest(token)
 
-    chat_tool_service._IMPORT_IN_PROGRESS.add(
-        digest
+    monkeypatch.setattr(
+        chat_tool_service,
+        "IMPORT_CONCURRENT_WAIT_SECONDS",
+        0.0,
     )
+    chat_tool_service._IMPORT_IN_PROGRESS.add(digest)
 
     try:
-        with pytest.raises(
-            chat_tool_service.ChatToolError
-        ) as blocked:
-            chat_tool_service.import_document(
-                confirmation_token=token,
-                confirmed=True,
-                runtime=runtime,
-            )
-
-        assert (
-            blocked.value.error_code
-            == "chat_import_operation_in_progress"
+        result = chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
         )
     finally:
-        chat_tool_service._IMPORT_IN_PROGRESS.discard(
-            digest
-        )
+        chat_tool_service._IMPORT_IN_PROGRESS.discard(digest)
+
+    assert result["status"] == "in_progress"
+    assert result["operation_in_progress"] is True
+    assert result["token_consumed"] is True
+    assert result["safe_to_retry"] is False
+    assert result["writes_performed"] is None
+    assert result["error_code"] is None
+    assert commit_count == 0
+
+
+def test_concurrent_same_token_waits_and_replays_owner_receipt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    pdf = inbox / "fixture.pdf"
+    pdf.write_bytes(b"%PDF-1.4\\nfixture")
+
+    owner_started = threading.Event()
+    release_owner = threading.Event()
+    commit_calls: list[str] = []
+
+    def commit(*, record, runtime):
+        del runtime
+        commit_calls.append(record.title)
+        owner_started.set()
+        assert release_owner.wait(timeout=5.0)
+        return {
+            "status": "committed",
+            "document_id": 9,
+            "title": record.title,
+            "chunk_count": 6,
+        }
+
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=tmp_path / "data" / "db.sqlite",
+        data_dir=tmp_path / "data",
+        inbox_root=inbox,
+        classify_pdf=lambda _path, **_kwargs: {
+            "title": "Fixture",
+            "document_type": "paper",
+            "object_import_mode": "full_document",
+            "duplicate": False,
+            "signals": {"page_count": 1},
+        },
+        commit_import=commit,
+    )
+    preview = chat_tool_service.import_preview(runtime=runtime)
+    token = preview["confirmation_token"]
+
+    monkeypatch.setattr(
+        chat_tool_service,
+        "IMPORT_CONCURRENT_WAIT_SECONDS",
+        3.0,
+    )
+
+    owner_result: dict[str, object] = {}
+    duplicate_result: dict[str, object] = {}
+    failures: list[BaseException] = []
+
+    def owner_call() -> None:
+        try:
+            owner_result.update(
+                chat_tool_service.import_document(
+                    confirmation_token=token,
+                    confirmed=True,
+                    runtime=runtime,
+                )
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    def duplicate_call() -> None:
+        try:
+            duplicate_result.update(
+                chat_tool_service.import_document(
+                    confirmation_token=token,
+                    confirmed=True,
+                    runtime=runtime,
+                )
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    owner = threading.Thread(target=owner_call)
+    duplicate = threading.Thread(target=duplicate_call)
+
+    owner.start()
+    assert owner_started.wait(timeout=2.0)
+    duplicate.start()
+    time.sleep(0.1)
+    release_owner.set()
+
+    owner.join(timeout=5.0)
+    duplicate.join(timeout=5.0)
+
+    assert not owner.is_alive()
+    assert not duplicate.is_alive()
+    assert failures == []
+    assert owner_result["status"] == "committed"
+    assert owner_result["already_completed"] is False
+    assert duplicate_result["status"] == "committed"
+    assert duplicate_result["already_completed"] is True
+    assert duplicate_result["replayed_receipt"] is True
+    assert duplicate_result["operation_in_progress"] is False
+    assert commit_calls == ["Fixture"]
 
 
 def test_import_rejects_changed_pdf_and_duplicate_without_commit_token(tmp_path: Path) -> None:

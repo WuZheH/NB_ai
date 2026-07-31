@@ -100,9 +100,14 @@ def test_existing_markdown_is_reused_only_when_pdf_sha_is_exact(tmp_path):
     converted = tmp_path / "converted"
     converted.mkdir()
     markdown = converted / "verified.md"
+    body = (
+        "Readable paragraph with equation x = y + z and enough context. "
+        * 30
+    )
     markdown.write_text(
-        f"<!-- SOURCE_PDF_SHA256: {sha} -->\n\n# Chapter 1\n\n"
-        + "Readable paragraph with equation x = y + z and enough context. " * 20,
+        f"<!-- SOURCE_PDF_SHA256: {sha} -->\n\n"
+        f"<!-- PDF_PAGE: 1 -->\n\n# Chapter 1\n\n{body}\n\n"
+        f"<!-- PDF_PAGE: 2 -->\n\n## Section 1.1\n\n{body}\n",
         encoding="utf-8",
     )
     plan = service.build_pdf_extraction_plan(
@@ -114,6 +119,14 @@ def test_existing_markdown_is_reused_only_when_pdf_sha_is_exact(tmp_path):
     assert plan["converted_markdown_status"] == "reused_sha_verified"
     assert plan["converted_markdown_path"] == str(markdown.resolve())
     assert plan["extraction_ready"] is True
+    assert plan["text_quality_score"] >= service.MIN_MARKDOWN_SCORE
+    assert not any(
+        reason.startswith("high_empty_page_ratio")
+        for reason in plan["quality_reasons"]
+    )
+    assert plan["converted_markdown_page_markers"] == 2
+    assert plan["converted_markdown_characters"] > 1000
+    assert plan["estimated_chunks"] > 1
 
 
 def test_markdown_sha_mismatch_is_rejected(tmp_path):

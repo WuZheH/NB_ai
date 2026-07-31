@@ -870,3 +870,68 @@ def test_extraction_blocker_prevents_preview_token(
         {"code": "required_extraction_models_missing"}
     ]
     assert result["preview_token"] is None
+
+def test_reused_markdown_preview_reports_prepared_structure(
+    tmp_path,
+    no_pdf_parser,
+    monkeypatch,
+):
+    env = make_environment(tmp_path)
+    converted = tmp_path / "verified.md"
+    converted.write_text(
+        "<!-- SOURCE_PDF_SHA256: "
+        + ("a" * 64)
+        + " -->\n\n<!-- PDF_PAGE: 1 -->\n\n# Chapter 1\n\nBody.",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        service.pdf_extraction_strategy_service,
+        "build_pdf_extraction_plan",
+        lambda *_args, **_kwargs: {
+            "extractor_strategy": "high_quality_pdf_to_markdown",
+            "text_quality_score": 99.0,
+            "quality_reasons": ["converted_markdown_quality_acceptable"],
+            "text_quality_metrics": {},
+            "converted_markdown_status": "reused_sha_verified",
+            "converted_markdown_path": str(converted),
+            "converted_markdown_pdf_sha256": "a" * 64,
+            "converted_markdown_sha256": "b" * 64,
+            "converted_markdown_page_markers": 798,
+            "converted_markdown_characters": 1_447_692,
+            "estimated_pages": 798,
+            "estimated_chunks": 805,
+            "extraction_ready": True,
+            "blockers": [],
+            "warnings": [],
+        },
+    )
+
+    class Prepared:
+        estimated_chunk_count = 3594
+        chapters = [object()] * 35
+        page_marker_count = 798
+        detection_method = "pdf_outline"
+        binding_rate = 1.0
+
+    monkeypatch.setattr(
+        service.book_import_service,
+        "prepare_book_import_from_markdown",
+        lambda *_args, **_kwargs: Prepared(),
+    )
+
+    result = service.build_selected_book_preview(
+        zotero_item_key="BOOKKEY1",
+        snapshot_path=env["snapshot"],
+        db_path=env["research_db"],
+        config=env["config"],
+        now_ts=1000,
+        token_ttl_seconds=300,
+    )
+
+    assert result["estimated_chunks"] == 3594
+    assert result["chapter_count"] == 35
+    assert result["page_marker_count"] == 798
+    assert result["detection_method"] == "pdf_outline"
+    assert result["binding_rate"] == 1.0
+    assert result["preview_token"]

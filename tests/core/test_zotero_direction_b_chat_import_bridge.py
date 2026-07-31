@@ -478,6 +478,10 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
         "error_code": None,
         "already_completed": False,
         "replayed_receipt": False,
+        "operation_in_progress": False,
+        "token_consumed": True,
+        "writes_performed": None,
+        "safe_to_retry": False,
     }
 
     with sqlite3.connect(
@@ -607,6 +611,10 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
         "error_code": None,
         "already_completed": True,
         "replayed_receipt": True,
+        "operation_in_progress": False,
+        "token_consumed": True,
+        "writes_performed": None,
+        "safe_to_retry": False,
     }
 
     with sqlite3.connect(
@@ -1389,6 +1397,10 @@ def _public_chat_zotero_ready_preview(
         "extractor_strategy": "native_text",
         "estimated_pages": 12,
         "estimated_chunks": 4,
+        "chapter_count": 3,
+        "page_marker_count": 12,
+        "detection_method": "pdf_outline",
+        "binding_rate": 1.0,
         "extraction_ready": True,
         "blockers": [],
         "source_revision": {
@@ -1556,6 +1568,10 @@ def test_public_chat_journal_article_preview_uses_real_document_type(
     assert result["zotero_item_key"] == "ABCD1234"
     assert result["zotero_attachment_key"] == "EFGH5678"
     assert result["estimated_chunks"] == 4
+    assert result["chapter_count"] == 3
+    assert result["page_marker_count"] == 12
+    assert result["detection_method"] == "pdf_outline"
+    assert result["binding_rate"] == 1.0
     assert result["confirmation_token"] == "article-confirmation-token"
 
 

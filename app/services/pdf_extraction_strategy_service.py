@@ -18,6 +18,9 @@ MIN_MARKDOWN_SCORE = 65.0
 _SHA_MARKER = re.compile(
     r"<!--\s*SOURCE_PDF_SHA256:\s*([0-9a-fA-F]{64})\s*-->"
 )
+_PDF_PAGE_MARKER = re.compile(
+    r"<!--\s*PDF_PAGE:\s*(\d+)\s*-->"
+)
 
 
 class PdfExtractionStrategyError(RuntimeError):
@@ -49,6 +52,30 @@ def build_pdf_extraction_plan(
             f"native_text_quality_evaluation_failed:{extraction_error}"
         ]
     reused = find_sha_bound_markdown(converted_root, source_sha)
+    reused_quality: dict[str, Any] | None = None
+    reused_character_count: int | None = None
+    reused_page_count: int | None = None
+    if reused is not None:
+        try:
+            reused_markdown = reused.read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError as exc:
+            raise PdfExtractionStrategyError(
+                "verified_converted_markdown_unreadable"
+            ) from exc
+        reused_quality = validate_markdown_for_import(
+            reused_markdown,
+            expected_pdf_sha256=source_sha,
+        )
+        reused_pages = _markdown_pages(reused_markdown)
+        reused_page_count = len(reused_pages)
+        reused_character_count = sum(
+            len(text.strip())
+            for _page_number, text in reused_pages
+        )
+
     converter = converter_probe()
     converter_ready = bool(
         converter.get("marker_importable")
@@ -63,6 +90,11 @@ def build_pdf_extraction_plan(
         ready = True
         converted_path = str(reused)
         converted_sha = _sha256_file(reused)
+        quality = reused_quality or quality
+        estimated_pages = max(
+            int(estimated_pages),
+            int(reused_page_count or 0),
+        )
     elif quality["score"] >= MIN_NATIVE_SCORE and not quality["hard_failure"]:
         strategy = NATIVE_TEXT
         status = "not_required"
@@ -76,8 +108,13 @@ def build_pdf_extraction_plan(
         ready = converter_ready
         status = "conversion_required" if converter_ready else "converter_unavailable"
 
-    estimated_characters = int(
-        quality["mean_characters_per_sampled_page"] * max(estimated_pages, 1)
+    estimated_characters = (
+        int(reused_character_count)
+        if reused_character_count is not None
+        else int(
+            quality["mean_characters_per_sampled_page"]
+            * max(estimated_pages, 1)
+        )
     )
     warnings = []
     blockers: list[dict[str, Any]] = []
@@ -107,6 +144,16 @@ def build_pdf_extraction_plan(
         "converted_markdown_path": converted_path,
         "converted_markdown_pdf_sha256": source_sha if reused else None,
         "converted_markdown_sha256": converted_sha,
+        "converted_markdown_page_markers": (
+            int(reused_page_count)
+            if reused_page_count is not None
+            else None
+        ),
+        "converted_markdown_characters": (
+            int(reused_character_count)
+            if reused_character_count is not None
+            else None
+        ),
         "estimated_pages": int(estimated_pages),
         "estimated_chunks": (
             max(1, math.ceil(estimated_characters / 1800))
@@ -216,8 +263,15 @@ def validate_markdown_for_import(
     match = _SHA_MARKER.search(markdown_text[:4000])
     if match is None or match.group(1).casefold() != expected_pdf_sha256.casefold():
         raise PdfExtractionStrategyError("converted_markdown_pdf_sha256_mismatch")
-    pages = [(1, _strip_markdown_metadata(markdown_text))]
-    quality = assess_text_quality(pages, estimated_pages=1)
+    pages = _markdown_pages(markdown_text)
+    estimated_pages = max(
+        (page_number for page_number, _text in pages),
+        default=len(pages),
+    )
+    quality = assess_text_quality(
+        pages,
+        estimated_pages=estimated_pages,
+    )
     if quality["score"] < MIN_MARKDOWN_SCORE or quality["hard_failure"]:
         raise PdfExtractionStrategyError("converted_markdown_quality_below_threshold")
     return quality
@@ -249,6 +303,12 @@ def extraction_plan_fingerprint(plan: dict[str, Any]) -> str:
             str(plan.get("converted_markdown_sha256") or ""),
             str(plan.get("extraction_ready") or ""),
             str(plan.get("estimated_chunks") or 0),
+            str(plan.get("chapter_count") or 0),
+            str(
+                plan.get("page_marker_count")
+                or plan.get("converted_markdown_page_markers")
+                or 0
+            ),
             ",".join(
                 str(item.get("code") or "")
                 for item in plan.get("blockers") or []
@@ -296,6 +356,35 @@ def _repeated_line_ratio(texts: list[str]) -> float:
     repeated = {line for line, count in occurrences.items() if count >= max(2, len(texts) // 2)}
     total_lines = sum(len(lines) for lines in page_lines)
     return sum(len(lines.intersection(repeated)) for lines in page_lines) / max(total_lines, 1)
+
+
+def _markdown_pages(markdown_text: str) -> list[tuple[int, str]]:
+    matches = list(_PDF_PAGE_MARKER.finditer(markdown_text))
+    if not matches:
+        return [
+            (
+                1,
+                _strip_markdown_metadata(markdown_text),
+            )
+        ]
+
+    pages: list[tuple[int, str]] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = (
+            matches[index + 1].start()
+            if index + 1 < len(matches)
+            else len(markdown_text)
+        )
+        pages.append(
+            (
+                int(match.group(1)),
+                _strip_markdown_metadata(
+                    markdown_text[start:end]
+                ),
+            )
+        )
+    return pages
 
 
 def _strip_markdown_metadata(text: str) -> str:
