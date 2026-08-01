@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -11,7 +12,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
+from uuid import uuid4
 
 from app.core.database import connect_readonly_sqlite
 from app.core.paths import DATA_DIR, DATA_PROJECT_ROOT, DEFAULT_DB_PATH
@@ -29,6 +31,12 @@ from app.services import (
     zotero_selected_book_preview_service,
 )
 from app.services.library import document_deletion_service
+from app.services.import_operation_journal import (
+    SCHEMA_VERSION as IMPORT_JOURNAL_SCHEMA_VERSION,
+    ImportOperationJournal,
+    ImportOperationJournalStore,
+    JournalConflictError,
+)
 
 
 DELETE_CONFIRMATION_TTL_SECONDS = document_deletion_service.PREVIEW_TTL_SECONDS
@@ -46,6 +54,8 @@ _IMPORT_CONFIRMATIONS: dict[
 ] = {}
 _IMPORT_IN_PROGRESS: set[str] = set()
 _IMPORT_COMPLETIONS: dict[str, "ImportCompletion"] = {}
+_PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ChatToolError(RuntimeError):
@@ -96,6 +106,7 @@ class ZoteroImportConfirmation:
     zotero_attachment_key: str
     item_type: str
     source_revision_fingerprint: str
+    source_pdf_sha256: str
     confirmation_token_fingerprint: str
     previewed_at: str
     title: str
@@ -117,6 +128,7 @@ class ImportCompletion:
 class ChatToolRuntime:
     db_path: Path = DEFAULT_DB_PATH
     data_dir: Path = DATA_DIR
+    import_journal_dir: Path | None = None
     inbox_root: Path | None = None
     deletion_runtime: document_deletion_service.DeletionRuntime | None = None
     classify_pdf: Callable[..., dict[str, Any]] | None = None
@@ -147,6 +159,22 @@ class ChatToolRuntime:
             db_path=self.db_path,
             data_dir=self.data_dir,
         )
+
+    def resolved_import_journal_dir(self) -> Path:
+        if self.import_journal_dir is not None:
+            return Path(self.import_journal_dir).resolve(strict=False)
+        return (
+            Path(self.data_dir).resolve(strict=False)
+            / "import_operation_journal"
+        )
+
+
+def _import_journal_store(
+    runtime: ChatToolRuntime,
+) -> ImportOperationJournalStore:
+    return ImportOperationJournalStore(
+        runtime.resolved_import_journal_dir()
+    )
 
 
 def list_library(
@@ -792,6 +820,9 @@ def register_zotero_selected_book_import_preview(
     source_revision_fingerprint = str(
         source_revision.get("fingerprint") or ""
     ).strip()
+    source_pdf_sha256 = str(
+        selected.get("pdf_sha256") or ""
+    ).strip()
 
     try:
         document_type = (
@@ -809,6 +840,7 @@ def register_zotero_selected_book_import_preview(
         not item_key
         or not attachment_key
         or not source_revision_fingerprint
+        or _SHA256_HEX_RE.fullmatch(source_pdf_sha256) is None
         or not bool(preview.get("extraction_ready"))
         or int(preview.get("estimated_chunks") or 0) <= 0
         or bool(preview.get("blockers"))
@@ -850,6 +882,7 @@ def register_zotero_selected_book_import_preview(
         zotero_attachment_key=attachment_key,
         item_type=item_type,
         source_revision_fingerprint=source_revision_fingerprint,
+        source_pdf_sha256=source_pdf_sha256,
         confirmation_token_fingerprint=token_fingerprint,
         previewed_at=str(preview_audit.get("previewed_at") or ""),
         title=str(item.get("title") or ""),
@@ -887,6 +920,543 @@ def register_zotero_selected_book_import_preview(
     }
 
 
+class _ImportReceiptPersistError(RuntimeError):
+    def __init__(self, *, writes_performed: bool | None) -> None:
+        super().__init__("import receipt persistence failed")
+        self.writes_performed = writes_performed
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _stable_sha256(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _local_source_revision_fingerprint(
+    record: ImportConfirmation,
+) -> str:
+    return _stable_sha256(
+        {
+            "source_mtime_ns": int(record.source_mtime_ns),
+            "source_sha256": record.source_sha256,
+            "source_size": int(record.source_size),
+        }
+    )
+
+
+def _local_transaction_fingerprint(
+    record: ImportConfirmation,
+    *,
+    token_digest: str,
+    source_revision_fingerprint: str,
+) -> str:
+    return _stable_sha256(
+        {
+            "confirmation_token_digest": token_digest,
+            "document_type": record.document_type,
+            "operation_type": "import_document",
+            "source_pdf_sha256": record.source_sha256,
+            "source_revision_fingerprint": source_revision_fingerprint,
+            "title": record.title,
+        }
+    )
+
+
+def _new_import_journal(
+    *,
+    record: ImportConfirmation | ZoteroImportConfirmation,
+    token_digest: str,
+) -> tuple[ImportOperationJournal, dict[str, Any] | None]:
+    now = _utc_now()
+    import_audit: dict[str, Any] | None = None
+    if isinstance(record, ZoteroImportConfirmation):
+        source_revision_fingerprint = record.source_revision_fingerprint
+        source_pdf_sha256 = record.source_pdf_sha256
+        import_audit = _zotero_import_audit(record)
+        transaction_fingerprint = str(
+            import_audit["transaction_fingerprint"]
+        )
+        zotero_item_key = record.zotero_item_key
+        zotero_attachment_key = record.zotero_attachment_key
+    else:
+        source_revision_fingerprint = (
+            _local_source_revision_fingerprint(record)
+        )
+        source_pdf_sha256 = record.source_sha256
+        transaction_fingerprint = _local_transaction_fingerprint(
+            record,
+            token_digest=token_digest,
+            source_revision_fingerprint=source_revision_fingerprint,
+        )
+        zotero_item_key = ""
+        zotero_attachment_key = ""
+
+    return (
+        ImportOperationJournal(
+            schema_version=IMPORT_JOURNAL_SCHEMA_VERSION,
+            operation_id=uuid4().hex,
+            operation_type="import_document",
+            confirmation_token_digest=token_digest,
+            transaction_fingerprint=transaction_fingerprint,
+            source_revision_fingerprint=source_revision_fingerprint,
+            title=record.title,
+            zotero_item_key=zotero_item_key,
+            zotero_attachment_key=zotero_attachment_key,
+            source_pdf_sha256=source_pdf_sha256,
+            owner_process_id=os.getpid(),
+            owner_process_started_at=_PROCESS_STARTED_AT,
+            owner_thread_id=threading.get_ident(),
+            started_at=now,
+            updated_at=now,
+            heartbeat_at=now,
+            revision=0,
+            status="accepted",
+            stage="confirmation_accepted",
+            writes_performed=None,
+            document_id=None,
+            chunk_count=0,
+            error=None,
+            rollback=None,
+            warnings=[],
+            completion_receipt=None,
+        ),
+        import_audit,
+    )
+
+
+def _resolve_import_journal(
+    store: ImportOperationJournalStore,
+    token_digest: str,
+) -> ImportOperationJournal | None:
+    try:
+        return store.resolve_by_token_digest(token_digest)
+    except JournalConflictError as exc:
+        raise ChatToolError(
+            "chat_import_journal_conflict",
+            "Multiple durable records exist for this confirmed import.",
+            status_code=409,
+            details={"safe_to_retry": False},
+        ) from exc
+
+
+def _resolve_import_journal_outcome(
+    journal: ImportOperationJournal,
+) -> dict[str, Any]:
+    if journal.status == "committed":
+        receipt = dict(journal.completion_receipt or {})
+        response = receipt.get("response")
+        if receipt.get("kind") != "success" or not isinstance(
+            response, Mapping
+        ):
+            raise ChatToolError(
+                "chat_import_journal_receipt_invalid",
+                "The durable import receipt is invalid.",
+                status_code=500,
+                details={"safe_to_retry": False},
+            )
+        replay = dict(response)
+        replay.update(
+            {
+                "already_completed": True,
+                "replayed_receipt": True,
+                "operation_in_progress": False,
+            }
+        )
+        return replay
+
+    if journal.status == "failed":
+        receipt = dict(journal.completion_receipt or {})
+        if receipt.get("kind") != "failure":
+            raise ChatToolError(
+                "chat_import_journal_receipt_invalid",
+                "The durable import failure receipt is invalid.",
+                status_code=500,
+                details={"safe_to_retry": False},
+            )
+        details = dict(receipt.get("details") or {})
+        details.update(
+            {
+                "already_completed": True,
+                "replayed_receipt": True,
+                "operation_in_progress": False,
+                "safe_to_retry": False,
+            }
+        )
+        raise ChatToolError(
+            str(receipt.get("error_code") or "import_document_failed"),
+            str(receipt.get("message") or "The confirmed import failed."),
+            status_code=int(receipt.get("status_code") or 500),
+            details=details,
+        )
+
+    if journal.status in {"accepted", "running"}:
+        return _import_in_progress_response(journal)
+
+    if journal.status == "orphaned":
+        raise ChatToolError(
+            "chat_import_operation_orphaned",
+            "The confirmed import owner ended without a terminal receipt.",
+            status_code=409,
+            details={
+                "safe_to_retry": False,
+                "writes_performed": journal.writes_performed,
+            },
+        )
+
+    raise ChatToolError(
+        "chat_import_journal_status_invalid",
+        "The durable import status is invalid.",
+        status_code=500,
+        details={"safe_to_retry": False},
+    )
+
+
+class _JournalStageRecorder:
+    def __init__(
+        self,
+        store: ImportOperationJournalStore,
+        journal: ImportOperationJournal,
+    ) -> None:
+        self.store = store
+        self.current_journal = journal
+
+    def __call__(
+        self,
+        stage: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        current = self.current_journal
+        changes: dict[str, Any] = {
+            "status": "running",
+            "stage": str(stage),
+            "heartbeat_at": _utc_now(),
+        }
+        document_id = metadata.get("document_id")
+        if (
+            isinstance(document_id, int)
+            and not isinstance(document_id, bool)
+            and document_id > 0
+        ):
+            changes["document_id"] = document_id
+        chunk_count = metadata.get("chunk_count")
+        if (
+            isinstance(chunk_count, int)
+            and not isinstance(chunk_count, bool)
+            and chunk_count >= 0
+        ):
+            changes["chunk_count"] = chunk_count
+        if isinstance(metadata.get("writes_performed"), bool):
+            changes["writes_performed"] = metadata["writes_performed"]
+        if stage == "rollback_started":
+            changes["rollback"] = {"attempted": True}
+        elif stage == "rollback_completed":
+            changes["rollback"] = {
+                "attempted": True,
+                "completed": metadata.get("rollback_completed") is True,
+            }
+        warning_codes = metadata.get("warning_codes")
+        if isinstance(warning_codes, list):
+            changes["warnings"] = [
+                {"code": str(code)[:128]}
+                for code in warning_codes
+                if str(code).strip()
+            ]
+        self.current_journal = self.store.update(
+            current.operation_id,
+            expected_revision=current.revision,
+            expected_status=current.status,
+            **changes,
+        )
+
+
+def _journal_stage_callback(
+    store: ImportOperationJournalStore,
+    journal: ImportOperationJournal,
+) -> _JournalStageRecorder:
+    return _JournalStageRecorder(store, journal)
+
+
+def _normalize_committed_import_result(
+    result: dict[str, Any],
+    *,
+    record: ImportConfirmation | ZoteroImportConfirmation,
+) -> dict[str, Any]:
+    invalid = not isinstance(result, dict) or result.get("status") != "committed"
+    if not isinstance(result, dict):
+        result = {}
+    document_id = result.get("document_id")
+    chunk_count = result.get("chunk_count", result.get("inserted_chunks"))
+    title = result.get("title")
+    document_type = result.get("document_type")
+    invalid = invalid or not (
+        isinstance(document_id, int)
+        and not isinstance(document_id, bool)
+        and document_id > 0
+        and isinstance(chunk_count, int)
+        and not isinstance(chunk_count, bool)
+        and chunk_count > 0
+        and isinstance(title, str)
+        and bool(title.strip())
+        and isinstance(document_type, str)
+        and bool(document_type.strip())
+    )
+    writes_performed = result.get("writes_performed")
+    if not isinstance(writes_performed, bool):
+        writes_performed = any(
+            result.get(field) is True
+            for field in (
+                "production_data_modified",
+                "fts_write_performed",
+                "vector_store_write_performed",
+                "derived_index_publish_performed",
+            )
+        )
+    if (
+        writes_performed is False
+        and isinstance(record, ImportConfirmation)
+        and not invalid
+    ):
+        writes_performed = True
+    invalid = invalid or writes_performed is not True
+    if invalid:
+        raise ChatToolError(
+            "import_result_contract_invalid",
+            "The importer returned an invalid committed result.",
+            status_code=500,
+            details={
+                "writes_performed": (
+                    writes_performed
+                    if isinstance(writes_performed, bool)
+                    else None
+                ),
+                "safe_to_retry": False,
+            },
+        )
+    return {
+        "status": "committed",
+        "document_id": document_id,
+        "title": title.strip(),
+        "document_type": document_type.strip(),
+        "chunk_count": chunk_count,
+        "error_code": result.get("error_code"),
+        "writes_performed": True,
+    }
+
+
+def _success_import_response(
+    normalized: dict[str, Any],
+    *,
+    record: ImportConfirmation | ZoteroImportConfirmation,
+) -> dict[str, Any]:
+    return {
+        "status": "committed",
+        "document_id": normalized["document_id"],
+        "title": normalized["title"],
+        "document_type": normalized["document_type"],
+        "chunk_count": normalized["chunk_count"],
+        "duplicate_status": (
+            record.duplicate_status
+            if isinstance(record, ZoteroImportConfirmation)
+            else "not_detected"
+        ),
+        "error_code": normalized.get("error_code"),
+        "already_completed": False,
+        "replayed_receipt": False,
+        "operation_in_progress": False,
+        "token_consumed": True,
+        "writes_performed": True,
+        "safe_to_retry": False,
+    }
+
+
+_SAFE_FAILURE_DETAIL_FIELDS = frozenset(
+    {
+        "writes_performed",
+        "rollback",
+        "rollback_attempted",
+        "rollback_completed",
+        "error_stage",
+        "document_id",
+        "chunk_count",
+        "production_data_modified",
+        "derived_index_publish_performed",
+        "safe_to_retry",
+        "warnings",
+    }
+)
+
+
+def _safe_failure_details(details: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key in _SAFE_FAILURE_DETAIL_FIELDS:
+        value = details.get(key)
+        if key == "rollback" and isinstance(value, dict):
+            safe[key] = {
+                nested: bool(value[nested])
+                for nested in ("attempted", "completed")
+                if isinstance(value.get(nested), bool)
+            }
+        elif key == "warnings" and isinstance(value, list):
+            safe[key] = [
+                text
+                for item in value[:50]
+                for text in [str(item).strip()]
+                if re.fullmatch(r"[A-Za-z0-9_.:]{1,128}", text)
+            ]
+        elif key in {
+            "writes_performed",
+            "rollback_attempted",
+            "rollback_completed",
+            "production_data_modified",
+            "derived_index_publish_performed",
+            "safe_to_retry",
+        } and isinstance(value, bool):
+            safe[key] = value
+        elif key == "document_id" and (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+        ):
+            safe[key] = value
+        elif key == "chunk_count" and (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0
+        ):
+            safe[key] = value
+        elif key == "error_stage" and isinstance(value, str):
+            text = value.strip()
+            if re.fullmatch(r"[A-Za-z0-9_.:]{1,128}", text):
+                safe[key] = text
+    return safe
+
+
+def _safe_failure_message(error: ChatToolError) -> str:
+    message = " ".join(str(error).split()).strip()
+    if (
+        not message
+        or re.search(r"[A-Za-z]:[\\/]", message)
+        or re.search(r"(?:^|\s)/(?:[^\s/]+/)+", message)
+        or len(message) > 300
+    ):
+        return "The confirmed import failed."
+    return message
+
+
+def _persist_failed_import_receipt(
+    *,
+    store: ImportOperationJournalStore,
+    journal: ImportOperationJournal,
+    record: ImportConfirmation | ZoteroImportConfirmation,
+    error: ChatToolError,
+    exception_type: str | None = None,
+) -> ImportOperationJournal:
+    details = _safe_failure_details(dict(error.details))
+    details["error_stage"] = journal.stage
+    details["safe_to_retry"] = False
+    writes_performed = details.get("writes_performed")
+    if not isinstance(writes_performed, bool):
+        writes_performed = journal.writes_performed
+    if writes_performed is not True and any(
+        details.get(key) is True
+        for key in (
+            "production_data_modified",
+            "derived_index_publish_performed",
+        )
+    ):
+        writes_performed = True
+    document_id = details.get("document_id", journal.document_id)
+    if not (
+        isinstance(document_id, int)
+        and not isinstance(document_id, bool)
+        and document_id > 0
+    ):
+        document_id = journal.document_id
+    chunk_count = details.get("chunk_count", journal.chunk_count)
+    if not (
+        isinstance(chunk_count, int)
+        and not isinstance(chunk_count, bool)
+        and chunk_count >= 0
+    ):
+        chunk_count = journal.chunk_count
+    rollback = details.get("rollback")
+    if not isinstance(rollback, dict):
+        attempted = details.get("rollback_attempted")
+        completed = details.get("rollback_completed")
+        rollback = (
+            {
+                "attempted": bool(attempted),
+                "completed": bool(completed),
+            }
+            if isinstance(attempted, bool) or isinstance(completed, bool)
+            else None
+        )
+    message = _safe_failure_message(error)
+    public_response = {
+        "status": "failed",
+        "document_id": document_id,
+        "title": record.title,
+        "document_type": record.document_type,
+        "chunk_count": chunk_count,
+        "duplicate_status": (
+            record.duplicate_status
+            if isinstance(record, ZoteroImportConfirmation)
+            else "not_detected"
+        ),
+        "error_code": error.error_code,
+        "already_completed": False,
+        "replayed_receipt": False,
+        "operation_in_progress": False,
+        "token_consumed": True,
+        "writes_performed": writes_performed,
+        "safe_to_retry": False,
+    }
+    receipt = {
+        "kind": "failure",
+        "error_code": error.error_code,
+        "message": message,
+        "status_code": int(error.status_code),
+        "details": details,
+        "public_response": public_response,
+    }
+    warnings = details.get("warnings")
+    journal_warnings = (
+        [{"code": str(item)[:128]} for item in warnings]
+        if isinstance(warnings, list)
+        else list(journal.warnings)
+    )
+    return store.update(
+        journal.operation_id,
+        expected_revision=journal.revision,
+        expected_status=journal.status,
+        status="failed",
+        stage="receipt_persisted",
+        heartbeat_at=_utc_now(),
+        writes_performed=writes_performed,
+        document_id=document_id,
+        chunk_count=chunk_count,
+        error={
+            "error_code": error.error_code,
+            "message": message,
+            "status_code": int(error.status_code),
+            "error_stage": journal.stage,
+            "exception_type": exception_type or type(error).__name__,
+        },
+        rollback=rollback,
+        warnings=journal_warnings,
+        completion_receipt=receipt,
+    )
+
+
 def import_document(
     *,
     confirmation_token: str,
@@ -905,155 +1475,242 @@ def import_document(
         )
 
     actual_runtime = runtime or ChatToolRuntime()
+    token_digest = _token_digest(confirmation_token)
+    store = _import_journal_store(actual_runtime)
 
-    (
-        token_digest,
-        record,
-        replay,
-        concurrent_owner,
-    ) = _begin_import_confirmation(
-        confirmation_token
-    )
+    existing = _resolve_import_journal(store, token_digest)
+    if existing is not None:
+        return _resolve_import_journal_outcome(existing)
 
-    if replay is not None:
-        return replay
-
+    record, concurrent_owner = _claim_import_owner(token_digest)
     if concurrent_owner:
-        resolution, resolved = _wait_for_import_resolution(
-            token_digest
+        return _wait_for_import_resolution(
+            token_digest,
+            store=store,
+            record=record,
         )
-        if resolution == "completed":
-            assert resolved is not None
-            return resolved
-        if resolution == "failed":
-            raise ChatToolError(
-                "chat_import_owner_failed",
-                (
-                    "The original confirmed import "
-                    "failed before producing a receipt."
-                ),
-                status_code=409,
-                details={
-                    "safe_to_retry": False,
-                    "token_consumed": True,
-                    "writes_performed": None,
-                },
-            )
-        return _import_in_progress_response(record)
 
     assert record is not None
+    journal: ImportOperationJournal | None = None
+    cached_response: dict[str, Any] | None = None
+    import_audit: dict[str, Any] | None = None
 
     try:
-        if isinstance(record, ZoteroImportConfirmation):
-            runtime_db = Path(
-                actual_runtime.db_path
-            ).resolve(strict=False)
-            runtime_data = Path(
-                actual_runtime.data_dir
-            ).resolve(strict=False)
-
-            if (
-                runtime_db != record.target_db_path
-                or runtime_data != record.target_data_dir
-            ):
+        journal, import_audit = _new_import_journal(
+            record=record,
+            token_digest=token_digest,
+        )
+        try:
+            journal = store.create(journal)
+        except JournalConflictError:
+            _release_import_owner(token_digest)
+            existing = _resolve_import_journal(store, token_digest)
+            if existing is None:
                 raise ChatToolError(
-                    "zotero_import_target_changed",
-                    (
-                        "The Zotero import target "
-                        "changed after preview."
-                    ),
+                    "chat_import_journal_conflict",
+                    "The confirmed import journal is conflicted.",
                     status_code=409,
+                    details={"safe_to_retry": False},
+                )
+            return _resolve_import_journal_outcome(existing)
+        except Exception as exc:
+            existing = _resolve_import_journal(store, token_digest)
+            _release_import_owner(token_digest)
+            if existing is not None:
+                return _resolve_import_journal_outcome(existing)
+            raise ChatToolError(
+                "chat_import_journal_create_failed",
+                "The confirmed import could not be durably accepted.",
+                status_code=500,
+                details={
+                    "safe_to_retry": False,
+                    "writes_performed": False,
+                },
+            ) from exc
+
+        stage_callback = _journal_stage_callback(store, journal)
+
+        try:
+            if isinstance(record, ZoteroImportConfirmation):
+                runtime_db = Path(
+                    actual_runtime.db_path
+                ).resolve(strict=False)
+                runtime_data = Path(
+                    actual_runtime.data_dir
+                ).resolve(strict=False)
+
+                if (
+                    runtime_db != record.target_db_path
+                    or runtime_data != record.target_data_dir
+                ):
+                    raise ChatToolError(
+                        "zotero_import_target_changed",
+                        "The Zotero import target changed after preview.",
+                        status_code=409,
+                    )
+
+                if actual_runtime.commit_zotero_import is None:
+                    result = _commit_confirmed_zotero_import(
+                        record=record,
+                        runtime=actual_runtime,
+                        stage_callback=stage_callback,
+                        import_audit=import_audit,
+                    )
+                else:
+                    stage_callback("body_import_started", {})
+                    result = actual_runtime.commit_zotero_import(
+                        record=record,
+                        runtime=actual_runtime,
+                    )
+            else:
+                _validate_import_source_unchanged(record)
+                stage_callback("body_import_started", {})
+                importer = (
+                    actual_runtime.commit_import
+                    or _commit_confirmed_import
+                )
+                result = importer(
+                    record=record,
+                    runtime=actual_runtime,
                 )
 
-            importer = (
-                actual_runtime.commit_zotero_import
-                or _commit_confirmed_zotero_import
+            normalized = _normalize_committed_import_result(
+                result,
+                record=record,
             )
-        else:
-            _validate_import_source_unchanged(record)
-
-            importer = (
-                actual_runtime.commit_import
-                or _commit_confirmed_import
+            journal = stage_callback.current_journal
+            if journal.stage != "final_verification_completed":
+                stage_callback(
+                    "final_verification_completed",
+                    {
+                        "document_id": normalized["document_id"],
+                        "chunk_count": normalized["chunk_count"],
+                        "writes_performed": True,
+                    },
+                )
+            journal = stage_callback.current_journal
+            response = _success_import_response(
+                normalized,
+                record=record,
             )
+            receipt = {
+                "kind": "success",
+                "response": dict(response),
+            }
+            try:
+                journal = store.update(
+                    journal.operation_id,
+                    expected_revision=journal.revision,
+                    expected_status=journal.status,
+                    status="committed",
+                    stage="receipt_persisted",
+                    heartbeat_at=_utc_now(),
+                    writes_performed=True,
+                    document_id=normalized["document_id"],
+                    chunk_count=normalized["chunk_count"],
+                    completion_receipt=receipt,
+                )
+            except Exception as exc:
+                raise _ImportReceiptPersistError(
+                    writes_performed=True,
+                ) from exc
+            cached_response = dict(response)
+            return response
 
-        result = importer(
-            record=record,
-            runtime=actual_runtime,
+        except _ImportReceiptPersistError as exc:
+            raise ChatToolError(
+                "chat_import_receipt_persist_failed",
+                "The import completed but its durable receipt could not be saved.",
+                status_code=500,
+                details={
+                    "writes_performed": exc.writes_performed,
+                    "safe_to_retry": False,
+                },
+            ) from exc
+        except ChatToolError as exc:
+            journal = stage_callback.current_journal
+            try:
+                journal = _persist_failed_import_receipt(
+                    store=store,
+                    journal=journal,
+                    record=record,
+                    error=exc,
+                )
+            except Exception as persist_exc:
+                raise ChatToolError(
+                    "chat_import_receipt_persist_failed",
+                    "The import failure receipt could not be saved.",
+                    status_code=500,
+                    details={
+                        "writes_performed": journal.writes_performed,
+                        "safe_to_retry": False,
+                    },
+                ) from persist_exc
+            raise
+        except Exception as exc:
+            journal = stage_callback.current_journal
+            wrapped = ChatToolError(
+                "import_document_failed",
+                "Search could not import the confirmed document.",
+                status_code=500,
+                details={
+                    "writes_performed": journal.writes_performed,
+                    "safe_to_retry": False,
+                },
+            )
+            try:
+                journal = _persist_failed_import_receipt(
+                    store=store,
+                    journal=journal,
+                    record=record,
+                    error=wrapped,
+                    exception_type=type(exc).__name__,
+                )
+            except Exception as persist_exc:
+                raise ChatToolError(
+                    "chat_import_receipt_persist_failed",
+                    "The import failure receipt could not be saved.",
+                    status_code=500,
+                    details={
+                        "writes_performed": journal.writes_performed,
+                        "safe_to_retry": False,
+                    },
+                ) from persist_exc
+            raise wrapped from exc
+        except BaseException as exc:
+            journal = stage_callback.current_journal
+            try:
+                store.update(
+                    journal.operation_id,
+                    expected_revision=journal.revision,
+                    expected_status=journal.status,
+                    status="orphaned",
+                    heartbeat_at=_utc_now(),
+                    error={
+                        "error_code": "import_owner_aborted",
+                        "exception_type": type(exc).__name__,
+                        "error_stage": journal.stage,
+                    },
+                    completion_receipt=None,
+                )
+            except Exception:
+                pass
+            raise
+    finally:
+        _release_import_owner(
+            token_digest,
+            response=cached_response,
         )
-
-        duplicate_status = (
-            record.duplicate_status
-            if isinstance(record, ZoteroImportConfirmation)
-            else "not_detected"
-        )
-
-        response = {
-            "status": str(
-                result.get("status")
-                or "unknown"
-            ),
-            "document_id": result.get(
-                "document_id"
-            ),
-            "title": str(
-                result.get("title")
-                or record.title
-            ),
-            "document_type": (
-                record.document_type
-            ),
-            "chunk_count": int(
-                result.get("chunk_count")
-                or result.get("inserted_chunks")
-                or 0
-            ),
-            "duplicate_status": (
-                duplicate_status
-            ),
-            "error_code": result.get(
-                "error_code"
-            ),
-            "already_completed": False,
-            "replayed_receipt": False,
-            "operation_in_progress": False,
-            "token_consumed": True,
-            "writes_performed": result.get(
-                "writes_performed"
-            ),
-            "safe_to_retry": False,
-        }
-
-    except ChatToolError:
-        _fail_import_confirmation(
-            token_digest
-        )
-        raise
-
-    except Exception as exc:
-        _fail_import_confirmation(
-            token_digest
-        )
-        raise ChatToolError(
-            "import_document_failed",
-            (
-                "Search could not import "
-                "the confirmed document."
-            ),
-            status_code=500,
-        ) from exc
-
-    _complete_import_confirmation(
-        token_digest,
-        response,
-    )
-
-    return response
 
 def _commit_confirmed_zotero_import(
     *,
     record: ZoteroImportConfirmation,
     runtime: ChatToolRuntime,
+    stage_callback: (
+        zotero_direction_b_import_service.DirectionBStageCallback
+        | None
+    ) = None,
+    import_audit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         production = _zotero_runtime_is_production(runtime)
@@ -1064,7 +1721,10 @@ def _commit_confirmed_zotero_import(
                 .commit_selected_book_import_to_production(
                     preview_token=record.preview_token,
                     body_importer=runtime.zotero_body_importer,
-                    import_audit=_zotero_import_audit(record),
+                    import_audit=(
+                        import_audit or _zotero_import_audit(record)
+                    ),
+                    stage_callback=stage_callback,
                 )
             )
 
@@ -1075,7 +1735,10 @@ def _commit_confirmed_zotero_import(
                 db_path=runtime.db_path,
                 data_dir=runtime.data_dir,
                 body_importer=runtime.zotero_body_importer,
-                import_audit=_zotero_import_audit(record),
+                import_audit=(
+                    import_audit or _zotero_import_audit(record)
+                ),
+                stage_callback=stage_callback,
             )
         )
     except (
@@ -1153,7 +1816,7 @@ def _commit_confirmed_import(
             }
         )
         import_job_id = str(preview["import_job_id"])
-        return chat_pdf_production_import_service.import_document_to_production(
+        result = chat_pdf_production_import_service.import_document_to_production(
             import_job_id=import_job_id,
             document_type=record.document_type,
             note_files=[record.inbox_root / Path(item["relative_path"]) for item in record.note_sources] if record.inbox_root else [],
@@ -1161,6 +1824,13 @@ def _commit_confirmed_import(
             allow_production=True,
             runtime=production_runtime,
         )
+        if isinstance(result, dict) and result.get("status") == "completed":
+            result = dict(result)
+            result["status"] = "committed"
+            result.setdefault("title", record.title)
+            result.setdefault("document_type", record.document_type)
+            result["writes_performed"] = True
+        return result
     except Exception:
         if created_copy and destination.is_file():
             destination.unlink()
@@ -1234,37 +1904,17 @@ def _consume_delete_confirmation(token: str) -> DeleteConfirmation:
     return record
 
 
-def _begin_import_confirmation(
-    token: str,
+def _claim_import_owner(
+    digest: str,
 ) -> tuple[
-    str,
     ImportConfirmation | ZoteroImportConfirmation | None,
-    dict[str, Any] | None,
     bool,
 ]:
-    digest = _token_digest(token)
-
     with _TOKEN_LOCK:
         _purge_expired_tokens()
-
-        completion = _IMPORT_COMPLETIONS.get(
-            digest
-        )
-
-        if completion is not None:
-            replay = dict(
-                completion.response
-            )
-            replay["already_completed"] = True
-            replay["replayed_receipt"] = True
-
-            return digest, None, replay, False
-
         if digest in _IMPORT_IN_PROGRESS:
             return (
-                digest,
                 _IMPORT_CONFIRMATIONS.get(digest),
-                None,
                 True,
             )
 
@@ -1288,15 +1938,16 @@ def _begin_import_confirmation(
         _IMPORT_IN_PROGRESS.add(
             digest
         )
-
-        return digest, record, None, False
+        return record, False
 
 
 def _wait_for_import_resolution(
     digest: str,
     *,
+    store: ImportOperationJournalStore,
+    record: ImportConfirmation | ZoteroImportConfirmation | None,
     timeout_seconds: float | None = None,
-) -> tuple[str, dict[str, Any] | None]:
+) -> dict[str, Any]:
     timeout = (
         IMPORT_CONCURRENT_WAIT_SECONDS
         if timeout_seconds is None
@@ -1308,22 +1959,34 @@ def _wait_for_import_resolution(
         while digest in _IMPORT_IN_PROGRESS:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return "in_progress", None
+                break
             _IMPORT_CONDITION.wait(remaining)
+        owner_still_running = digest in _IMPORT_IN_PROGRESS
 
-        completion = _IMPORT_COMPLETIONS.get(digest)
-        if completion is not None:
-            replay = dict(completion.response)
-            replay["already_completed"] = True
-            replay["replayed_receipt"] = True
-            replay["operation_in_progress"] = False
-            return "completed", replay
-
-        return "failed", None
+    journal = _resolve_import_journal(store, digest)
+    if journal is not None:
+        return _resolve_import_journal_outcome(journal)
+    if owner_still_running:
+        return _import_in_progress_response(record)
+    raise ChatToolError(
+        "chat_import_owner_failed",
+        "The original confirmed import ended before a durable record was created.",
+        status_code=409,
+        details={
+            "safe_to_retry": False,
+            "token_consumed": True,
+            "writes_performed": None,
+        },
+    )
 
 
 def _import_in_progress_response(
-    record: ImportConfirmation | ZoteroImportConfirmation | None,
+    record: (
+        ImportConfirmation
+        | ZoteroImportConfirmation
+        | ImportOperationJournal
+        | None
+    ),
 ) -> dict[str, Any]:
     duplicate_status = (
         record.duplicate_status
@@ -1335,7 +1998,9 @@ def _import_in_progress_response(
         "document_id": None,
         "title": str(record.title if record is not None else ""),
         "document_type": str(
-            record.document_type if record is not None else ""
+            getattr(record, "document_type", "")
+            if record is not None
+            else ""
         ),
         "chunk_count": 0,
         "duplicate_status": duplicate_status,
@@ -1349,9 +2014,10 @@ def _import_in_progress_response(
     }
 
 
-def _complete_import_confirmation(
+def _release_import_owner(
     digest: str,
-    response: dict[str, Any],
+    *,
+    response: dict[str, Any] | None = None,
 ) -> None:
     with _IMPORT_CONDITION:
         _IMPORT_CONFIRMATIONS.pop(
@@ -1361,29 +2027,16 @@ def _complete_import_confirmation(
         _IMPORT_IN_PROGRESS.discard(
             digest
         )
-        _IMPORT_COMPLETIONS[digest] = (
-            ImportCompletion(
-                response=dict(response),
-                expires_at=(
-                    time.monotonic()
-                    + IMPORT_COMPLETION_REPLAY_TTL_SECONDS
-                ),
+        if response is not None:
+            _IMPORT_COMPLETIONS[digest] = (
+                ImportCompletion(
+                    response=dict(response),
+                    expires_at=(
+                        time.monotonic()
+                        + IMPORT_COMPLETION_REPLAY_TTL_SECONDS
+                    ),
+                )
             )
-        )
-        _IMPORT_CONDITION.notify_all()
-
-
-def _fail_import_confirmation(
-    digest: str,
-) -> None:
-    with _IMPORT_CONDITION:
-        _IMPORT_CONFIRMATIONS.pop(
-            digest,
-            None,
-        )
-        _IMPORT_IN_PROGRESS.discard(
-            digest
-        )
         _IMPORT_CONDITION.notify_all()
 
 

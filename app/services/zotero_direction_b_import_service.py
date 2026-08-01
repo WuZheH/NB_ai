@@ -56,6 +56,36 @@ class DirectionBSelectedBookImportError(RuntimeError):
         self.details = details or {}
 
 
+DirectionBStageCallback = Callable[
+    [str, dict[str, Any]],
+    None,
+]
+
+
+def _emit_stage(
+    callback: DirectionBStageCallback | None,
+    stage: str,
+    **metadata: Any,
+) -> None:
+    allowed_metadata = {
+        "document_id",
+        "chunk_count",
+        "writes_performed",
+        "source_count",
+        "rollback_attempted",
+        "rollback_completed",
+        "warning_codes",
+    }
+    unexpected = set(metadata) - allowed_metadata
+    if unexpected:
+        raise ValueError(
+            "unsafe Direction-B stage metadata fields: "
+            + ", ".join(sorted(unexpected))
+        )
+    if callback is not None:
+        callback(stage, dict(metadata))
+
+
 @dataclass(frozen=True)
 class SelectedBookImportRuntime:
     db_path: Path
@@ -110,15 +140,42 @@ def _commit_selected_book_import(
     body_importer: Callable[..., dict[str, Any]] | None = None,
     import_audit: dict[str, Any] | None = None,
     now_ts: float | None = None,
+    stage_callback: DirectionBStageCallback | None = None,
 ) -> dict[str, Any]:
     with _DIRECTION_B_IMPORT_LOCK:
-        return _commit_selected_book_import_locked(
-            preview_token=preview_token,
-            runtime=runtime,
-            body_importer=body_importer,
-            import_audit=import_audit,
-            now_ts=now_ts,
-        )
+        try:
+            return _commit_selected_book_import_locked(
+                preview_token=preview_token,
+                runtime=runtime,
+                body_importer=body_importer,
+                import_audit=import_audit,
+                now_ts=now_ts,
+                stage_callback=stage_callback,
+            )
+        except DirectionBSelectedBookImportError as exc:
+            details = dict(exc.details)
+            details.setdefault("error_stage", "preflight")
+            details.setdefault("writes_performed", False)
+            details.setdefault("rollback_attempted", False)
+            details.setdefault("rollback_completed", False)
+            raise DirectionBSelectedBookImportError(
+                code=exc.code,
+                message=exc.message,
+                status_code=exc.status_code,
+                details=details,
+            ) from exc
+        except Exception as exc:
+            raise DirectionBSelectedBookImportError(
+                code="zotero_direction_b_import_failed",
+                message="Direction-B selected-book import failed.",
+                status_code=500,
+                details={
+                    "error_stage": "preflight",
+                    "writes_performed": False,
+                    "rollback_attempted": False,
+                    "rollback_completed": False,
+                },
+            ) from exc
 
 
 def _commit_selected_book_import_locked(
@@ -128,6 +185,7 @@ def _commit_selected_book_import_locked(
     body_importer: Callable[..., dict[str, Any]] | None = None,
     import_audit: dict[str, Any] | None = None,
     now_ts: float | None = None,
+    stage_callback: DirectionBStageCallback | None = None,
 ) -> dict[str, Any]:
     path = Path(runtime.db_path).resolve(strict=False)
     data_root = Path(runtime.data_dir).resolve(strict=False)
@@ -350,9 +408,40 @@ def _commit_selected_book_import_locked(
     publish_attempted = False
     retain_db_rollback = False
     retain_derived_rollback = False
+    writes_performed = False
+    production_data_modified = False
+    derived_index_publish_performed = False
+    rollback_attempted = False
+    rollback_completed = False
+    current_stage = "confirmation_accepted"
+    document_id: int | None = None
+    chunk_count = 0
+    callback_warning_codes: list[str] = []
+
+    def forward_stage(
+        stage: str,
+        **metadata: Any,
+    ) -> None:
+        nonlocal current_stage
+        current_stage = stage
+        _emit_stage(
+            stage_callback,
+            stage,
+            **metadata,
+        )
 
     try:
         try:
+            forward_stage(
+                "body_import_started",
+                writes_performed=False,
+            )
+            # Once control enters the body importer, a failed call may
+            # have performed partial writes before raising. Track that
+            # conservatively so failure receipts never claim a clean
+            # no-write outcome without rollback evidence.
+            writes_performed = True
+            production_data_modified = production
             if body_importer is None:
                 body_result = _default_selected_book_body_importer(
                     preview=preview,
@@ -377,6 +466,17 @@ def _commit_selected_book_import_locked(
             ) from exc
 
         document_id = _required_document_id(body_result)
+        chunk_count = int(
+            body_result.get("chunk_count")
+            or body_result.get("inserted_chunks")
+            or 0
+        )
+        forward_stage(
+            "body_import_completed",
+            document_id=document_id,
+            chunk_count=chunk_count,
+            writes_performed=True,
+        )
 
         try:
             if production:
@@ -446,7 +546,21 @@ def _commit_selected_book_import_locked(
                     status_code=500,
                 )
 
+        forward_stage(
+            "staging_snapshot_created",
+            document_id=document_id,
+            chunk_count=chunk_count,
+            writes_performed=True,
+            source_count=int(note_result.get("source_count") or 0),
+        )
+
         try:
+            forward_stage(
+                "staging_fts_started",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=True,
+            )
             fts_sync = (
                 fts_index_service
                 .upsert_document_retrieval_fts(
@@ -469,11 +583,26 @@ def _commit_selected_book_import_locked(
                     "unsafe FTS sync result"
                 )
 
+            forward_stage(
+                "staging_fts_completed",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=True,
+            )
+
             passage_source_ids = (
                 _passage_source_ids_for_document(
                     post_write_snapshot,
                     document_id,
                 )
+            )
+
+            forward_stage(
+                "staging_vector_started",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=True,
+                source_count=len(passage_source_ids),
             )
 
             passage_vector_sync: dict[str, Any] = {
@@ -554,6 +683,7 @@ def _commit_selected_book_import_locked(
                 "full_rebuild_performed": False,
                 "orphan_delete_performed": False,
             }
+
             if (
                 staging_zotero_note_vector_path
                 / note_vector_index.MANIFEST_NAME
@@ -602,6 +732,17 @@ def _commit_selected_book_import_locked(
                         "unsafe native note vector sync result"
                     )
 
+            forward_stage(
+                "staging_vector_completed",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=True,
+                source_count=(
+                    len(passage_source_ids)
+                    + int(note_result.get("source_count") or 0)
+                ),
+            )
+
         except DirectionBSelectedBookImportError:
             raise
         except Exception as exc:
@@ -620,6 +761,33 @@ def _commit_selected_book_import_locked(
                 status_code=500,
             ) from exc
 
+        _verify_staging_final_state(
+            runtime=runtime,
+            post_write_snapshot=post_write_snapshot,
+            expected_db_sha256=after_db_sha256,
+            document_id=document_id,
+            passage_source_ids=passage_source_ids,
+            expected_native_note_vector_count=int(
+                native_note_vector_sync.get(
+                    "scoped_entry_count_after"
+                )
+                or 0
+            ),
+            staging_fts_index=staging_fts_index,
+            staging_fts_manifest=staging_fts_manifest,
+            staging_vector_store=staging_vector_store,
+            staging_vector_manifest=staging_vector_manifest,
+            staging_zotero_note_vector_path=(
+                staging_zotero_note_vector_path
+            ),
+        )
+
+        forward_stage(
+            "derived_backup_started",
+            document_id=document_id,
+            chunk_count=chunk_count,
+            writes_performed=True,
+        )
         derived_state = _backup_derived_artifacts(
             rollback_root=derived_rollback_root,
             fts_index_path=fts_index_path,
@@ -630,9 +798,21 @@ def _commit_selected_book_import_locked(
                 zotero_note_vector_path
             ),
         )
+        forward_stage(
+            "derived_backup_completed",
+            document_id=document_id,
+            chunk_count=chunk_count,
+            writes_performed=True,
+        )
 
         publish_attempted = True
         try:
+            forward_stage(
+                "publish_started",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=True,
+            )
             _publish_staged_derived_indexes(
                 staging_fts_index=staging_fts_index,
                 staging_fts_manifest=staging_fts_manifest,
@@ -648,6 +828,13 @@ def _commit_selected_book_import_locked(
                 zotero_note_vector_path=(
                     zotero_note_vector_path
                 ),
+            )
+            derived_index_publish_performed = True
+            forward_stage(
+                "publish_completed",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=True,
             )
         except Exception as exc:
             raise DirectionBSelectedBookImportError(
@@ -665,6 +852,12 @@ def _commit_selected_book_import_locked(
                 status_code=500,
             ) from exc
 
+        forward_stage(
+            "final_verification_started",
+            document_id=document_id,
+            chunk_count=chunk_count,
+            writes_performed=True,
+        )
         if production:
             _verify_production_final_state(
                 runtime=runtime,
@@ -677,6 +870,12 @@ def _commit_selected_book_import_locked(
                     or 0
                 ),
             )
+        forward_stage(
+            "final_verification_completed",
+            document_id=document_id,
+            chunk_count=chunk_count,
+            writes_performed=True,
+        )
 
         return {
             "status": "committed",
@@ -693,11 +892,7 @@ def _commit_selected_book_import_locked(
                 body_result.get("document_type")
                 or document_type
             ),
-            "chunk_count": int(
-                body_result.get("chunk_count")
-                or body_result.get("inserted_chunks")
-                or 0
-            ),
+            "chunk_count": chunk_count,
             "body_import": dict(body_result),
             "note_import": dict(note_result),
             "fts_sync": dict(fts_sync),
@@ -718,7 +913,8 @@ def _commit_selected_book_import_locked(
             "persistence_scope": (
                 runtime.persistence_scope
             ),
-            "production_data_modified": production,
+            "writes_performed": True,
+            "production_data_modified": True,
             "production_schema_migrated": False,
             "zotero_db_write_performed": False,
             "vector_store_write_performed": bool(
@@ -744,6 +940,24 @@ def _commit_selected_book_import_locked(
     except Exception as exc:
         derived_rollback_exc: Exception | None = None
         db_rollback_exc: Exception | None = None
+        failure_stage = current_stage
+        rollback_attempted = True
+        current_stage = "rollback_started"
+        try:
+            _emit_stage(
+                stage_callback,
+                "rollback_started",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=writes_performed,
+                rollback_attempted=True,
+                rollback_completed=False,
+            )
+        except Exception as callback_exc:
+            callback_warning_codes.append(
+                "rollback_started_callback_failed:"
+                + type(callback_exc).__name__
+            )
 
         if publish_attempted and derived_state is not None:
             try:
@@ -771,6 +985,56 @@ def _commit_selected_book_import_locked(
             db_rollback_exc = rollback_exc
             retain_db_rollback = True
 
+        rollback_completed = (
+            db_rollback_exc is None
+            and derived_rollback_exc is None
+        )
+        current_stage = "rollback_completed"
+        try:
+            _emit_stage(
+                stage_callback,
+                "rollback_completed",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=writes_performed,
+                rollback_attempted=True,
+                rollback_completed=rollback_completed,
+                warning_codes=callback_warning_codes,
+            )
+        except Exception as callback_exc:
+            callback_warning_codes.append(
+                "rollback_completed_callback_failed:"
+                + type(callback_exc).__name__
+            )
+
+        original_details = (
+            dict(exc.details)
+            if isinstance(exc, DirectionBSelectedBookImportError)
+            else {}
+        )
+        stable_details = dict(original_details)
+        stable_details.setdefault("error_stage", failure_stage)
+        stable_details.setdefault("writes_performed", writes_performed)
+        stable_details.setdefault(
+            "production_data_modified",
+            production_data_modified,
+        )
+        stable_details.setdefault("publish_attempted", publish_attempted)
+        stable_details.setdefault(
+            "derived_index_publish_performed",
+            derived_index_publish_performed,
+        )
+        stable_details["rollback_attempted"] = rollback_attempted
+        stable_details["rollback_completed"] = rollback_completed
+        if document_id is not None:
+            stable_details.setdefault("document_id", document_id)
+        stable_details.setdefault("chunk_count", chunk_count)
+        if callback_warning_codes:
+            stable_details.setdefault(
+                "warnings",
+                list(callback_warning_codes),
+            )
+
         if db_rollback_exc is not None:
             raise DirectionBSelectedBookImportError(
                 code=(
@@ -785,16 +1049,13 @@ def _commit_selected_book_import_locked(
                     "Direction-B database rollback failed."
                 ),
                 status_code=500,
-                details=(
-                    {
-                        "derived_rollback_failed": (
-                            derived_rollback_exc
-                            is not None
-                        )
-                    }
-                    if production
-                    else {}
-                ),
+                details={
+                    **stable_details,
+                    "derived_rollback_failed": (
+                        derived_rollback_exc is not None
+                    ),
+                    "rollback_completed": False,
+                },
             ) from db_rollback_exc
 
         if derived_rollback_exc is not None:
@@ -811,13 +1072,22 @@ def _commit_selected_book_import_locked(
                     "Direction-B derived index rollback failed."
                 ),
                 status_code=500,
+                details={
+                    **stable_details,
+                    "rollback_completed": False,
+                },
             ) from derived_rollback_exc
 
         if isinstance(
             exc,
             DirectionBSelectedBookImportError,
         ):
-            raise
+            raise DirectionBSelectedBookImportError(
+                code=exc.code,
+                message=exc.message,
+                status_code=exc.status_code,
+                details=stable_details,
+            ) from exc
 
         raise DirectionBSelectedBookImportError(
             code=(
@@ -832,6 +1102,7 @@ def _commit_selected_book_import_locked(
                 "Direction-B selected-book import failed."
             ),
             status_code=500,
+            details=stable_details,
         ) from exc
 
     finally:
@@ -864,6 +1135,7 @@ def commit_selected_book_import_to_temp_db(
     body_importer: Callable[..., dict[str, Any]] | None = None,
     import_audit: dict[str, Any] | None = None,
     now_ts: float | None = None,
+    stage_callback: DirectionBStageCallback | None = None,
 ) -> dict[str, Any]:
     runtime = _make_temp_runtime(db_path, data_dir)
     if runtime.db_path == Path(DEFAULT_DB_PATH).resolve(strict=False):
@@ -878,6 +1150,7 @@ def commit_selected_book_import_to_temp_db(
         body_importer=body_importer,
         import_audit=import_audit,
         now_ts=now_ts,
+        stage_callback=stage_callback,
     )
 
 
@@ -887,6 +1160,7 @@ def commit_selected_book_import_to_production(
     body_importer: Callable[..., dict[str, Any]] | None = None,
     import_audit: dict[str, Any] | None = None,
     now_ts: float | None = None,
+    stage_callback: DirectionBStageCallback | None = None,
 ) -> dict[str, Any]:
     return _commit_selected_book_import(
         preview_token=preview_token,
@@ -894,6 +1168,7 @@ def commit_selected_book_import_to_production(
         body_importer=body_importer,
         import_audit=import_audit,
         now_ts=now_ts,
+        stage_callback=stage_callback,
     )
 
 
@@ -976,6 +1251,154 @@ def _native_note_fragments_for_document(
         document_ids=(document_id,),
         registry=registry,
     )
+
+
+def _verify_staging_final_state(
+    *,
+    runtime: SelectedBookImportRuntime,
+    post_write_snapshot: Path,
+    expected_db_sha256: str,
+    document_id: int,
+    passage_source_ids: list[str],
+    expected_native_note_vector_count: int,
+    staging_fts_index: Path,
+    staging_fts_manifest: Path,
+    staging_vector_store: Path,
+    staging_vector_manifest: Path,
+    staging_zotero_note_vector_path: Path,
+) -> None:
+    missing_components: list[str] = []
+    staging_targets = (
+        Path(staging_fts_index).resolve(strict=False),
+        Path(staging_fts_manifest).resolve(strict=False),
+        Path(staging_vector_store).resolve(strict=False),
+        Path(staging_vector_manifest).resolve(strict=False),
+        Path(staging_zotero_note_vector_path).resolve(strict=False),
+    )
+    production_targets = {
+        Path(runtime.fts_index_path).resolve(strict=False),
+        Path(runtime.fts_manifest_path).resolve(strict=False),
+        Path(runtime.vector_store_path).resolve(strict=False),
+        Path(runtime.vector_manifest_path).resolve(strict=False),
+        (
+            Path(runtime.data_dir).resolve(strict=False)
+            / "vector_store"
+            / "zotero_user_notes_v1"
+        ),
+    }
+    if any(target in production_targets for target in staging_targets):
+        missing_components.append("staging_target_is_production")
+
+    if not staging_fts_index.is_file():
+        missing_components.append("staging_fts_index")
+    if not staging_fts_manifest.is_file():
+        missing_components.append("staging_fts_manifest")
+    fts_manifest: dict[str, Any] | None = None
+    if staging_fts_manifest.is_file():
+        try:
+            parsed = json.loads(
+                staging_fts_manifest.read_text(encoding="utf-8")
+            )
+            if not isinstance(parsed, dict):
+                raise TypeError("manifest is not an object")
+            fts_manifest = parsed
+        except Exception:
+            missing_components.append("staging_fts_manifest_invalid")
+    if (
+        fts_manifest is not None
+        and str(fts_manifest.get("production_db_sha256") or "").lower()
+        != expected_db_sha256.lower()
+    ):
+        missing_components.append("staging_fts_db_revision")
+    if staging_fts_index.is_file() and fts_manifest is not None:
+        try:
+            status = fts_status_service.get_index_status(
+                index_path=staging_fts_index,
+                manifest_path=staging_fts_manifest,
+                production_db_path=post_write_snapshot,
+                zotero_snapshot_path=(
+                    Path(runtime.data_dir)
+                    / "zotero"
+                    / "snapshot"
+                    / "zotero.sqlite"
+                ),
+                notes_root=Path(runtime.data_dir) / "notes",
+            )
+            if status.get("status") in {"missing", "corrupt"}:
+                missing_components.append("staging_fts_unreadable")
+        except Exception:
+            missing_components.append("staging_fts_unreadable")
+
+    if _sha256_file(post_write_snapshot) != expected_db_sha256:
+        missing_components.append("staging_database_revision")
+
+    if not staging_vector_store.is_dir():
+        missing_components.append("staging_vector_store")
+    if not staging_vector_manifest.is_file():
+        missing_components.append("staging_vector_manifest")
+    if staging_vector_manifest.is_file():
+        try:
+            vector_manifest = json.loads(
+                staging_vector_manifest.read_text(encoding="utf-8")
+            )
+            if not isinstance(vector_manifest, dict):
+                raise TypeError("manifest is not an object")
+        except Exception:
+            missing_components.append("staging_vector_manifest_invalid")
+    if staging_vector_store.is_dir():
+        try:
+            impact = vector_store_service.inspect_document_vector_impact(
+                passage_source_ids=passage_source_ids,
+                object_keys=[],
+                store_path=staging_vector_store,
+            )
+            if int(impact.get("passage_vector_count") or 0) != len(
+                passage_source_ids
+            ):
+                missing_components.append("staging_passage_vectors")
+        except Exception:
+            missing_components.append("staging_vector_store_unreadable")
+
+    if staging_zotero_note_vector_path.exists():
+        note_manifest = (
+            staging_zotero_note_vector_path
+            / note_vector_index.MANIFEST_NAME
+        )
+        if not note_manifest.is_file():
+            missing_components.append("staging_zotero_note_manifest")
+        else:
+            try:
+                impact = (
+                    note_vector_index
+                    .inspect_zotero_note_vector_document_impact(
+                        document_id,
+                        index_dir=staging_zotero_note_vector_path,
+                    )
+                )
+                if int(
+                    impact.get("document_entry_count") or 0
+                ) != int(expected_native_note_vector_count):
+                    missing_components.append(
+                        "staging_zotero_note_vectors"
+                    )
+            except Exception:
+                missing_components.append(
+                    "staging_zotero_note_vectors_unreadable"
+                )
+
+    if missing_components:
+        raise DirectionBSelectedBookImportError(
+            code="zotero_direction_b_staging_validation_failed",
+            message="Direction-B staging validation failed.",
+            status_code=500,
+            details={
+                "error_stage": "staging_validation",
+                "writes_performed": True,
+                "rollback_attempted": False,
+                "rollback_completed": False,
+                "missing_components": sorted(set(missing_components)),
+            },
+        )
 
 
 def _backup_derived_artifacts(
@@ -1132,6 +1555,7 @@ def _publish_staged_derived_indexes(
     os.replace(staging_fts_index, fts_index_path)
     os.replace(staging_fts_manifest, fts_manifest_path)
     if staging_vector_store.is_dir():
+        vector_store_path.parent.mkdir(parents=True, exist_ok=True)
         retired_store = staging_vector_store.parent / ".retired-lancedb"
         if vector_store_path.exists():
             os.replace(vector_store_path, retired_store)
@@ -1141,7 +1565,7 @@ def _publish_staged_derived_indexes(
             if retired_store.exists() and not vector_store_path.exists():
                 os.replace(retired_store, vector_store_path)
             raise
-        _remove_generated_tree(retired_store)
+        _best_effort_remove_generated_tree(retired_store)
     if staging_vector_manifest.is_file():
         vector_manifest_path.parent.mkdir(parents=True, exist_ok=True)
         os.replace(staging_vector_manifest, vector_manifest_path)

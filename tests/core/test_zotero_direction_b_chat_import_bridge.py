@@ -18,6 +18,7 @@ from app.services import (
     zotero_direction_b_import_service,
     zotero_selected_book_preview_service,
 )
+from app.services.import_operation_journal import ImportOperationJournalStore
 from app.services.retrieval import fts_index_service
 from scripts.migrations import (
     migrate_zotero_personal_notes_schema
@@ -34,23 +35,40 @@ def reset_chat_state():
 
 @pytest.fixture(autouse=True)
 def isolate_b4_derived_primitives(monkeypatch):
-    monkeypatch.setattr(
-        fts_index_service,
-        "upsert_document_retrieval_fts",
-        lambda **_kwargs: {
+    def fts_sync(**kwargs):
+        source_db_path = Path(kwargs["research_db_path"])
+        index_path = Path(kwargs["index_path"])
+        manifest_path = Path(kwargs["manifest_path"])
+        manifest_path.write_text(
+            "{\n"
+            f'  "production_db_sha256": "{hashlib.sha256(source_db_path.read_bytes()).hexdigest()}",\n'
+            f'  "index_content_hash": "{hashlib.sha256(index_path.read_bytes()).hexdigest()}"\n'
+            "}\n",
+            encoding="utf-8",
+        )
+        return {
             "status": "ready",
             "full_rebuild_performed": False,
             "production_db_write_performed": False,
-        },
+        }
+
+    monkeypatch.setattr(
+        fts_index_service,
+        "upsert_document_retrieval_fts",
+        fts_sync,
     )
     monkeypatch.setattr(
         vector_store_service,
         "sync_affected_passage_embeddings",
-        lambda *_args, **_kwargs: {
-            "scope": "affected_source_ids_only",
-            "full_rebuild_allowed": False,
-            "delete_orphans_allowed": False,
-            "lancedb_writes_performed": False,
+        lambda *_args, **kwargs: _fixture_passage_sync(**kwargs),
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "inspect_document_vector_impact",
+        lambda *, passage_source_ids, **_kwargs: {
+            "status": "ok",
+            "passage_vector_count": len(passage_source_ids),
+            "object_vector_count": 0,
         },
     )
     monkeypatch.setattr(
@@ -78,6 +96,23 @@ def make_temp_data_dir(root: Path) -> Path:
         encoding="utf-8",
     )
     return root
+
+
+def _fixture_passage_sync(
+    *,
+    store_path,
+    manifest_path,
+    **_kwargs,
+):
+    Path(store_path).mkdir(parents=True, exist_ok=True)
+    Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(manifest_path).write_text("{}\n", encoding="utf-8")
+    return {
+        "scope": "affected_source_ids_only",
+        "full_rebuild_allowed": False,
+        "delete_orphans_allowed": False,
+        "lancedb_writes_performed": True,
+    }
 
 
 def make_temp_db(
@@ -480,7 +515,7 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
         "replayed_receipt": False,
         "operation_in_progress": False,
         "token_consumed": True,
-        "writes_performed": None,
+        "writes_performed": True,
         "safe_to_retry": False,
     }
 
@@ -613,7 +648,7 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
         "replayed_receipt": True,
         "operation_in_progress": False,
         "token_consumed": True,
-        "writes_performed": None,
+            "writes_performed": True,
         "safe_to_retry": False,
     }
 
@@ -1243,6 +1278,7 @@ def test_chat_bridge_allows_production_preview_registration(
             },
             "selected_attachment": {
                 "zotero_attachment_key": "PDFKEY1",
+                "pdf_sha256": "a" * 64,
                 "page_count": 12,
             },
             "annotation_count": 1,
@@ -2322,16 +2358,20 @@ def _install_production_shaped_runtime(
     def passage_sync(
         *_args,
         source_db_path,
+        store_path,
+        manifest_path,
         **_kwargs,
     ):
         observed["passage_source"] = Path(
             source_db_path
         ).resolve(strict=False)
+        Path(store_path).mkdir(parents=True, exist_ok=True)
+        Path(manifest_path).write_text("{}\n", encoding="utf-8")
         return {
             "scope": "affected_source_ids_only",
             "full_rebuild_allowed": False,
             "delete_orphans_allowed": False,
-            "lancedb_writes_performed": False,
+            "lancedb_writes_performed": True,
         }
 
     def note_sync(
@@ -2657,6 +2697,511 @@ def test_production_db_rollback_failure_has_priority_and_retains_backup(
     for item in retained:
         item.unlink()
 
+
+_DIRECTION_B_FORWARD_STAGES = [
+    "body_import_started",
+    "body_import_completed",
+    "staging_snapshot_created",
+    "staging_fts_started",
+    "staging_fts_completed",
+    "staging_vector_started",
+    "staging_vector_completed",
+    "derived_backup_started",
+    "derived_backup_completed",
+    "publish_started",
+    "publish_completed",
+    "final_verification_started",
+    "final_verification_completed",
+]
+
+
+def _direction_temp_case(tmp_path, monkeypatch):
+    db_path = make_temp_db(tmp_path / "db")
+    data_dir = make_temp_data_dir(tmp_path / "data")
+    install_constant_preview(monkeypatch)
+    return db_path, data_dir
+
+
+def _direction_commit(
+    db_path,
+    data_dir,
+    *,
+    callback=None,
+    importer=body_importer,
+):
+    return (
+        zotero_direction_b_import_service
+        .commit_selected_book_import_to_temp_db(
+            preview_token="p" * 40,
+            db_path=db_path,
+            data_dir=data_dir,
+            body_importer=importer,
+            stage_callback=callback,
+        )
+    )
+
+
+def test_direction_b_stage_callback_success_order(tmp_path, monkeypatch):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    stages = []
+    result = _direction_commit(
+        db_path,
+        data_dir,
+        callback=lambda stage, metadata: stages.append((stage, metadata)),
+    )
+    assert result["status"] == "committed"
+    assert [stage for stage, _metadata in stages] == (
+        _DIRECTION_B_FORWARD_STAGES
+    )
+    assert all(
+        not any(
+            forbidden in metadata
+            for forbidden in (
+                "preview_token",
+                "confirmation_token",
+                "pdf_path",
+                "db_path",
+                "staging_path",
+                "traceback",
+            )
+        )
+        for _stage, metadata in stages
+    )
+
+
+def test_direction_b_failure_emits_rollback_stages(tmp_path, monkeypatch):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    stages = []
+
+    def failing_importer(**_kwargs):
+        raise RuntimeError("fixture body failure")
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ):
+        _direction_commit(
+            db_path,
+            data_dir,
+            callback=lambda stage, _metadata: stages.append(stage),
+            importer=failing_importer,
+        )
+    assert stages == [
+        "body_import_started",
+        "rollback_started",
+        "rollback_completed",
+    ]
+
+
+def test_stage_callback_failure_before_body_prevents_body_write(
+    tmp_path,
+    monkeypatch,
+):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    calls = 0
+
+    def importer(**kwargs):
+        nonlocal calls
+        calls += 1
+        return body_importer(**kwargs)
+
+    def callback(stage, _metadata):
+        if stage == "body_import_started":
+            raise RuntimeError("fixture callback failure")
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ):
+        _direction_commit(
+            db_path,
+            data_dir,
+            callback=callback,
+            importer=importer,
+        )
+    assert calls == 0
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM documents"
+        ).fetchone()[0] == 0
+
+
+def test_stage_callback_failure_after_body_restores_database(
+    tmp_path,
+    monkeypatch,
+):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+
+    def callback(stage, _metadata):
+        if stage == "body_import_completed":
+            raise RuntimeError("fixture callback failure")
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        _direction_commit(db_path, data_dir, callback=callback)
+    assert error.value.details["rollback_completed"] is True
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM documents"
+        ).fetchone()[0] == 0
+
+
+def _install_fts_mutation(monkeypatch, mutation):
+    original = fts_index_service.upsert_document_retrieval_fts
+
+    def wrapper(**kwargs):
+        result = original(**kwargs)
+        mutation(kwargs)
+        return result
+
+    monkeypatch.setattr(
+        fts_index_service,
+        "upsert_document_retrieval_fts",
+        wrapper,
+    )
+
+
+def test_missing_staging_fts_directory_blocks_publish(tmp_path, monkeypatch):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+
+    def remove_staging_fts(kwargs):
+        Path(kwargs["index_path"]).unlink()
+        Path(kwargs["manifest_path"]).unlink()
+        Path(kwargs["index_path"]).parent.rmdir()
+
+    _install_fts_mutation(monkeypatch, remove_staging_fts)
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        _direction_commit(db_path, data_dir)
+    assert error.value.code == "zotero_direction_b_staging_validation_failed"
+    assert "staging_fts_index" in error.value.details["missing_components"]
+
+
+def test_missing_staging_fts_manifest_blocks_publish(tmp_path, monkeypatch):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    _install_fts_mutation(
+        monkeypatch,
+        lambda kwargs: Path(kwargs["manifest_path"]).unlink(),
+    )
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        _direction_commit(db_path, data_dir)
+    assert "staging_fts_manifest" in error.value.details["missing_components"]
+
+
+def test_invalid_staging_fts_manifest_blocks_publish(tmp_path, monkeypatch):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    _install_fts_mutation(
+        monkeypatch,
+        lambda kwargs: Path(kwargs["manifest_path"]).write_text(
+            "not-json", encoding="utf-8"
+        ),
+    )
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        _direction_commit(db_path, data_dir)
+    assert (
+        "staging_fts_manifest_invalid"
+        in error.value.details["missing_components"]
+    )
+
+
+def test_missing_staging_vector_manifest_blocks_publish(
+    tmp_path,
+    monkeypatch,
+):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    original = vector_store_service.sync_affected_passage_embeddings
+
+    def wrapper(*args, **kwargs):
+        result = original(*args, **kwargs)
+        Path(kwargs["manifest_path"]).unlink()
+        return result
+
+    monkeypatch.setattr(
+        vector_store_service,
+        "sync_affected_passage_embeddings",
+        wrapper,
+    )
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        _direction_commit(db_path, data_dir)
+    assert (
+        "staging_vector_manifest"
+        in error.value.details["missing_components"]
+    )
+
+
+def test_staging_db_sha_mismatch_blocks_publish(tmp_path, monkeypatch):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+
+    def mutate_snapshot(kwargs):
+        with sqlite3.connect(kwargs["research_db_path"]) as connection:
+            connection.execute(
+                "UPDATE documents SET title = title || ' changed'"
+            )
+            connection.commit()
+
+    _install_fts_mutation(monkeypatch, mutate_snapshot)
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        _direction_commit(db_path, data_dir)
+    assert (
+        "staging_database_revision"
+        in error.value.details["missing_components"]
+    )
+
+
+def test_staging_validation_failure_restores_db(tmp_path, monkeypatch):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    before = db_path.read_bytes()
+    _install_fts_mutation(
+        monkeypatch,
+        lambda kwargs: Path(kwargs["manifest_path"]).unlink(),
+    )
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ):
+        _direction_commit(db_path, data_dir)
+    assert db_path.read_bytes() == before
+
+
+def test_staging_validation_failure_does_not_touch_production_indexes(
+    tmp_path,
+    monkeypatch,
+):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    production_fts = data_dir / "search_index" / "retrieval_fts_v1.db"
+    production_manifest = (
+        data_dir / "search_index" / "retrieval_fts_v1_manifest.json"
+    )
+    before = (production_fts.read_bytes(), production_manifest.read_bytes())
+    _install_fts_mutation(
+        monkeypatch,
+        lambda kwargs: Path(kwargs["manifest_path"]).unlink(),
+    )
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ):
+        _direction_commit(db_path, data_dir)
+    assert (production_fts.read_bytes(), production_manifest.read_bytes()) == before
+
+
+def _chat_direction_case(
+    tmp_path,
+    monkeypatch,
+    *,
+    importer=body_importer,
+):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=db_path,
+        data_dir=data_dir,
+        import_journal_dir=tmp_path / "journals",
+        zotero_body_importer=importer,
+    )
+    bridge = chat_tool_service.register_zotero_selected_book_import_preview(
+        preview_token="p" * 40,
+        runtime=runtime,
+    )
+    return runtime, bridge["confirmation_token"]
+
+
+def _chat_journal(runtime, token):
+    return ImportOperationJournalStore(
+        runtime.resolved_import_journal_dir()
+    ).resolve_by_token_digest(chat_tool_service._token_digest(token))
+
+
+def test_publish_failure_is_persisted_as_failed_receipt(tmp_path, monkeypatch):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("fixture publish failure")
+        ),
+    )
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    journal = _chat_journal(runtime, token)
+    assert journal.status == "failed"
+    assert journal.completion_receipt["kind"] == "failure"
+    assert journal.error["error_stage"] == "rollback_completed"
+
+
+def test_final_verification_failure_is_persisted_as_failed_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    original = ImportOperationJournalStore.update
+
+    def fail_final(self, operation_id, **kwargs):
+        if kwargs.get("stage") == "final_verification_started":
+            raise RuntimeError("fixture final verification journal failure")
+        return original(self, operation_id, **kwargs)
+
+    monkeypatch.setattr(ImportOperationJournalStore, "update", fail_final)
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    assert _chat_journal(runtime, token).status == "failed"
+
+
+def test_rollback_failure_details_are_replayable(tmp_path, monkeypatch):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("fixture publish failure")
+        ),
+    )
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_restore_rollback_copy",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("fixture rollback failure")
+        ),
+    )
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    chat_tool_service.reset_chat_tool_state_for_tests()
+    with pytest.raises(chat_tool_service.ChatToolError) as replay:
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    assert replay.value.details["rollback_completed"] is False
+    assert replay.value.details["replayed_receipt"] is True
+
+
+def test_cleanup_failure_does_not_change_committed_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_remove_generated_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PermissionError("fixture cleanup failure")
+        ),
+    )
+    first = chat_tool_service.import_document(
+        confirmation_token=token, confirmed=True, runtime=runtime
+    )
+    replay = chat_tool_service.import_document(
+        confirmation_token=token, confirmed=True, runtime=runtime
+    )
+    assert first["status"] == "committed"
+    assert replay["status"] == "committed"
+    assert _chat_journal(runtime, token).status == "committed"
+
+
+@pytest.mark.parametrize("fault_stage", _DIRECTION_B_FORWARD_STAGES)
+def test_direction_b_forward_fault_is_failed_and_replayed_without_reimport(
+    tmp_path,
+    monkeypatch,
+    fault_stage,
+):
+    importer_calls = 0
+
+    def importer(**kwargs):
+        nonlocal importer_calls
+        importer_calls += 1
+        return body_importer(**kwargs)
+
+    runtime, token = _chat_direction_case(
+        tmp_path,
+        monkeypatch,
+        importer=importer,
+    )
+    original_emit = zotero_direction_b_import_service._emit_stage
+
+    def fault_emit(callback, stage, **metadata):
+        original_emit(callback, stage, **metadata)
+        if stage == fault_stage:
+            raise RuntimeError("fixture forward stage fault")
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_emit_stage",
+        fault_emit,
+    )
+    with pytest.raises(chat_tool_service.ChatToolError) as first:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+    journal = _chat_journal(runtime, token)
+    assert journal.status == "failed"
+    assert journal.completion_receipt["kind"] == "failure"
+    calls_after_first = importer_calls
+    chat_tool_service.reset_chat_tool_state_for_tests()
+    with pytest.raises(chat_tool_service.ChatToolError) as replay:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+    assert replay.value.error_code == first.value.error_code
+    assert replay.value.details["replayed_receipt"] is True
+    assert importer_calls == calls_after_first
+
+
+@pytest.mark.parametrize("fault_stage", _DIRECTION_B_FORWARD_STAGES)
+def test_direction_b_forward_stage_fault_injection(
+    tmp_path,
+    monkeypatch,
+    fault_stage,
+):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    before_db = db_path.read_bytes()
+    publish_calls = 0
+    real_publish = (
+        zotero_direction_b_import_service._publish_staged_derived_indexes
+    )
+
+    def publish(**kwargs):
+        nonlocal publish_calls
+        publish_calls += 1
+        return real_publish(**kwargs)
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        publish,
+    )
+
+    def callback(stage, _metadata):
+        if stage == fault_stage:
+            raise RuntimeError("fixture stage failure")
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        _direction_commit(
+            db_path,
+            data_dir,
+            callback=callback,
+        )
+    assert error.value.details["rollback_attempted"] is True
+    assert db_path.read_bytes() == before_db
+    if _DIRECTION_B_FORWARD_STAGES.index(fault_stage) < (
+        _DIRECTION_B_FORWARD_STAGES.index("publish_started")
+    ):
+        assert publish_calls == 0
 
 def test_production_derived_rollback_failure_restores_db_and_retains_backup(
     tmp_path,

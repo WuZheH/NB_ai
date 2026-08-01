@@ -5,9 +5,11 @@ import threading
 import time
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +21,7 @@ from app.services import chat_tool_service, pdf_import_classifier_service
 from app.services import chat_pdf_production_import_service
 from app.services.pdf_backend_service import load_fitz_backend
 from app.services.library import document_deletion_service
+from app.services.import_operation_journal import ImportOperationJournalStore
 
 
 @pytest.fixture(autouse=True)
@@ -184,7 +187,13 @@ def test_import_preview_reads_inbox_without_writing_and_commit_uses_confirmation
     def commit(*, record, runtime):
         committed.append(record)
         assert runtime.data_dir == tmp_path / "data"
-        return {"status": "committed", "document_id": 9, "title": record.title, "chunk_count": 6}
+        return {
+            "status": "committed",
+            "document_id": 9,
+            "title": record.title,
+            "document_type": record.document_type,
+            "chunk_count": 6,
+        }
 
     runtime = chat_tool_service.ChatToolRuntime(
         db_path=tmp_path / "data" / "db.sqlite",
@@ -322,6 +331,7 @@ def test_concurrent_same_token_waits_and_replays_owner_receipt(
             "status": "committed",
             "document_id": 9,
             "title": record.title,
+            "document_type": record.document_type,
             "chunk_count": 6,
         }
 
@@ -392,10 +402,10 @@ def test_concurrent_same_token_waits_and_replays_owner_receipt(
     assert failures == []
     assert owner_result["status"] == "committed"
     assert owner_result["already_completed"] is False
-    assert duplicate_result["status"] == "committed"
-    assert duplicate_result["already_completed"] is True
-    assert duplicate_result["replayed_receipt"] is True
-    assert duplicate_result["operation_in_progress"] is False
+    assert duplicate_result["status"] == "in_progress"
+    assert duplicate_result["already_completed"] is False
+    assert duplicate_result["replayed_receipt"] is False
+    assert duplicate_result["operation_in_progress"] is True
     assert commit_calls == ["Fixture"]
 
 
@@ -618,7 +628,8 @@ def test_default_chat_import_routes_to_production_orchestrator(tmp_path: Path, m
     assert len(calls) == 1
     assert calls[0]["allow_production"] is True
     assert calls[0]["runtime"] is sentinel
-    assert result["status"] == "completed"
+    assert result["status"] == "committed"
+    assert result["writes_performed"] is True
 
 def test_canonical_runtime_resolver_uses_real_constants():
     runtime = chat_tool_service.ChatToolRuntime(db_path=chat_tool_service.DEFAULT_DB_PATH, data_dir=chat_tool_service.DATA_DIR)
@@ -636,3 +647,572 @@ def test_noncanonical_chat_tool_runtime_rejects_default_import_route(tmp_path: P
                 page_count=1, expires_at=9999999999.0,
             ), runtime=runtime,
         )
+
+
+def _journal_local_case(
+    tmp_path: Path,
+    *,
+    importer,
+) -> tuple[chat_tool_service.ChatToolRuntime, str, Path]:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True)
+    pdf = inbox / "fixture.pdf"
+    pdf.write_bytes(b"%PDF-1.4\njournal fixture")
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=tmp_path / "data" / "db.sqlite",
+        data_dir=tmp_path / "data",
+        import_journal_dir=tmp_path / "journals",
+        inbox_root=inbox,
+        classify_pdf=lambda _path, **_kwargs: {
+            "title": "Journal Fixture",
+            "document_type": "paper",
+            "object_import_mode": "full_document",
+            "duplicate": False,
+            "signals": {"page_count": 1},
+        },
+        commit_import=importer,
+    )
+    preview = chat_tool_service.import_preview(runtime=runtime)
+    return runtime, preview["confirmation_token"], pdf
+
+
+def _valid_local_result(record) -> dict[str, object]:
+    return {
+        "status": "committed",
+        "document_id": 41,
+        "title": record.title,
+        "document_type": record.document_type,
+        "chunk_count": 3,
+    }
+
+
+def _journal_for_token(
+    runtime: chat_tool_service.ChatToolRuntime,
+    token: str,
+):
+    return ImportOperationJournalStore(
+        runtime.resolved_import_journal_dir()
+    ).resolve_by_token_digest(chat_tool_service._token_digest(token))
+
+
+def test_committed_journal_replays_after_memory_reset(tmp_path: Path) -> None:
+    calls = 0
+
+    def importer(*, record, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _valid_local_result(record)
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    first = chat_tool_service.import_document(
+        confirmation_token=token, confirmed=True, runtime=runtime
+    )
+    chat_tool_service.reset_chat_tool_state_for_tests()
+    replay = chat_tool_service.import_document(
+        confirmation_token=token, confirmed=True, runtime=runtime
+    )
+    assert first["already_completed"] is False
+    assert replay["already_completed"] is True
+    assert replay["replayed_receipt"] is True
+    assert calls == 1
+
+
+def test_failed_journal_replays_after_memory_reset(tmp_path: Path) -> None:
+    calls = 0
+
+    def importer(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise chat_tool_service.ChatToolError(
+            "fixture_import_failed",
+            "Fixture import failed safely.",
+            status_code=502,
+            details={
+                "writes_performed": False,
+                "rollback_attempted": True,
+                "rollback_completed": True,
+            },
+        )
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    with pytest.raises(chat_tool_service.ChatToolError) as first:
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    chat_tool_service.reset_chat_tool_state_for_tests()
+    with pytest.raises(chat_tool_service.ChatToolError) as replay:
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    assert first.value.error_code == "fixture_import_failed"
+    assert replay.value.error_code == "fixture_import_failed"
+    assert replay.value.details["replayed_receipt"] is True
+    assert replay.value.details["safe_to_retry"] is False
+    assert calls == 1
+
+
+def _create_nonterminal_journal(
+    runtime: chat_tool_service.ChatToolRuntime,
+    token: str,
+):
+    digest = chat_tool_service._token_digest(token)
+    record = chat_tool_service._IMPORT_CONFIRMATIONS[digest]
+    journal, _audit = chat_tool_service._new_import_journal(
+        record=record,
+        token_digest=digest,
+    )
+    store = ImportOperationJournalStore(
+        runtime.resolved_import_journal_dir()
+    )
+    return store, store.create(journal)
+
+
+def test_running_journal_never_invokes_importer_after_reset(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def importer(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("importer must not run")
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    store, journal = _create_nonterminal_journal(runtime, token)
+    store.update(
+        journal.operation_id,
+        expected_revision=journal.revision,
+        expected_status="accepted",
+        status="running",
+        stage="body_import_started",
+        heartbeat_at=chat_tool_service._utc_now(),
+    )
+    chat_tool_service.reset_chat_tool_state_for_tests()
+    response = chat_tool_service.import_document(
+        confirmation_token=token, confirmed=True, runtime=runtime
+    )
+    assert response["status"] == "in_progress"
+    assert calls == 0
+
+
+def test_orphaned_journal_never_invokes_importer(tmp_path: Path) -> None:
+    calls = 0
+
+    def importer(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("importer must not run")
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    store, journal = _create_nonterminal_journal(runtime, token)
+    store.update(
+        journal.operation_id,
+        expected_revision=journal.revision,
+        expected_status="accepted",
+        status="orphaned",
+        error={
+            "error_code": "import_owner_aborted",
+            "exception_type": "SystemExit",
+            "error_stage": "confirmation_accepted",
+        },
+    )
+    chat_tool_service.reset_chat_tool_state_for_tests()
+    with pytest.raises(chat_tool_service.ChatToolError) as error:
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    assert error.value.error_code == "chat_import_operation_orphaned"
+    assert calls == 0
+
+
+def test_same_token_two_threads_invokes_importer_once_with_journal(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+    started = threading.Event()
+    release = threading.Event()
+
+    def importer(*, record, **_kwargs):
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(3)
+        return _valid_local_result(record)
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    results: list[dict[str, object]] = []
+    failures: list[BaseException] = []
+
+    def invoke() -> None:
+        try:
+            results.append(
+                chat_tool_service.import_document(
+                    confirmation_token=token, confirmed=True, runtime=runtime
+                )
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    first = threading.Thread(target=invoke)
+    second = threading.Thread(target=invoke)
+    first.start()
+    assert started.wait(2)
+    second.start()
+    time.sleep(0.05)
+    release.set()
+    first.join(3)
+    second.join(3)
+    assert failures == []
+    assert {result["status"] for result in results} <= {
+        "committed",
+        "in_progress",
+    }
+    assert calls == 1
+
+
+def test_base_exception_clears_in_memory_owner_and_marks_orphaned(
+    tmp_path: Path,
+) -> None:
+    def importer(**_kwargs):
+        raise KeyboardInterrupt()
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    digest = chat_tool_service._token_digest(token)
+    with pytest.raises(KeyboardInterrupt):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    assert digest not in chat_tool_service._IMPORT_IN_PROGRESS
+    assert _journal_for_token(runtime, token).status == "orphaned"
+
+
+def test_successful_import_persists_receipt_before_return(
+    tmp_path: Path,
+) -> None:
+    runtime, token, _pdf = _journal_local_case(
+        tmp_path,
+        importer=lambda *, record, **_kwargs: _valid_local_result(record),
+    )
+    response = chat_tool_service.import_document(
+        confirmation_token=token, confirmed=True, runtime=runtime
+    )
+    journal = _journal_for_token(runtime, token)
+    assert response["status"] == "committed"
+    assert journal.status == "committed"
+    assert journal.stage == "receipt_persisted"
+    assert journal.completion_receipt["kind"] == "success"
+
+
+def test_failed_import_persists_receipt_before_error(tmp_path: Path) -> None:
+    def importer(**_kwargs):
+        raise chat_tool_service.ChatToolError(
+            "fixture_failed",
+            "Fixture failed.",
+            details={"writes_performed": False},
+        )
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    journal = _journal_for_token(runtime, token)
+    assert journal.status == "failed"
+    assert journal.completion_receipt["kind"] == "failure"
+
+
+def test_receipt_write_failure_after_import_never_runs_importer_twice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def importer(*, record, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _valid_local_result(record)
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    original = ImportOperationJournalStore.update
+
+    def fail_committed(self, operation_id, **kwargs):
+        if kwargs.get("status") == "committed":
+            raise OSError("fixture receipt write failure")
+        return original(self, operation_id, **kwargs)
+
+    monkeypatch.setattr(ImportOperationJournalStore, "update", fail_committed)
+    with pytest.raises(chat_tool_service.ChatToolError) as error:
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    assert error.value.error_code == "chat_import_receipt_persist_failed"
+    replay = chat_tool_service.import_document(
+        confirmation_token=token, confirmed=True, runtime=runtime
+    )
+    assert replay["status"] == "in_progress"
+    assert calls == 1
+
+
+def test_duplicate_digest_journal_fails_closed(tmp_path: Path) -> None:
+    runtime, token, _pdf = _journal_local_case(
+        tmp_path,
+        importer=lambda *, record, **_kwargs: _valid_local_result(record),
+    )
+    _store, journal = _create_nonterminal_journal(runtime, token)
+    duplicate = replace(journal, operation_id=uuid4().hex)
+    duplicate_path = (
+        runtime.resolved_import_journal_dir()
+        / f"{duplicate.operation_id}.json"
+    )
+    duplicate_path.write_text(
+        json.dumps(duplicate.to_dict(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    with pytest.raises(chat_tool_service.ChatToolError) as error:
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+    assert error.value.error_code == "chat_import_journal_conflict"
+
+
+def test_raw_confirmation_token_never_appears_in_journal(
+    tmp_path: Path,
+) -> None:
+    runtime, token, _pdf = _journal_local_case(
+        tmp_path,
+        importer=lambda *, record, **_kwargs: _valid_local_result(record),
+    )
+    chat_tool_service.import_document(
+        confirmation_token=token, confirmed=True, runtime=runtime
+    )
+    payload = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in runtime.resolved_import_journal_dir().glob("*.json")
+    )
+    assert token not in payload
+
+
+def test_zotero_pdf_sha_is_bound_into_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "research.db"
+    db_path.write_bytes(b"fixture")
+    pdf_sha = "b" * 64
+    preview = {
+        "status": "ready",
+        "zotero_item": {
+            "zotero_item_key": "BOOK1",
+            "title": "Zotero Journal Fixture",
+            "item_type": "book",
+        },
+        "selected_attachment": {
+            "zotero_attachment_key": "PDF1",
+            "pdf_sha256": pdf_sha,
+            "page_count": 10,
+        },
+        "source_revision": {"fingerprint": "c" * 64},
+        "duplicate_check": {"duplicate_found": False},
+        "extraction_ready": True,
+        "estimated_chunks": 2,
+        "blockers": [],
+    }
+    monkeypatch.setattr(
+        chat_tool_service.zotero_selected_book_preview_service,
+        "resolve_selected_book_preview_token",
+        lambda *_args, **_kwargs: preview,
+    )
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=db_path,
+        data_dir=tmp_path / "data",
+        import_journal_dir=tmp_path / "journals",
+        commit_zotero_import=lambda *, record, **_kwargs: {
+            "status": "committed",
+            "document_id": 7,
+            "title": record.title,
+            "document_type": record.document_type,
+            "chunk_count": 2,
+            "writes_performed": True,
+        },
+    )
+    registered = chat_tool_service.register_zotero_selected_book_import_preview(
+        preview_token="fixture-preview",
+        runtime=runtime,
+    )
+    token = registered["confirmation_token"]
+    chat_tool_service.import_document(
+        confirmation_token=token, confirmed=True, runtime=runtime
+    )
+    assert _journal_for_token(runtime, token).source_pdf_sha256 == pdf_sha
+
+
+def test_local_pdf_revision_fingerprint_changes_on_source_change(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "fixture.pdf"
+    source.write_bytes(b"first")
+    first = chat_tool_service.ImportConfirmation(
+        source_path=source,
+        source_sha256=hashlib.sha256(b"first").hexdigest(),
+        source_size=5,
+        source_mtime_ns=1,
+        title="Fixture",
+        document_type="paper",
+        object_import_mode="full_document",
+        page_count=1,
+        expires_at=time.monotonic() + 60,
+    )
+    second = replace(
+        first,
+        source_sha256=hashlib.sha256(b"second").hexdigest(),
+        source_size=6,
+        source_mtime_ns=2,
+    )
+    assert chat_tool_service._local_source_revision_fingerprint(
+        first
+    ) != chat_tool_service._local_source_revision_fingerprint(second)
+
+
+def test_memory_completion_without_journal_is_not_authoritative(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def importer(*, record, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _valid_local_result(record)
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    digest = chat_tool_service._token_digest(token)
+    chat_tool_service._IMPORT_COMPLETIONS[digest] = (
+        chat_tool_service.ImportCompletion(
+            response={"status": "committed", "document_id": 999},
+            expires_at=time.monotonic() + 60,
+        )
+    )
+    response = chat_tool_service.import_document(
+        confirmation_token=token, confirmed=True, runtime=runtime
+    )
+    assert response["document_id"] == 41
+    assert calls == 1
+
+
+def test_waiter_reads_terminal_journal_after_owner_notification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    importer_calls = 0
+    owner_claimed = threading.Event()
+    allow_create = threading.Event()
+    original_create = ImportOperationJournalStore.create
+
+    def importer(*, record, **_kwargs):
+        nonlocal importer_calls
+        importer_calls += 1
+        return _valid_local_result(record)
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+
+    def delayed_create(self, record):
+        owner_claimed.set()
+        assert allow_create.wait(3)
+        return original_create(self, record)
+
+    monkeypatch.setattr(ImportOperationJournalStore, "create", delayed_create)
+    results: list[dict[str, object]] = []
+
+    def invoke() -> None:
+        results.append(
+            chat_tool_service.import_document(
+                confirmation_token=token, confirmed=True, runtime=runtime
+            )
+        )
+
+    owner = threading.Thread(target=invoke)
+    waiter = threading.Thread(target=invoke)
+    owner.start()
+    assert owner_claimed.wait(2)
+    waiter.start()
+    time.sleep(0.05)
+    allow_create.set()
+    owner.join(3)
+    waiter.join(3)
+    assert len(results) == 2
+    assert sorted(result["already_completed"] for result in results) == [
+        False,
+        True,
+    ]
+    assert importer_calls == 1
+
+
+def test_invalid_committed_result_is_persisted_as_failure(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def importer(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "status": "committed",
+            "document_id": True,
+            "title": "",
+            "document_type": "paper",
+            "chunk_count": 0,
+        }
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    with pytest.raises(chat_tool_service.ChatToolError) as error:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+    assert error.value.error_code == "import_result_contract_invalid"
+    assert _journal_for_token(runtime, token).status == "failed"
+    replay_error = None
+    try:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+    except chat_tool_service.ChatToolError as exc:
+        replay_error = exc
+    assert replay_error is not None
+    assert replay_error.error_code == "import_result_contract_invalid"
+    assert calls == 1
+
+
+def test_failure_receipt_redacts_unsafe_details_and_paths(
+    tmp_path: Path,
+) -> None:
+    raw_token = "raw-token-must-not-persist"
+
+    def importer(**_kwargs):
+        raise chat_tool_service.ChatToolError(
+            "fixture_failed",
+            "Failure at D:\\private\\fixture.pdf",
+            details={
+                "Authorization": raw_token,
+                "error_stage": "D:\\private\\fixture.pdf",
+                "warnings": [raw_token, "safe_warning_code"],
+                "writes_performed": False,
+            },
+        )
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+    payload = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in runtime.resolved_import_journal_dir().glob("*.json")
+    )
+    assert raw_token not in payload
+    assert "D:\\private" not in payload
+    assert "safe_warning_code" in payload
