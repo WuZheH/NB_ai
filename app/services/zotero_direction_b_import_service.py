@@ -383,7 +383,7 @@ def _commit_selected_book_import_locked(
     )
 
     try:
-        _prepare_derived_staging(
+            _prepare_derived_staging(
             fts_index_path=fts_index_path,
             fts_manifest_path=fts_manifest_path,
             vector_store_path=vector_store_path,
@@ -397,9 +397,16 @@ def _commit_selected_book_import_locked(
             ),
             staging_zotero_note_vector_path=(
                 staging_zotero_note_vector_path
-            ),
-        )
-        rollback_snapshot = _create_rollback_copy(path)
+                ),
+            )
+            if not production:
+                _initialize_empty_temp_staging_fts_manifest(
+                    research_db_path=path,
+                    data_root=data_root,
+                    staging_fts_index=staging_fts_index,
+                    staging_fts_manifest=staging_fts_manifest,
+                )
+            rollback_snapshot = _create_rollback_copy(path)
     except Exception:
         _remove_generated_tree(staging_root)
         raise
@@ -805,7 +812,6 @@ def _commit_selected_book_import_locked(
             writes_performed=True,
         )
 
-        publish_attempted = True
         try:
             forward_stage(
                 "publish_started",
@@ -813,6 +819,7 @@ def _commit_selected_book_import_locked(
                 chunk_count=chunk_count,
                 writes_performed=True,
             )
+            publish_attempted = True
             _publish_staged_derived_indexes(
                 staging_fts_index=staging_fts_index,
                 staging_fts_manifest=staging_fts_manifest,
@@ -914,7 +921,7 @@ def _commit_selected_book_import_locked(
                 runtime.persistence_scope
             ),
             "writes_performed": True,
-            "production_data_modified": True,
+            "production_data_modified": production,
             "production_schema_migrated": False,
             "zotero_db_write_performed": False,
             "vector_store_write_performed": bool(
@@ -1200,6 +1207,109 @@ def _prepare_derived_staging(
         )
 
 
+def _initialize_empty_temp_staging_fts_manifest(
+    *,
+    research_db_path: Path,
+    data_root: Path,
+    staging_fts_index: Path,
+    staging_fts_manifest: Path,
+) -> None:
+    try:
+        manifest = json.loads(
+            staging_fts_manifest.read_text(encoding="utf-8")
+        )
+    except Exception:
+        return
+    if manifest != {}:
+        return
+
+    with closing(
+        connect_readonly_sqlite(
+            research_db_path,
+            resolve_strict=True,
+            row_factory=sqlite3.Row,
+            query_only=True,
+            temp_store="MEMORY",
+        )
+    ) as connection:
+        document_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM documents"
+            ).fetchone()[0]
+        )
+    if document_count != 0:
+        return
+
+    with closing(
+        fts_status_service.connect_readonly_index(staging_fts_index)
+    ) as connection:
+        validation = fts_status_service.validate_index_database(
+            connection,
+            expected_fragment_count=0,
+        )
+    if validation.get("valid") is not True:
+        return
+
+    source_fingerprints = fts_status_service.source_fingerprints(
+        production_db_path=research_db_path,
+        zotero_snapshot_path=(
+            data_root / "zotero" / "snapshot" / "zotero.sqlite"
+        ),
+        notes_root=data_root / "notes",
+    )
+    query_aliases_path = fts_status_service.DEFAULT_QUERY_ALIASES_PATH
+    manifest.update(
+        {
+            "index_schema_version": (
+                fts_status_service.INDEX_SCHEMA_VERSION
+            ),
+            "source_registry_version": (
+                fts_status_service.SOURCE_REGISTRY_VERSION
+            ),
+            "adapter_versions": (
+                fts_status_service.EXPECTED_ADAPTER_VERSIONS
+            ),
+            "production_db_sha256": source_fingerprints[
+                "production_db_sha256"
+            ],
+            "zotero_snapshot_sha256": source_fingerprints[
+                "zotero_snapshot_sha256"
+            ],
+            "local_markdown_aggregate_hash": source_fingerprints[
+                "local_markdown_aggregate_hash"
+            ],
+            "query_aliases_sha256": (
+                fts_status_service.sha256_file(query_aliases_path)
+                if query_aliases_path.is_file()
+                else None
+            ),
+            "fragment_count": 0,
+            "tokenizers": fts_status_service.TOKENIZER_CONFIG,
+            "index_content_hash": (
+                fts_status_service.sha256_file(staging_fts_index)
+            ),
+            "index_file_bytes": staging_fts_index.stat().st_size,
+        }
+    )
+    temporary_manifest = staging_fts_manifest.with_name(
+        f".{staging_fts_manifest.name}.{uuid4().hex}.tmp"
+    )
+    try:
+        temporary_manifest.write_text(
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_manifest, staging_fts_manifest)
+    finally:
+        temporary_manifest.unlink(missing_ok=True)
+
+
 def _passage_source_ids_for_document(
     db_path: Path,
     document_id: int,
@@ -1324,8 +1434,11 @@ def _verify_staging_final_state(
                 ),
                 notes_root=Path(runtime.data_dir) / "notes",
             )
-            if status.get("status") in {"missing", "corrupt"}:
-                missing_components.append("staging_fts_unreadable")
+            if (
+                status.get("status") != "ready"
+                or status.get("ready") is not True
+            ):
+                missing_components.append("staging_fts_not_ready")
         except Exception:
             missing_components.append("staging_fts_unreadable")
 
@@ -1359,7 +1472,13 @@ def _verify_staging_final_state(
         except Exception:
             missing_components.append("staging_vector_store_unreadable")
 
-    if staging_zotero_note_vector_path.exists():
+    note_vectors_required = (
+        runtime.persistence_scope == "production"
+        or expected_native_note_vector_count > 0
+    )
+    if note_vectors_required and not staging_zotero_note_vector_path.is_dir():
+        missing_components.append("staging_zotero_note_vectors")
+    elif staging_zotero_note_vector_path.is_dir():
         note_manifest = (
             staging_zotero_note_vector_path
             / note_vector_index.MANIFEST_NAME
@@ -1385,6 +1504,8 @@ def _verify_staging_final_state(
                 missing_components.append(
                     "staging_zotero_note_vectors_unreadable"
                 )
+    elif staging_zotero_note_vector_path.exists():
+        missing_components.append("staging_zotero_note_vectors")
 
     if missing_components:
         raise DirectionBSelectedBookImportError(

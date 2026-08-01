@@ -795,6 +795,46 @@ def test_running_journal_never_invokes_importer_after_reset(
     assert calls == 0
 
 
+def test_running_journal_response_reports_persisted_write_state(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def importer(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("importer must not run")
+
+    runtime, token, _pdf = _journal_local_case(tmp_path, importer=importer)
+    store, journal = _create_nonterminal_journal(runtime, token)
+    store.update(
+        journal.operation_id,
+        expected_revision=journal.revision,
+        expected_status="accepted",
+        status="running",
+        stage="body_import_completed",
+        heartbeat_at=chat_tool_service._utc_now(),
+        document_id=7,
+        chunk_count=42,
+        writes_performed=True,
+    )
+    chat_tool_service.reset_chat_tool_state_for_tests()
+
+    response = chat_tool_service.import_document(
+        confirmation_token=token,
+        confirmed=True,
+        runtime=runtime,
+    )
+
+    assert response["status"] == "in_progress"
+    assert response["document_id"] == 7
+    assert response["chunk_count"] == 42
+    assert response["writes_performed"] is True
+    assert response["safe_to_retry"] is False
+    assert response["operation_in_progress"] is True
+    assert calls == 0
+
+
 def test_orphaned_journal_never_invokes_importer(tmp_path: Path) -> None:
     calls = 0
 

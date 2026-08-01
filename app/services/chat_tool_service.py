@@ -1361,7 +1361,16 @@ def _persist_failed_import_receipt(
     exception_type: str | None = None,
 ) -> ImportOperationJournal:
     details = _safe_failure_details(dict(error.details))
-    details["error_stage"] = journal.stage
+    original_error_stage = details.get("error_stage")
+    if not (
+        isinstance(original_error_stage, str)
+        and re.fullmatch(
+            r"[A-Za-z0-9_.:]{1,128}",
+            original_error_stage,
+        )
+    ):
+        original_error_stage = journal.stage
+    details["error_stage"] = original_error_stage
     details["safe_to_retry"] = False
     writes_performed = details.get("writes_performed")
     if not isinstance(writes_performed, bool):
@@ -1448,7 +1457,7 @@ def _persist_failed_import_receipt(
             "error_code": error.error_code,
             "message": message,
             "status_code": int(error.status_code),
-            "error_stage": journal.stage,
+            "error_stage": original_error_stage,
             "exception_type": exception_type or type(error).__name__,
         },
         rollback=rollback,
@@ -1988,6 +1997,11 @@ def _import_in_progress_response(
         | None
     ),
 ) -> dict[str, Any]:
+    persisted_journal = (
+        record
+        if isinstance(record, ImportOperationJournal)
+        else None
+    )
     duplicate_status = (
         record.duplicate_status
         if isinstance(record, ZoteroImportConfirmation)
@@ -1995,21 +2009,33 @@ def _import_in_progress_response(
     )
     return {
         "status": "in_progress",
-        "document_id": None,
+        "document_id": (
+            persisted_journal.document_id
+            if persisted_journal is not None
+            else None
+        ),
         "title": str(record.title if record is not None else ""),
         "document_type": str(
             getattr(record, "document_type", "")
             if record is not None
             else ""
         ),
-        "chunk_count": 0,
+        "chunk_count": (
+            persisted_journal.chunk_count
+            if persisted_journal is not None
+            else 0
+        ),
         "duplicate_status": duplicate_status,
         "error_code": None,
         "already_completed": False,
         "replayed_receipt": False,
         "operation_in_progress": True,
         "token_consumed": True,
-        "writes_performed": None,
+        "writes_performed": (
+            persisted_journal.writes_performed
+            if persisted_journal is not None
+            else None
+        ),
         "safe_to_retry": False,
     }
 
