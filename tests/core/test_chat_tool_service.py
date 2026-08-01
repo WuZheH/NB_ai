@@ -19,6 +19,7 @@ from app.main import app
 from app.schemas.chat_tools import ImportPreviewRequest
 from app.services import chat_tool_service, pdf_import_classifier_service
 from app.services import chat_pdf_production_import_service
+from app.services import local_pdf_source_binding_service
 from app.services.pdf_backend_service import load_fitz_backend
 from app.services.library import document_deletion_service
 from app.services.import_operation_journal import ImportOperationJournalStore
@@ -616,6 +617,28 @@ def test_default_chat_import_routes_to_production_orchestrator(tmp_path: Path, m
         source_size=source.stat().st_size, source_mtime_ns=source.stat().st_mtime_ns,
         title="Fixture", document_type="paper", object_import_mode="full_document", page_count=1,
         expires_at=9999999999.0,
+        source_identity=(
+            "local_pdf:sha256:"
+            + hashlib.sha256(source.read_bytes()).hexdigest()
+        ),
+        source_revision_fingerprint=(
+            chat_tool_service._local_source_revision_fingerprint(
+                chat_tool_service.ImportConfirmation(
+                    source_path=source,
+                    source_sha256=hashlib.sha256(
+                        source.read_bytes()
+                    ).hexdigest(),
+                    source_size=source.stat().st_size,
+                    source_mtime_ns=source.stat().st_mtime_ns,
+                    title="Fixture",
+                    document_type="paper",
+                    object_import_mode="full_document",
+                    page_count=1,
+                    expires_at=9999999999.0,
+                )
+            )
+        ),
+        previewed_at="2026-08-01T00:00:00+00:00",
     )
     calls = []
     monkeypatch.setattr(chat_pdf_production_import_service, "import_document_to_production", lambda **kwargs: calls.append(kwargs) or {"status": "completed", "document_id": 1, "title": "Fixture", "chunk_count": 1})
@@ -624,7 +647,25 @@ def test_default_chat_import_routes_to_production_orchestrator(tmp_path: Path, m
     sentinel = chat_pdf_production_import_service.ChatPdfImportRuntime.production()
     monkeypatch.setattr(chat_tool_service, "_resolve_chat_pdf_import_runtime", lambda _runtime: sentinel)
     monkeypatch.setattr(chat_tool_service.import_preview_service, "create_import_preview", lambda *_args, **_kwargs: {"import_job_id": "job-1"})
-    result = chat_tool_service._commit_confirmed_import(record=record, runtime=runtime)
+    result = chat_tool_service._commit_confirmed_import(
+        record=record,
+        runtime=runtime,
+        import_audit={
+            "previewed_at": record.previewed_at,
+            "confirmed_at": "2026-08-01T00:01:00+00:00",
+            "confirmation_token_fingerprint": "a" * 64,
+            "transaction_fingerprint": "b" * 64,
+            "source_revision_fingerprint": (
+                record.source_revision_fingerprint
+            ),
+            "lifecycle_events": [
+                "previewed",
+                "confirmed",
+                "transaction_started",
+            ],
+        },
+        stage_callback=None,
+    )
     assert len(calls) == 1
     assert calls[0]["allow_production"] is True
     assert calls[0]["runtime"] is sentinel
@@ -645,7 +686,7 @@ def test_noncanonical_chat_tool_runtime_rejects_default_import_route(tmp_path: P
                 source_path=tmp_path / "missing.pdf", source_sha256="0" * 64, source_size=0,
                 source_mtime_ns=0, title="Fixture", document_type="paper", object_import_mode="full_document",
                 page_count=1, expires_at=9999999999.0,
-            ), runtime=runtime,
+            ), runtime=runtime, import_audit={}, stage_callback=None,
         )
 
 
@@ -1030,6 +1071,241 @@ def test_raw_confirmation_token_never_appears_in_journal(
         for path in runtime.resolved_import_journal_dir().glob("*.json")
     )
     assert token not in payload
+
+
+def test_default_local_import_passes_preview_confirmation_audit_without_raw_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    pdf = inbox / "CREAD-A11-SMOKE-TEST.pdf"
+    pdf.write_bytes(b"%PDF-1.4\nlocal source audit")
+    captured = {}
+    db_path = tmp_path / "db.sqlite"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE document_sources (
+                id INTEGER PRIMARY KEY,
+                document_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL,
+                source_trace_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=db_path,
+        data_dir=tmp_path / "data",
+        inbox_root=inbox,
+        import_journal_dir=tmp_path / "journals",
+        classify_pdf=lambda *_args, **_kwargs: {
+            "title": "CREAD-A11-SMOKE-TEST",
+            "document_type": "paper",
+            "object_import_mode": "full_document",
+            "duplicate": False,
+            "signals": {"page_count": 1},
+        },
+    )
+    sentinel = chat_pdf_production_import_service.ChatPdfImportRuntime.production()
+    monkeypatch.setattr(
+        chat_tool_service,
+        "_resolve_chat_pdf_import_runtime",
+        lambda _runtime: sentinel,
+    )
+    monkeypatch.setattr(
+        chat_tool_service.import_preview_service,
+        "create_import_preview",
+        lambda *_args, **_kwargs: {"import_job_id": "job-local-audit"},
+    )
+
+    def fake_import(**kwargs):
+        assert "source_binding" in kwargs
+        local_pdf_source_binding_service.record_document_source(
+            db_path=db_path,
+            document_id=41,
+            binding=kwargs["source_binding"],
+        )
+        captured["call_count"] = captured.get("call_count", 0) + 1
+        captured.update(kwargs)
+        return {
+            "status": "completed",
+            "document_id": 41,
+            "title": "CREAD-A11-SMOKE-TEST",
+            "chunk_count": 2,
+        }
+
+    monkeypatch.setattr(
+        chat_pdf_production_import_service,
+        "import_document_to_production",
+        fake_import,
+    )
+    preview = chat_tool_service.import_preview(
+        inbox_filename=pdf.name,
+        runtime=runtime,
+    )
+    token = preview["confirmation_token"]
+    response = chat_tool_service.import_document(
+        confirmation_token=token,
+        confirmed=True,
+        runtime=runtime,
+    )
+    replay = chat_tool_service.import_document(
+        confirmation_token=token,
+        confirmed=True,
+        runtime=runtime,
+    )
+
+    binding = captured["source_binding"]
+    trace = binding.source_trace()
+    journal = _journal_for_token(runtime, token)
+    assert response["status"] == "committed"
+    assert replay["already_completed"] is True
+    assert replay["replayed_receipt"] is True
+    assert captured["call_count"] == 1
+    assert binding.source_identity == (
+        f"local_pdf:sha256:{preview['pdf_sha256']}"
+    )
+    assert trace["source_type"] == "local_pdf"
+    assert trace["pdf_sha256"] == preview["pdf_sha256"]
+    assert trace["import_history"][
+        "confirmation_token_fingerprint"
+    ] == chat_tool_service._token_digest(token)
+    assert trace["import_history"][
+        "transaction_fingerprint"
+    ] == journal.transaction_fingerprint
+    assert trace["import_history"][
+        "source_revision_fingerprint"
+    ] == journal.source_revision_fingerprint
+    assert token not in json.dumps(trace, sort_keys=True)
+    assert not Path(binding.managed_pdf_relative_path).is_absolute()
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM document_sources"
+        ).fetchone()[0] == 1
+    assert token.encode("utf-8") not in db_path.read_bytes()
+
+
+def test_default_local_source_binding_failure_persists_failed_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    pdf = inbox / "CREAD-A11-SMOKE-TEST.pdf"
+    pdf.write_bytes(b"%PDF-1.4\nlocal source failure")
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=tmp_path / "db.sqlite",
+        data_dir=tmp_path / "data",
+        inbox_root=inbox,
+        import_journal_dir=tmp_path / "journals",
+        classify_pdf=lambda *_args, **_kwargs: {
+            "title": "CREAD-A11-SMOKE-TEST",
+            "document_type": "paper",
+            "object_import_mode": "full_document",
+            "duplicate": False,
+            "signals": {"page_count": 1},
+        },
+    )
+    sentinel = chat_pdf_production_import_service.ChatPdfImportRuntime.production()
+    monkeypatch.setattr(
+        chat_tool_service,
+        "_resolve_chat_pdf_import_runtime",
+        lambda _runtime: sentinel,
+    )
+    monkeypatch.setattr(
+        chat_tool_service.import_preview_service,
+        "create_import_preview",
+        lambda *_args, **_kwargs: {"import_job_id": "job-local-failure"},
+    )
+    monkeypatch.setattr(
+        chat_pdf_production_import_service,
+        "import_document_to_production",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            local_pdf_source_binding_service.LocalPdfSourceBindingError(
+                "local_pdf_document_source_write_failed"
+            )
+        ),
+    )
+    preview = chat_tool_service.import_preview(
+        inbox_filename=pdf.name,
+        runtime=runtime,
+    )
+    token = preview["confirmation_token"]
+    with pytest.raises(chat_tool_service.ChatToolError) as error:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+    journal = _journal_for_token(runtime, token)
+    assert error.value.error_code == (
+        "local_pdf_document_source_write_failed"
+    )
+    assert journal.status == "failed"
+    assert journal.completion_receipt["kind"] == "failure"
+    assert journal.completion_receipt.get("kind") != "success"
+    assert journal.error["error_stage"] == "body_import_started"
+
+
+def test_default_local_base_exception_removes_managed_copy_and_marks_orphaned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    pdf = inbox / "CREAD-A11-SMOKE-TEST.pdf"
+    pdf.write_bytes(b"%PDF-1.4\nlocal base exception")
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=tmp_path / "db.sqlite",
+        data_dir=tmp_path / "data",
+        inbox_root=inbox,
+        import_journal_dir=tmp_path / "journals",
+        classify_pdf=lambda *_args, **_kwargs: {
+            "title": "CREAD-A11-SMOKE-TEST",
+            "document_type": "paper",
+            "object_import_mode": "full_document",
+            "duplicate": False,
+            "signals": {"page_count": 1},
+        },
+    )
+    sentinel = chat_pdf_production_import_service.ChatPdfImportRuntime.production()
+    monkeypatch.setattr(
+        chat_tool_service,
+        "_resolve_chat_pdf_import_runtime",
+        lambda _runtime: sentinel,
+    )
+    monkeypatch.setattr(
+        chat_tool_service.import_preview_service,
+        "create_import_preview",
+        lambda *_args, **_kwargs: {"import_job_id": "job-local-abort"},
+    )
+    monkeypatch.setattr(
+        chat_pdf_production_import_service,
+        "import_document_to_production",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            KeyboardInterrupt("owner aborted")
+        ),
+    )
+    preview = chat_tool_service.import_preview(
+        inbox_filename=pdf.name,
+        runtime=runtime,
+    )
+    token = preview["confirmation_token"]
+
+    with pytest.raises(KeyboardInterrupt, match="owner aborted"):
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+
+    journal = _journal_for_token(runtime, token)
+    managed_dir = tmp_path / "data" / "pdfs" / "chat_imports"
+    assert journal.status == "orphaned"
+    assert list(managed_dir.glob("*.pdf")) == []
+    assert list(managed_dir.glob("*.tmp")) == []
 
 
 def test_zotero_pdf_sha_is_bound_into_journal(

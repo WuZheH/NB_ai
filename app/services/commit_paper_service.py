@@ -12,6 +12,7 @@ from app.core.paths import DATA_PROJECT_ROOT, DEFAULT_DB_PATH, OUTPUTS_DIR
 from app.db.session import SessionLocal
 from app.models import Document
 from app.services import import_service
+from app.services import local_pdf_source_binding_service
 from app.services import zotero_source_cache_service
 from app.services import zotero_note_alignment_hook_service
 from app.services import zotero_native_annotation_import_service
@@ -26,7 +27,14 @@ DB_PATH = DEFAULT_DB_PATH
 COMMIT_MANIFEST_FILE = "commit_result.json"
 
 
-def commit_paper_from_staging(import_job_id: str, *, rebuild_legacy_vector_index: bool = True) -> dict[str, Any]:
+def commit_paper_from_staging(
+    import_job_id: str,
+    *,
+    rebuild_legacy_vector_index: bool = True,
+    local_pdf_source_binding: (
+        local_pdf_source_binding_service.LocalPdfSourceBinding | None
+    ) = None,
+) -> dict[str, Any]:
     job_dir = _existing_job_dir(import_job_id)
 
     paper_md_path = job_dir / "paper.md"
@@ -98,7 +106,11 @@ def commit_paper_from_staging(import_job_id: str, *, rebuild_legacy_vector_index
         session.commit()
         document_id = document.id
 
-    zotero_source_cache_service.record_document_source(document_id, source_trace)
+    _record_staging_document_source(
+        document_id=document_id,
+        source_trace=source_trace,
+        local_pdf_source_binding=local_pdf_source_binding,
+    )
     zotero_native_notes_import = _sync_zotero_native_notes_for_paper(
         document_id=document_id,
         source_trace=source_trace,
@@ -160,6 +172,27 @@ def commit_paper_from_staging(import_job_id: str, *, rebuild_legacy_vector_index
         "core_db_write_performed": True,
         "external_llm_called": False,
     }
+
+
+def _record_staging_document_source(
+    *,
+    document_id: int,
+    source_trace: dict[str, Any],
+    local_pdf_source_binding: (
+        local_pdf_source_binding_service.LocalPdfSourceBinding | None
+    ),
+) -> None:
+    if local_pdf_source_binding is not None:
+        local_pdf_source_binding_service.record_document_source(
+            db_path=DB_PATH,
+            document_id=document_id,
+            binding=local_pdf_source_binding,
+        )
+        return
+    zotero_source_cache_service.record_document_source(
+        document_id,
+        source_trace,
+    )
 
 
 def _extract_title(paper_text: str, manifest: dict[str, Any]) -> str:

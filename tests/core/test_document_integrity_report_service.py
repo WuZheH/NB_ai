@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from app.services import document_integrity_report_service as service
+from app.services import local_pdf_source_binding_service
 from app.services.retrieval.source_registry import (
     RetrievalSourceRegistry,
 )
@@ -513,6 +515,66 @@ def test_integrity_verdict_pass_warn_and_fail_rules() -> None:
         },
     }
     assert service._evaluate_verdict(**failure_case)[0] == "fail"
+
+
+def test_integrity_report_accepts_complete_local_pdf_source_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime(tmp_path)
+    _patch_ready_dependencies(monkeypatch)
+    relative = "pdfs/chat_imports/CREAD-A11-SMOKE-TEST.pdf"
+    managed = tmp_path / "data" / relative
+    managed.parent.mkdir(parents=True, exist_ok=True)
+    managed.write_bytes(b"%PDF-1.4\nlocal integrity fixture")
+    digest = hashlib.sha256(managed.read_bytes()).hexdigest()
+    revision = "a" * 64
+    binding = local_pdf_source_binding_service.LocalPdfSourceBinding(
+        source_identity=f"local_pdf:sha256:{digest}",
+        pdf_sha256=digest,
+        source_revision_fingerprint=revision,
+        managed_pdf_relative_path=relative,
+        import_history={
+            "previewed_at": "2026-08-01T12:00:00+00:00",
+            "confirmed_at": "2026-08-01T12:01:00+00:00",
+            "transaction_fingerprint": "b" * 64,
+            "confirmation_token_fingerprint": "c" * 64,
+            "source_revision_fingerprint": revision,
+            "lifecycle_events": [
+                "previewed",
+                "confirmed",
+                "transaction_started",
+                "source_binding_recorded",
+            ],
+        },
+    )
+    with sqlite3.connect(runtime.db_path) as connection:
+        connection.execute(
+            "DELETE FROM document_sources WHERE document_id = 1"
+        )
+        connection.commit()
+    local_pdf_source_binding_service.record_document_source(
+        db_path=runtime.db_path,
+        document_id=1,
+        binding=binding,
+    )
+
+    result = service.build_integrity_report(
+        document_id=1,
+        runtime=runtime,
+    )
+
+    assert result["source"]["recorded"] is True
+    assert result["source"]["source_type"] == "local_pdf"
+    assert result["pdf_sha256"] == digest
+    assert result["database"]["source_binding_count"] == 1
+    assert all(
+        value != "not_recorded"
+        for value in result["history"].values()
+    )
+    assert result["verdict"] == "warn", result["warnings"]
+    assert "document_source_binding_missing" not in result["warnings"]
+    assert "historical_events_not_recorded" not in result["warnings"]
 
 
 def test_integrity_report_requires_exact_existing_document_id(

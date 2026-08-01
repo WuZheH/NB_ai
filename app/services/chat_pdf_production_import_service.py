@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.paths import DATA_DIR, DEFAULT_DB_PATH, FTS_DB_PATH, FTS_MANIFEST_PATH, LANCEDB_DIR
-from app.services import chat_local_note_import_service, commit_book_service, commit_paper_service, vector_store_service
+from app.services import (
+    chat_local_note_import_service,
+    commit_book_service,
+    commit_paper_service,
+    local_pdf_source_binding_service,
+    vector_store_service,
+)
 from app.services.library import document_deletion_service
 from app.services.retrieval import fts_index_service, fts_status_service
 from app.services.vector_store_service import MANIFEST_PATH
@@ -22,14 +28,34 @@ class ChatPdfImportRuntime:
     vector_store_path: Path
     vector_manifest_path: Path
     deletion_runtime: document_deletion_service.DeletionRuntime
-    body_commit: Callable[[str, str], dict[str, Any]]
+    body_commit: Callable[
+        [
+            str,
+            str,
+            local_pdf_source_binding_service.LocalPdfSourceBinding,
+        ],
+        dict[str, Any],
+    ]
 
     @classmethod
     def production(cls) -> "ChatPdfImportRuntime":
-        def body(job_id: str, document_type: str) -> dict[str, Any]:
+        def body(
+            job_id: str,
+            document_type: str,
+            source_binding: (
+                local_pdf_source_binding_service.LocalPdfSourceBinding
+            ),
+        ) -> dict[str, Any]:
             if document_type in {"book", "thesis", "report"}:
-                return commit_book_service.commit_book_from_staging(job_id)
-            return commit_paper_service.commit_paper_from_staging(job_id, rebuild_legacy_vector_index=False)
+                return commit_book_service.commit_book_from_staging(
+                    job_id,
+                    local_pdf_source_binding=source_binding,
+                )
+            return commit_paper_service.commit_paper_from_staging(
+                job_id,
+                rebuild_legacy_vector_index=False,
+                local_pdf_source_binding=source_binding,
+            )
         return cls(DEFAULT_DB_PATH, DATA_DIR, FTS_DB_PATH, FTS_MANIFEST_PATH, LANCEDB_DIR, MANIFEST_PATH,
                    document_deletion_service.DeletionRuntime(db_path=DEFAULT_DB_PATH, data_dir=DATA_DIR,
                        fts_path=FTS_DB_PATH, fts_manifest_path=FTS_MANIFEST_PATH,
@@ -68,13 +94,33 @@ def _rollback_document(document_id: int, runtime: ChatPdfImportRuntime) -> dict[
     return result
 
 
-def import_document_to_production(*, import_job_id: str, document_type: str, note_files: list[Path] | None = None, inbox_root: Path | None = None, expected_before_db_sha256: str | None = None, allow_production: bool = False, runtime: ChatPdfImportRuntime | None = None) -> dict[str, Any]:
+def import_document_to_production(
+    *,
+    import_job_id: str,
+    document_type: str,
+    source_binding: (
+        local_pdf_source_binding_service.LocalPdfSourceBinding | None
+    ) = None,
+    note_files: list[Path] | None = None,
+    inbox_root: Path | None = None,
+    expected_before_db_sha256: str | None = None,
+    allow_production: bool = False,
+    runtime: ChatPdfImportRuntime | None = None,
+    stage_callback: Callable[[str, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     actual = runtime or ChatPdfImportRuntime.production()
     production = _is_production_runtime(actual)
     if production and not allow_production:
         raise RuntimeError("chat_import_production_opt_in_required")
     if not production and allow_production:
         raise RuntimeError("chat_import_temp_runtime_rejects_production_opt_in")
+    if source_binding is None:
+        raise RuntimeError("chat_import_local_source_binding_required")
+    local_pdf_source_binding_service.validate_binding(source_binding)
+    local_pdf_source_binding_service.verify_managed_pdf(
+        data_dir=actual.data_dir,
+        binding=source_binding,
+    )
     status = _fts_status(actual)
     if status.get("status") != "ready":
         raise RuntimeError("chat_import_fts_not_ready")
@@ -84,12 +130,25 @@ def import_document_to_production(*, import_job_id: str, document_type: str, not
         raise RuntimeError("chat_import_production_revision_changed")
     document_id: int | None = None
     try:
-        result = actual.body_commit(import_job_id, document_type)
+        result = actual.body_commit(
+            import_job_id,
+            document_type,
+            source_binding,
+        )
         created = _document_ids(actual.db_path) - before_ids
         if len(created) != 1 or int(result.get("document_id") or 0) not in created:
             raise RuntimeError("chat_import_document_delta_invalid")
         document_id = next(iter(created))
-    except Exception as exc:
+        if stage_callback is not None:
+            stage_callback(
+                "body_import_completed",
+                {
+                    "document_id": document_id,
+                    "chunk_count": int(result.get("chunk_count") or 0),
+                    "writes_performed": True,
+                },
+            )
+    except BaseException as exc:
         created = _document_ids(actual.db_path) - before_ids
         if len(created) == 1:
             try:
@@ -106,6 +165,15 @@ def import_document_to_production(*, import_job_id: str, document_type: str, not
         with sqlite3.connect(f"file:{actual.db_path.resolve().as_posix()}?mode=ro", uri=True) as connection:
             ids = [f"chunk:{document_id}:{int(row[0])}" for row in connection.execute("SELECT id FROM knowledge_chunks WHERE document_id=? ORDER BY chunk_index,id", (document_id,))]
         vectors = vector_store_service.sync_affected_passage_embeddings(ids, dry_run=False, apply=True, source_db_path=None if production else actual.db_path, store_path=actual.vector_store_path, manifest_path=actual.vector_manifest_path)
+        if stage_callback is not None:
+            stage_callback(
+                "final_verification_started",
+                {
+                    "document_id": document_id,
+                    "chunk_count": int(result.get("chunk_count") or 0),
+                    "writes_performed": True,
+                },
+            )
         final_status = _fts_status(actual)
         with sqlite3.connect(f"file:{actual.db_path.resolve().as_posix()}?mode=ro", uri=True) as verify_connection:
             document_count = int(verify_connection.execute("SELECT COUNT(*) FROM documents WHERE id=?", (document_id,)).fetchone()[0])
@@ -115,8 +183,14 @@ def import_document_to_production(*, import_job_id: str, document_type: str, not
                 or vectors.get("full_rebuild_allowed") is not False
                 or vectors.get("delete_orphans_allowed") is not False):
             raise RuntimeError("chat_import_final_verify_failed")
-        return {"status": "completed", "document_id": document_id, "title": result.get("title", ""), "document_type": document_type, "chunk_count": result.get("chunk_count", 0), "note_count": notes["note_count"], "evidence_link_count": notes["evidence_link_count"], "fts_status": final_status.get("status"), "passage_vectors_upserted": vectors.get("upserted_count", 0), "full_rebuild_performed": False}
-    except Exception:
+        source = local_pdf_source_binding_service.verify_document_source(
+            db_path=actual.db_path,
+            data_dir=actual.data_dir,
+            document_id=document_id,
+            binding=source_binding,
+        )
+        return {"status": "completed", "document_id": document_id, "title": result.get("title", ""), "document_type": document_type, "chunk_count": result.get("chunk_count", 0), "note_count": notes["note_count"], "evidence_link_count": notes["evidence_link_count"], "fts_status": final_status.get("status"), "passage_vectors_upserted": vectors.get("upserted_count", 0), "source_binding_count": source["source_binding_count"], "source_type": source["source_type"], "full_rebuild_performed": False}
+    except BaseException:
         try:
             _rollback_document(document_id, actual)
         except Exception as rollback_exc:

@@ -26,6 +26,7 @@ from app.services import (
     commit_book_service,
     commit_paper_service,
     import_preview_service,
+    local_pdf_source_binding_service,
     pdf_import_classifier_service,
     zotero_direction_b_import_service,
     zotero_selected_book_preview_service,
@@ -95,6 +96,9 @@ class ImportConfirmation:
     expires_at: float
     note_sources: tuple[dict[str, Any], ...] = ()
     inbox_root: Path | None = None
+    source_identity: str = ""
+    source_revision_fingerprint: str = ""
+    previewed_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -438,6 +442,13 @@ def import_preview(
     if not duplicate:
         token = secrets.token_urlsafe(32)
         stat = source.stat()
+        source_revision_fingerprint = _stable_sha256(
+            {
+                "source_mtime_ns": int(stat.st_mtime_ns),
+                "source_sha256": digest,
+                "source_size": int(source_size),
+            }
+        )
         record = ImportConfirmation(
             source_path=source,
             source_sha256=digest,
@@ -450,6 +461,11 @@ def import_preview(
             note_sources=tuple(chat_import_catalog_service.note_sources(pdf=source, inbox_root=inbox_root)),
             inbox_root=inbox_root,
             expires_at=time.monotonic() + IMPORT_CONFIRMATION_TTL_SECONDS,
+            source_identity=f"local_pdf:sha256:{digest}",
+            source_revision_fingerprint=(
+                source_revision_fingerprint
+            ),
+            previewed_at=_utc_now(),
         )
         with _TOKEN_LOCK:
             _purge_expired_tokens()
@@ -944,13 +960,21 @@ def _stable_sha256(payload: dict[str, Any]) -> str:
 def _local_source_revision_fingerprint(
     record: ImportConfirmation,
 ) -> str:
-    return _stable_sha256(
+    calculated = _stable_sha256(
         {
             "source_mtime_ns": int(record.source_mtime_ns),
             "source_sha256": record.source_sha256,
             "source_size": int(record.source_size),
         }
     )
+    recorded = str(record.source_revision_fingerprint or "").strip()
+    if recorded and recorded != calculated:
+        raise ChatToolError(
+            "import_source_revision_invalid",
+            "The local PDF source revision is inconsistent.",
+            status_code=409,
+        )
+    return calculated
 
 
 def _local_transaction_fingerprint(
@@ -997,6 +1021,22 @@ def _new_import_journal(
             token_digest=token_digest,
             source_revision_fingerprint=source_revision_fingerprint,
         )
+        import_audit = {
+            "previewed_at": record.previewed_at,
+            "confirmed_at": now,
+            "confirmation_token_fingerprint": token_digest,
+            "transaction_fingerprint": transaction_fingerprint,
+            "source_revision_fingerprint": (
+                source_revision_fingerprint
+            ),
+            "lifecycle_events": [
+                "previewed",
+                "confirmed",
+                "transaction_started",
+                "body_import_started",
+                "source_binding_recorded",
+            ],
+        }
         zotero_item_key = ""
         zotero_attachment_key = ""
 
@@ -1574,14 +1614,18 @@ def import_document(
             else:
                 _validate_import_source_unchanged(record)
                 stage_callback("body_import_started", {})
-                importer = (
-                    actual_runtime.commit_import
-                    or _commit_confirmed_import
-                )
-                result = importer(
-                    record=record,
-                    runtime=actual_runtime,
-                )
+                if actual_runtime.commit_import is not None:
+                    result = actual_runtime.commit_import(
+                        record=record,
+                        runtime=actual_runtime,
+                    )
+                else:
+                    result = _commit_confirmed_import(
+                        record=record,
+                        runtime=actual_runtime,
+                        import_audit=import_audit,
+                        stage_callback=stage_callback,
+                    )
 
             normalized = _normalize_committed_import_result(
                 result,
@@ -1799,20 +1843,26 @@ def _commit_confirmed_import(
     *,
     record: ImportConfirmation,
     runtime: ChatToolRuntime,
+    import_audit: dict[str, Any] | None,
+    stage_callback: Callable[[str, dict[str, Any]], None] | None,
 ) -> dict[str, Any]:
-    if runtime.commit_import is not None:
-        return runtime.commit_import(record=record, runtime=runtime)
+    if not isinstance(import_audit, dict):
+        raise ChatToolError(
+            "local_pdf_import_audit_missing",
+            "The local PDF import audit contract is incomplete.",
+            status_code=500,
+        )
     production_runtime = _resolve_chat_pdf_import_runtime(runtime)
     destination_dir = Path(runtime.data_dir) / "pdfs" / "chat_imports"
     destination_dir.mkdir(parents=True, exist_ok=True)
     safe_name = _managed_pdf_name(record)
     destination = destination_dir / safe_name
+    temporary = destination.with_suffix(".pdf.tmp")
     created_copy = not destination.exists()
     if destination.exists() and _sha256_file(destination) != record.source_sha256:
         raise ChatToolError("import_managed_pdf_collision", "Managed PDF name collision.", status_code=409)
     try:
         if created_copy:
-            temporary = destination.with_suffix(".pdf.tmp")
             shutil.copyfile(record.source_path, temporary)
             if _sha256_file(temporary) != record.source_sha256:
                 raise ChatToolError("import_pdf_copy_hash_mismatch", "PDF copy verification failed.")
@@ -1825,14 +1875,77 @@ def _commit_confirmed_import(
             }
         )
         import_job_id = str(preview["import_job_id"])
-        result = chat_pdf_production_import_service.import_document_to_production(
-            import_job_id=import_job_id,
-            document_type=record.document_type,
-            note_files=[record.inbox_root / Path(item["relative_path"]) for item in record.note_sources] if record.inbox_root else [],
-            inbox_root=record.inbox_root,
-            allow_production=True,
-            runtime=production_runtime,
+        managed_relative_path = destination.relative_to(
+            Path(runtime.data_dir)
+        ).as_posix()
+        source_binding = (
+            local_pdf_source_binding_service.LocalPdfSourceBinding(
+                source_identity=record.source_identity,
+                pdf_sha256=record.source_sha256,
+                source_revision_fingerprint=(
+                    record.source_revision_fingerprint
+                    or _local_source_revision_fingerprint(record)
+                ),
+                managed_pdf_relative_path=managed_relative_path,
+                import_history=import_audit,
+            )
         )
+        try:
+            result = (
+                chat_pdf_production_import_service
+                .import_document_to_production(
+                    import_job_id=import_job_id,
+                    document_type=record.document_type,
+                    source_binding=source_binding,
+                    note_files=[
+                        record.inbox_root / Path(item["relative_path"])
+                        for item in record.note_sources
+                    ]
+                    if record.inbox_root
+                    else [],
+                    inbox_root=record.inbox_root,
+                    allow_production=True,
+                    runtime=production_runtime,
+                    stage_callback=stage_callback,
+                )
+            )
+        except local_pdf_source_binding_service.LocalPdfSourceBindingError as exc:
+            raise ChatToolError(
+                str(exc),
+                "The local PDF source binding could not be verified.",
+                status_code=500,
+                details={
+                    "safe_to_retry": False,
+                    "writes_performed": True,
+                },
+            ) from exc
+        except RuntimeError as exc:
+            code = str(exc)
+            safe_codes = {
+                "chat_import_document_delta_invalid",
+                "chat_import_final_verify_failed",
+                "chat_import_fts_not_ready",
+                "chat_import_local_source_binding_required",
+                "chat_import_production_revision_changed",
+                "chat_import_rollback_ambiguous",
+                "chat_import_rollback_failed",
+            }
+            if code not in safe_codes:
+                raise
+            prewrite = code in {
+                "chat_import_fts_not_ready",
+                "chat_import_local_source_binding_required",
+                "chat_import_production_revision_changed",
+            }
+            raise ChatToolError(
+                code,
+                "The confirmed local PDF import failed safely.",
+                status_code=500,
+                details={
+                    "safe_to_retry": False,
+                    "writes_performed": False if prewrite else True,
+                },
+            ) from exc
         if isinstance(result, dict) and result.get("status") == "completed":
             result = dict(result)
             result["status"] = "committed"
@@ -1840,7 +1953,9 @@ def _commit_confirmed_import(
             result.setdefault("document_type", record.document_type)
             result["writes_performed"] = True
         return result
-    except Exception:
+    except BaseException:
+        if temporary.is_file():
+            temporary.unlink()
         if created_copy and destination.is_file():
             destination.unlink()
         raise
@@ -2097,6 +2212,27 @@ def _validate_import_source_unchanged(record: ImportConfirmation) -> None:
         or _sha256_file(record.source_path) != record.source_sha256
     ):
         raise ChatToolError("import_source_changed", "Inbox PDF changed after preview.", status_code=409)
+    expected_revision = _local_source_revision_fingerprint(record)
+    if record.source_revision_fingerprint != expected_revision:
+        raise ChatToolError(
+            "import_source_revision_invalid",
+            "The local PDF source revision is inconsistent.",
+            status_code=409,
+        )
+    if record.source_identity != (
+        f"local_pdf:sha256:{record.source_sha256}"
+    ):
+        raise ChatToolError(
+            "import_source_identity_invalid",
+            "The local PDF source identity is inconsistent.",
+            status_code=409,
+        )
+    if not str(record.previewed_at or "").strip():
+        raise ChatToolError(
+            "import_preview_audit_missing",
+            "The local PDF preview audit is incomplete.",
+            status_code=500,
+        )
     root = record.inbox_root or record.source_path.parent
     current_sources = tuple(chat_import_catalog_service.note_sources(pdf=record.source_path, inbox_root=root))
     if current_sources != record.note_sources:

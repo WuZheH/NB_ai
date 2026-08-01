@@ -9,6 +9,7 @@ from typing import Any
 
 from app.core.paths import DEFAULT_DB_PATH
 from app.services import library_service
+from app.services import local_pdf_source_binding_service
 from app.services.book_import_contract import OBJECT_IMPORT_MODE_CHAPTERED
 from app.services.book_import_service import (
     DetectedChapter,
@@ -31,7 +32,13 @@ MAIN_CHAPTER_MIN_COUNT = 5
 MAIN_CHAPTER_MAX_COUNT = 120
 
 
-def commit_book_from_staging(import_job_id: str) -> dict[str, Any]:
+def commit_book_from_staging(
+    import_job_id: str,
+    *,
+    local_pdf_source_binding: (
+        local_pdf_source_binding_service.LocalPdfSourceBinding | None
+    ) = None,
+) -> dict[str, Any]:
     job_dir = _existing_job_dir(import_job_id)
     paper_md_path = job_dir / "paper.md"
     manifest_path = job_dir / "import_manifest.json"
@@ -122,7 +129,25 @@ def commit_book_from_staging(import_job_id: str) -> dict[str, Any]:
         raise ImportPreviewError(f"Book commit safety blocked: {exc}") from exc
 
     document_id = int(apply_result["document_id"])
-    document_source_written = _record_document_source(DB_PATH, document_id, source_trace, pdf_path)
+    if local_pdf_source_binding is not None:
+        source_result = (
+            local_pdf_source_binding_service.record_document_source(
+                db_path=DB_PATH,
+                document_id=document_id,
+                binding=local_pdf_source_binding,
+            )
+        )
+        document_source_written = bool(
+            source_result.get("status")
+            in {"recorded", "already_recorded"}
+        )
+    else:
+        document_source_written = _record_document_source(
+            DB_PATH,
+            document_id,
+            source_trace,
+            pdf_path,
+        )
     _record_document_zotero_key(DB_PATH, document_id, source_trace)
 
     committed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
