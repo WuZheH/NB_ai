@@ -20,6 +20,10 @@ from app.runtime.model_readiness import (
     model_state,
 )
 from app.services import local_embedding_service
+from app.services.retrieval.query_normalizer import (
+    compact_identifier,
+    normalize_query,
+)
 
 
 RERANKER_MODEL_NAME = "Qwen3-Reranker-0.6B"
@@ -44,10 +48,24 @@ def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10)
     safe_recall_limit = max(1, min(int(recall_limit or 20), 50))
     safe_limit = max(1, min(int(limit or 10), safe_recall_limit))
 
+    query_variants = _query_recall_variants(normalized_query)
     embedding_started = time.perf_counter()
-    recall_payload = local_embedding_service.search_embedding_sidecar(normalized_query, limit=safe_recall_limit)
+    recall_payloads = [
+        (
+            variant,
+            local_embedding_service.search_embedding_sidecar(
+                variant,
+                limit=safe_recall_limit,
+            ),
+        )
+        for variant in query_variants
+    ]
     embedding_recall_ms = _elapsed_ms(embedding_started)
-    candidates = list(recall_payload.get("results") or [])
+    candidates, variant_recall_count = _merge_variant_candidates(
+        recall_payloads,
+        limit=safe_recall_limit,
+    )
+    recall_payload = recall_payloads[0][1]
     retrieval_backend = str(recall_payload.get("retrieval_backend") or "in_memory")
     fallback_reason = recall_payload.get("fallback_reason")
     vector_store_status = recall_payload.get("vector_store_status")
@@ -66,6 +84,9 @@ def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10)
             retrieval_backend=retrieval_backend,
             fallback_reason=fallback_reason,
             vector_store_status=vector_store_status,
+            query_variants=query_variants,
+            variant_recall_count=variant_recall_count,
+            deduplicated_candidate_count=0,
         )
 
     timings: dict[str, float] = {}
@@ -108,6 +129,9 @@ def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10)
         retrieval_backend=retrieval_backend,
         fallback_reason=fallback_reason,
         vector_store_status=vector_store_status,
+        query_variants=query_variants,
+        variant_recall_count=variant_recall_count,
+        deduplicated_candidate_count=len(candidates),
     )
 
 
@@ -204,6 +228,9 @@ def _response(
     retrieval_backend: str = "in_memory",
     fallback_reason: str | None = None,
     vector_store_status: dict[str, Any] | None = None,
+    query_variants: list[str] | None = None,
+    variant_recall_count: dict[str, int] | None = None,
+    deduplicated_candidate_count: int | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "query": query,
@@ -223,6 +250,14 @@ def _response(
             "zotero_write_performed": False,
         },
     }
+    if query_variants is not None:
+        payload["query_variants"] = list(query_variants)
+    if variant_recall_count is not None:
+        payload["variant_recall_count"] = dict(variant_recall_count)
+    if deduplicated_candidate_count is not None:
+        payload["deduplicated_candidate_count"] = int(
+            deduplicated_candidate_count
+        )
     if tier_counts is not None:
         payload["tier_counts"] = tier_counts
     return payload
@@ -234,6 +269,92 @@ def _candidate_text(candidate: dict[str, Any]) -> str:
         str(candidate.get("heading_path") or ""),
         str(candidate.get("passage_text") or ""),
     ]))
+
+
+def _query_recall_variants(query: str) -> list[str]:
+    normalized = normalize_query(query)
+    variants = [query]
+    compact = compact_identifier(normalized.normalized_query)
+    looks_like_short_identifier = (
+        len(compact) <= 20
+        and 2 <= len(normalized.terms) <= 3
+        and any(len(term) == 1 for term in normalized.terms)
+    )
+    if normalized.identifier_variants or looks_like_short_identifier:
+        for value in (
+            normalized.normalized_query,
+            compact,
+        ):
+            candidate = _compact_text(value)
+            if candidate and candidate.casefold() not in {
+                existing.casefold() for existing in variants
+            }:
+                variants.append(candidate)
+            if len(variants) == 3:
+                break
+    return variants
+
+
+def _merge_variant_candidates(
+    recall_payloads: list[tuple[str, dict[str, Any]]],
+    *,
+    limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    bounded_limit = max(1, min(int(limit), 50))
+    queues: list[tuple[str, list[dict[str, Any]]]] = []
+    recall_counts: dict[str, int] = {}
+    recall_details: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for variant, payload in recall_payloads:
+        results = [dict(item) for item in list(payload.get("results") or [])]
+        queues.append((variant, results))
+        recall_counts[variant] = len(results)
+        for rank, item in enumerate(results, start=1):
+            recall_details.setdefault(_candidate_identity(item), []).append(
+                {
+                    "query_variant": variant,
+                    "recall_rank": rank,
+                    "embedding_score": float(item.get("score") or 0.0),
+                }
+            )
+
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    offset = 0
+    while len(merged) < bounded_limit:
+        added = False
+        for _variant, results in queues:
+            if offset >= len(results):
+                continue
+            added = True
+            candidate = results[offset]
+            identity = _candidate_identity(candidate)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            candidate["variant_recall"] = recall_details.get(identity, [])
+            merged.append(candidate)
+            if len(merged) == bounded_limit:
+                break
+        if not added:
+            break
+        offset += 1
+    return merged, recall_counts
+
+
+def _candidate_identity(candidate: dict[str, Any]) -> tuple[str, str]:
+    document_id = str(candidate.get("document_id") or "")
+    chunk_id = str(
+        candidate.get("chunk_id")
+        or candidate.get("source_id")
+        or candidate.get("fragment_id")
+        or ""
+    )
+    if not document_id or not chunk_id:
+        return (
+            document_id,
+            "anonymous:" + str(id(candidate)),
+        )
+    return document_id, chunk_id
 
 
 def _set_local_cache_env() -> None:
