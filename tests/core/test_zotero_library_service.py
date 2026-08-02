@@ -169,7 +169,10 @@ def test_two_level_annotation_and_direct_child_note_aggregation(tmp_path, monkey
     )["items"][0]
     assert item["parent_key"] == "FMF4LBDE"
     assert item["attachment_keys"] == ["ATT1", "ATT2"]
-    assert item["primary_pdf_attachment_key"] == "ATT1"
+    assert item["primary_pdf_attachment_key"] is None
+    assert item["attachment_selection_required"] is True
+    assert item["pdf_attachment_count"] == 2
+    assert item["attachment_count"] == 2
     assert item["annotation_count"] == 2
     assert item["child_note_count"] == 1
     assert item["recent_activity_at"] == "2026-04-01"
@@ -209,6 +212,44 @@ def test_no_annotations_is_explicit_zero(tmp_path, monkeypatch):
     )["items"][0]
     assert item["annotation_count"] == 0
     assert item["child_note_count"] == 0
+
+
+def test_zero_pdf_has_no_primary_or_selection_requirement(tmp_path, monkeypatch):
+    _fixture(tmp_path, monkeypatch)
+    item = zotero_library_service.list_parent_items(
+        query="Deep Learning", db_path=None
+    )["items"][0]
+    assert item["attachment_count"] == 0
+    assert item["pdf_attachment_count"] == 0
+    assert item["primary_pdf_attachment_key"] is None
+    assert item["attachment_selection_required"] is False
+
+
+def test_one_pdf_is_the_only_safe_primary(tmp_path, monkeypatch):
+    snapshot = _fixture(tmp_path, monkeypatch)
+    with sqlite3.connect(snapshot) as connection:
+        connection.execute("DELETE FROM itemAttachments WHERE itemID = 11")
+        connection.execute("DELETE FROM items WHERE itemID = 11")
+    item = zotero_library_service.list_parent_items(
+        query="FMF4LBDE", db_path=None
+    )["items"][0]
+    assert item["attachment_count"] == 1
+    assert item["pdf_attachment_count"] == 1
+    assert item["primary_pdf_attachment_key"] == "ATT1"
+    assert item["attachment_selection_required"] is False
+
+
+def test_two_pdf_sort_order_never_creates_primary(tmp_path, monkeypatch):
+    snapshot = _fixture(tmp_path, monkeypatch)
+    with sqlite3.connect(snapshot) as connection:
+        connection.execute("UPDATE items SET key='ZZZ' WHERE itemID=10")
+        connection.execute("UPDATE items SET key='AAA' WHERE itemID=11")
+    item = zotero_library_service.list_parent_items(
+        query="FMF4LBDE", db_path=None
+    )["items"][0]
+    assert item["attachment_keys"] == ["AAA", "ZZZ"]
+    assert item["primary_pdf_attachment_key"] is None
+    assert item["attachment_selection_required"] is True
 
 
 def test_chat_tool_passes_document_type_to_parent_service(monkeypatch):
@@ -278,6 +319,8 @@ def test_status_filters_available_and_imported_without_silent_ignore(
     assert [item["parent_key"] for item in imported["items"]] == ["FMF4LBDE"]
     assert imported["items"][0]["status"] == "imported"
     assert imported["items"][0]["imported_document_id"] == 7
+    assert imported["items"][0]["primary_pdf_attachment_key"] is None
+    assert imported["items"][0]["attachment_selection_required"] is True
     assert [item["parent_key"] for item in available["items"]] == ["BOOK1"]
 
 

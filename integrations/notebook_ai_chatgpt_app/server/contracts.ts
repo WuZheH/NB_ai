@@ -116,7 +116,9 @@ export interface ZoteroLibraryItem {
   date: string;
   attachment_keys: string[];
   primary_pdf_attachment_key: string | null;
+  attachment_selection_required: boolean;
   has_pdf: boolean;
+  pdf_attachment_count: number;
   attachment_count: number;
   attachment_choices: Array<{ zotero_attachment_key: string; file_name: string | null; path_exists: boolean; content_type: string | null }>;
   annotation_count: number;

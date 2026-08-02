@@ -153,10 +153,12 @@ def list_parent_items(
                     "attachment_keys": attachment_keys,
                     "primary_pdf_attachment_key": (
                         str(pdf_choices[0]["zotero_attachment_key"])
-                        if pdf_choices
+                        if len(pdf_choices) == 1
                         else None
                     ),
+                    "attachment_selection_required": len(pdf_choices) > 1,
                     "has_pdf": bool(pdf_choices),
+                    "pdf_attachment_count": len(pdf_choices),
                     "attachment_count": len(attachment_choices),
                     "attachment_choices": attachment_choices,
                     "annotation_count": annotation_count,
