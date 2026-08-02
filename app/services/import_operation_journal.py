@@ -1085,6 +1085,22 @@ class ImportOperationJournalStore:
         with self._lock:
             return self._find_by_token_digest_unlocked(token_digest)
 
+    def find_by_document_id(
+        self, document_id: int
+    ) -> list[ImportOperationJournal]:
+        """Return fail-closed, deterministically ordered records for a document."""
+        _validate_int_not_bool(
+            document_id,
+            "document_id",
+            min_val=1,
+        )
+        with self._lock:
+            return [
+                record
+                for record in self._scan_records_unlocked()
+                if record.document_id == document_id
+            ]
+
     def find_latest_by_token_digest(
         self, token_digest: str
     ) -> ImportOperationJournal | None:
@@ -1166,9 +1182,26 @@ class ImportOperationJournalStore:
     ) -> list[ImportOperationJournal]:
         _validate_sha256(token_digest, "token_digest")
 
+        return [
+            record
+            for record in self._scan_records_unlocked()
+            if record.confirmation_token_digest == token_digest
+        ]
+
+    def _scan_records_unlocked(self) -> list[ImportOperationJournal]:
+        """Read every journal-shaped entry without following unsafe paths."""
+
         journal_dir = self._journal_dir
-        if not journal_dir.is_dir():
+        if journal_dir.is_symlink():
+            raise JournalValidationError(
+                "Journal directory is a symlink; scan aborted"
+            )
+        if not journal_dir.exists():
             return []
+        if not journal_dir.is_dir():
+            raise JournalValidationError(
+                "Journal path exists but is not a directory; scan aborted"
+            )
 
         results: list[ImportOperationJournal] = []
         for entry in sorted(journal_dir.iterdir()):
@@ -1199,8 +1232,7 @@ class ImportOperationJournalStore:
                 )
 
             record = ImportOperationJournal.from_dict(data)
-            if record.confirmation_token_digest == token_digest:
-                results.append(record)
+            results.append(record)
 
         results.sort(key=lambda r: (_started_dt(r), r.operation_id))
         return results

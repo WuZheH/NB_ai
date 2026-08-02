@@ -204,6 +204,13 @@ export interface IntegrityReportResponse {
     transaction_fingerprint: string;
     source_revision_fingerprint: string;
     lifecycle_events: string;
+    terminal_status: string;
+    terminal_stage: string;
+    journal_operation_id: string;
+    journal_revision: number | "not_recorded";
+    receipt_recorded: boolean | "not_recorded";
+    journal_updated_at: string;
+    journal_terminal_events: string;
   };
   writes_performed: {
     production_db: false;

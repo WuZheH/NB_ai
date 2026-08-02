@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from app.services import document_integrity_report_service as service
 from app.services import local_pdf_source_binding_service
+from app.services.import_operation_journal import (
+    ImportOperationJournal,
+    ImportOperationJournalStore,
+)
 from app.services.retrieval.source_registry import (
     RetrievalSourceRegistry,
 )
@@ -230,6 +236,60 @@ def _patch_ready_dependencies(
     )
 
 
+def _write_terminal_journal(
+    runtime: service.IntegrityReportRuntime,
+    *,
+    operation_id: str = "d" * 32,
+    transaction_fingerprint: str = "e" * 64,
+    source_revision_fingerprint: str = "b" * 64,
+    source_pdf_sha256: str = "a" * 64,
+    status: str = "committed",
+    stage: str = "receipt_persisted",
+    completion_receipt: dict[str, object] | None = None,
+) -> ImportOperationJournal:
+    assert runtime.import_journal_dir is not None
+    store = ImportOperationJournalStore(runtime.import_journal_dir)
+    store._ensure_dir()
+    receipt = (
+        {
+            "kind": "success",
+            "response": {"document_id": 1, "chunk_count": 2},
+        }
+        if completion_receipt is None
+        else completion_receipt
+    )
+    record = ImportOperationJournal(
+        operation_id=operation_id,
+        confirmation_token_digest="f" * 64,
+        transaction_fingerprint=transaction_fingerprint,
+        source_revision_fingerprint=source_revision_fingerprint,
+        title="Fixture",
+        zotero_item_key="ITEM1",
+        zotero_attachment_key="ATT1",
+        source_pdf_sha256=source_pdf_sha256,
+        owner_process_id=os.getpid(),
+        owner_process_started_at="2026-08-02T01:00:00+00:00",
+        owner_thread_id=1,
+        started_at="2026-08-02T01:00:00+00:00",
+        updated_at="2026-08-02T01:01:00+00:00",
+        heartbeat_at="2026-08-02T01:01:00+00:00",
+        revision=7,
+        status=status,
+        stage=stage,
+        writes_performed=status == "committed",
+        document_id=1,
+        chunk_count=2,
+        error=(
+            {"error_code": "fixture_failure"}
+            if status in {"failed", "orphaned"}
+            else None
+        ),
+        completion_receipt=receipt,
+    )
+    store._write_atomic(record.to_dict(), store._journal_path(operation_id))
+    return record
+
+
 def test_integrity_report_explains_note_eligibility_and_is_read_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -430,8 +490,15 @@ def test_integrity_report_reads_safe_import_history_from_source_trace(
     assert result["history"] == {
         **{key: value for key, value in history.items() if key != "lifecycle_events"},
         "lifecycle_events": "previewed,confirmed,transaction_started",
+        "terminal_status": "not_recorded",
+        "terminal_stage": "not_recorded",
+        "journal_operation_id": "not_recorded",
+        "journal_revision": "not_recorded",
+        "receipt_recorded": "not_recorded",
+        "journal_updated_at": "not_recorded",
+        "journal_terminal_events": "not_recorded",
     }
-    assert "historical_events_not_recorded" not in result["warnings"]
+    assert "historical_events_not_recorded" in result["warnings"]
     assert result["writes_performed"] == {
         "production_db": False,
         "fts": False,
@@ -568,13 +635,213 @@ def test_integrity_report_accepts_complete_local_pdf_source_audit(
     assert result["source"]["source_type"] == "local_pdf"
     assert result["pdf_sha256"] == digest
     assert result["database"]["source_binding_count"] == 1
-    assert all(
-        value != "not_recorded"
-        for value in result["history"].values()
-    )
+    for key in (
+        "confirmation_token_fingerprint",
+        "previewed_at",
+        "confirmed_at",
+        "transaction_fingerprint",
+        "source_revision_fingerprint",
+        "lifecycle_events",
+    ):
+        assert result["history"][key] != "not_recorded"
+    assert result["history"]["terminal_status"] == "not_recorded"
     assert result["verdict"] == "warn", result["warnings"]
     assert "document_source_binding_missing" not in result["warnings"]
-    assert "historical_events_not_recorded" not in result["warnings"]
+    assert "historical_events_not_recorded" in result["warnings"]
+
+
+def test_integrity_report_projects_matching_committed_journal_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    with sqlite3.connect(runtime.db_path) as connection:
+        connection.execute(
+            """
+            UPDATE document_sources
+            SET source_trace_json = ?
+            WHERE document_id = 1
+            """,
+            (
+                json.dumps(
+                    {
+                        "source_pdf_sha256": "a" * 64,
+                        "source_revision_fingerprint": "b" * 64,
+                        "import_history": {
+                            "previewed_at": "2026-08-02T00:59:00+00:00",
+                            "confirmed_at": "2026-08-02T01:00:00+00:00",
+                            "transaction_fingerprint": "e" * 64,
+                            "source_revision_fingerprint": "b" * 64,
+                            "lifecycle_events": [
+                                "previewed",
+                                "confirmed",
+                                "transaction_started",
+                            ],
+                        },
+                    }
+                ),
+            ),
+        )
+    record = _write_terminal_journal(runtime)
+    before_db = runtime.db_path.read_bytes()
+    before_journal = {
+        path.name: path.read_bytes()
+        for path in runtime.import_journal_dir.iterdir()
+    }
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["history"]["terminal_status"] == "committed"
+    assert result["history"]["terminal_stage"] == "receipt_persisted"
+    assert result["history"]["journal_operation_id"] == record.operation_id
+    assert result["history"]["journal_revision"] == 7
+    assert result["history"]["receipt_recorded"] is True
+    assert result["history"]["journal_terminal_events"] == (
+        "final_verification_completed,receipt_persisted"
+    )
+    serialized = json.dumps(result)
+    assert record.confirmation_token_digest not in serialized
+    assert str(runtime.import_journal_dir) not in serialized
+    assert runtime.db_path.read_bytes() == before_db
+    assert {
+        path.name: path.read_bytes()
+        for path in runtime.import_journal_dir.iterdir()
+    } == before_journal
+
+
+def test_integrity_report_warns_for_multiple_matching_journals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    _write_terminal_journal(runtime, operation_id="d" * 32)
+    _write_terminal_journal(runtime, operation_id="e" * 32)
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["verdict"] == "fail"
+    assert "import_journal_multiple_matches" in result["warnings"]
+    assert result["history"]["terminal_status"] == "not_recorded"
+
+
+@pytest.mark.parametrize(
+    ("field", "journal_value", "warning"),
+    (
+        (
+            "transaction_fingerprint",
+            "1" * 64,
+            "import_journal_transaction_fingerprint_mismatch",
+        ),
+        (
+            "source_revision_fingerprint",
+            "2" * 64,
+            "import_journal_source_revision_mismatch",
+        ),
+        (
+            "source_pdf_sha256",
+            "3" * 64,
+            "import_journal_pdf_sha256_mismatch",
+        ),
+    ),
+)
+def test_integrity_report_rejects_journal_identity_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    journal_value: str,
+    warning: str,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    with sqlite3.connect(runtime.db_path) as connection:
+        connection.execute(
+            """
+            UPDATE document_sources
+            SET source_trace_json = ?
+            WHERE document_id = 1
+            """,
+            (
+                json.dumps(
+                    {
+                        "source_pdf_sha256": "a" * 64,
+                        "source_revision_fingerprint": "b" * 64,
+                        "import_history": {
+                            "transaction_fingerprint": "e" * 64,
+                            "source_revision_fingerprint": "b" * 64,
+                        },
+                    }
+                ),
+            ),
+        )
+    kwargs = {field: journal_value}
+    _write_terminal_journal(runtime, **kwargs)
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["verdict"] == "fail"
+    assert warning in result["warnings"]
+    assert result["history"]["receipt_recorded"] is False
+
+
+def test_integrity_report_rejects_failed_or_invalid_committed_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    _write_terminal_journal(
+        runtime,
+        status="failed",
+        completion_receipt={"kind": "failure"},
+    )
+    failed = service.build_integrity_report(document_id=1, runtime=runtime)
+    assert "import_journal_terminal_not_committed" in failed["warnings"]
+    assert failed["history"]["receipt_recorded"] is False
+
+    for entry in runtime.import_journal_dir.iterdir():
+        entry.unlink()
+    _write_terminal_journal(
+        runtime,
+        completion_receipt={"kind": "failure"},
+    )
+    invalid = service.build_integrity_report(document_id=1, runtime=runtime)
+    assert invalid["verdict"] == "fail"
+    assert "import_journal_committed_receipt_invalid" in invalid["warnings"]
+
+
+def test_integrity_report_fails_closed_for_malformed_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    runtime.import_journal_dir.mkdir()
+    (runtime.import_journal_dir / ("a" * 32 + ".json")).write_text(
+        "{not-json",
+        encoding="utf-8",
+    )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["verdict"] == "fail"
+    assert "import_journal_invalid" in result["warnings"]
 
 
 def test_integrity_report_requires_exact_existing_document_id(

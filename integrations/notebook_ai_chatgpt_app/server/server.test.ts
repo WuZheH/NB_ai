@@ -159,6 +159,13 @@ class MockNotebookClient extends NotebookClient {
         transaction_fingerprint: "not_recorded",
         source_revision_fingerprint: "not_recorded",
         lifecycle_events: "not_recorded",
+        terminal_status: "not_recorded",
+        terminal_stage: "not_recorded",
+        journal_operation_id: "not_recorded",
+        journal_revision: "not_recorded" as const,
+        receipt_recorded: "not_recorded" as const,
+        journal_updated_at: "not_recorded",
+        journal_terminal_events: "not_recorded",
       },
       writes_performed: {
         production_db: false as const,

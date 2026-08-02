@@ -560,6 +560,49 @@ def test_find_by_token_digest_sorted_by_started_at_then_op_id(
     assert results[2].operation_id == "b" * 32
 
 
+def test_find_by_document_id_is_validated_and_deterministic(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    store._ensure_dir()
+    for op_id, started, document_id in (
+        ("b" * 32, _ts(10), 7),
+        ("a" * 32, _ts(10), 7),
+        ("c" * 32, _ts(9), 7),
+        ("d" * 32, _ts(8), 8),
+    ):
+        record = _make_record(
+            operation_id=op_id,
+            started_at=started,
+            status="committed",
+            stage="receipt_persisted",
+            writes_performed=True,
+            document_id=document_id,
+            chunk_count=1,
+            completion_receipt={"kind": "success"},
+        )
+        store._write_atomic(record.to_dict(), store._journal_path(op_id))
+
+    assert [
+        record.operation_id for record in store.find_by_document_id(7)
+    ] == ["c" * 32, "a" * 32, "b" * 32]
+    assert store.find_by_document_id(9) == []
+    for invalid in (0, -1, True, False):
+        with pytest.raises(JournalValidationError, match="document_id"):
+            store.find_by_document_id(invalid)  # type: ignore[arg-type]
+
+
+def test_find_by_document_id_fails_closed_on_malformed_entry(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    store._ensure_dir()
+    store._journal_path("a" * 32).write_text("{bad", encoding="utf-8")
+
+    with pytest.raises(JournalValidationError):
+        store.find_by_document_id(1)
+
+
 def test_find_latest_tiebreaker_uses_operation_id(tmp_path: Path) -> None:
     store = _store(tmp_path)
     digest = _DIGEST_W

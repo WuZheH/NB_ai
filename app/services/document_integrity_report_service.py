@@ -11,8 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from app.core.database import connect_readonly_sqlite
-from app.core.paths import DEFAULT_DB_PATH, FTS_DB_PATH, FTS_MANIFEST_PATH, LANCEDB_DIR
+from app.core.paths import DATA_DIR, DEFAULT_DB_PATH, FTS_DB_PATH, FTS_MANIFEST_PATH, LANCEDB_DIR
 from app.services import vector_store_service
+from app.services.import_operation_journal import (
+    ImportOperationJournal,
+    ImportOperationJournalStore,
+    JournalError,
+)
 from app.services.retrieval import fts_status_service
 from app.services.retrieval.source_registry import RetrievalSourceRegistry
 from app.services.retrieval.sources.personal_note_adapter import (
@@ -45,6 +50,7 @@ class IntegrityReportRuntime:
     fts_manifest_path: Path
     vector_store_path: Path
     vector_manifest_path: Path
+    import_journal_dir: Path | None = None
 
     @classmethod
     def production(cls) -> "IntegrityReportRuntime":
@@ -54,6 +60,7 @@ class IntegrityReportRuntime:
             fts_manifest_path=FTS_MANIFEST_PATH,
             vector_store_path=LANCEDB_DIR,
             vector_manifest_path=vector_store_service.MANIFEST_PATH,
+            import_journal_dir=DATA_DIR / "import_operation_journal",
         )
 
 
@@ -82,6 +89,13 @@ def build_integrity_report(
     )
     history = _history_from_source(source)
     pdf_sha256, pdf_warning = _resolve_pdf_sha256(source)
+    journal_warnings, journal_failures = _apply_terminal_journal_projection(
+        document_id=document_id,
+        journal_dir=actual.import_journal_dir,
+        source=source,
+        history=history,
+        pdf_sha256=pdf_sha256,
+    )
     expected_fts, exclusions = _expected_fts_fragments(
         actual.db_path,
         document_id,
@@ -177,6 +191,8 @@ def build_integrity_report(
         history=history,
         writes_performed=writes_performed,
         pdf_warning=pdf_warning,
+        journal_warnings=journal_warnings,
+        journal_failures=journal_failures,
     )
     return {
         "status": "ok",
@@ -385,7 +401,7 @@ def _source_row(connection: sqlite3.Connection, document_id: int) -> dict[str, A
     }
 
 
-def _history_from_source(source: dict[str, Any]) -> dict[str, str]:
+def _history_from_source(source: dict[str, Any]) -> dict[str, Any]:
     value = source.pop("_import_history", None)
     fields = (
         "confirmation_token_fingerprint",
@@ -399,6 +415,17 @@ def _history_from_source(source: dict[str, Any]) -> dict[str, str]:
         for key in fields
     }
     history["lifecycle_events"] = "not_recorded"
+    history.update(
+        {
+            "terminal_status": "not_recorded",
+            "terminal_stage": "not_recorded",
+            "journal_operation_id": "not_recorded",
+            "journal_revision": "not_recorded",
+            "receipt_recorded": "not_recorded",
+            "journal_updated_at": "not_recorded",
+            "journal_terminal_events": "not_recorded",
+        }
+    )
     if not isinstance(value, dict):
         return history
     for key in fields:
@@ -413,6 +440,119 @@ def _history_from_source(source: dict[str, Any]) -> dict[str, str]:
     if events:
         history["lifecycle_events"] = ",".join(events)
     return history
+
+
+def _apply_terminal_journal_projection(
+    *,
+    document_id: int,
+    journal_dir: Path | None,
+    source: dict[str, Any],
+    history: dict[str, Any],
+    pdf_sha256: str,
+) -> tuple[list[str], list[str]]:
+    if journal_dir is None:
+        return [], []
+
+    try:
+        matches = ImportOperationJournalStore(
+            Path(journal_dir)
+        ).find_by_document_id(document_id)
+    except JournalError:
+        return [], ["import_journal_invalid"]
+
+    if not matches:
+        return [], []
+    if len(matches) != 1:
+        return [], ["import_journal_multiple_matches"]
+
+    record = matches[0]
+    history.update(
+        {
+            "terminal_status": record.status,
+            "terminal_stage": record.stage,
+            "journal_operation_id": record.operation_id,
+            "journal_revision": record.revision,
+            "receipt_recorded": False,
+            "journal_updated_at": record.updated_at,
+            "journal_terminal_events": _journal_terminal_events(record),
+        }
+    )
+
+    failures: list[str] = []
+    _append_mismatch(
+        failures,
+        "import_journal_transaction_fingerprint_mismatch",
+        _recorded_value(history.get("transaction_fingerprint")),
+        record.transaction_fingerprint,
+    )
+    source_revision = _recorded_value(
+        history.get("source_revision_fingerprint")
+    ) or _recorded_value(source.get("source_revision_fingerprint"))
+    _append_mismatch(
+        failures,
+        "import_journal_source_revision_mismatch",
+        source_revision,
+        record.source_revision_fingerprint,
+    )
+    if _SHA256_RE.fullmatch(str(pdf_sha256)):
+        _append_mismatch(
+            failures,
+            "import_journal_pdf_sha256_mismatch",
+            str(pdf_sha256).lower(),
+            record.source_pdf_sha256.lower(),
+        )
+
+    receipt = dict(record.completion_receipt or {})
+    response = receipt.get("response")
+    if isinstance(response, dict):
+        receipt_document_id = response.get("document_id")
+        if (
+            isinstance(receipt_document_id, int)
+            and not isinstance(receipt_document_id, bool)
+            and receipt_document_id != document_id
+        ):
+            failures.append("import_journal_receipt_document_mismatch")
+
+    committed = (
+        record.status == "committed"
+        and record.stage == "receipt_persisted"
+    )
+    valid_success_receipt = receipt.get("kind") == "success"
+    if committed and not valid_success_receipt:
+        failures.append("import_journal_committed_receipt_invalid")
+    if committed and valid_success_receipt and not failures:
+        history["receipt_recorded"] = True
+        return [], []
+    if record.status in {"failed", "orphaned"}:
+        return ["import_journal_terminal_not_committed"], failures
+    if not committed:
+        return ["import_journal_terminal_state_incomplete"], failures
+    return [], failures
+
+
+def _journal_terminal_events(record: ImportOperationJournal) -> str:
+    if record.status == "committed" and record.stage == "receipt_persisted":
+        return "final_verification_completed,receipt_persisted"
+    if record.stage == "receipt_persisted":
+        return "receipt_persisted"
+    return "not_recorded"
+
+
+def _recorded_value(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized or normalized == "not_recorded":
+        return None
+    return normalized
+
+
+def _append_mismatch(
+    failures: list[str],
+    code: str,
+    recorded: str | None,
+    journal_value: str,
+) -> None:
+    if recorded is not None and recorded != str(journal_value):
+        failures.append(code)
 
 
 def _resolve_pdf_sha256(
@@ -604,9 +744,11 @@ def _evaluate_verdict(
     database: dict[str, Any],
     fts: dict[str, Any],
     vectors: dict[str, Any],
-    history: dict[str, str],
+    history: dict[str, Any],
     writes_performed: dict[str, bool],
     pdf_warning: str | None,
+    journal_warnings: list[str] | None = None,
+    journal_failures: list[str] | None = None,
 ) -> tuple[str, list[str]]:
     failures: list[str] = []
     warnings: list[str] = []
@@ -650,6 +792,7 @@ def _evaluate_verdict(
             )
     if any(writes_performed.values()):
         failures.append("read_only_contract_violated")
+    failures.extend(journal_failures or [])
 
     if pdf_warning:
         warnings.append(pdf_warning)
@@ -665,6 +808,7 @@ def _evaluate_verdict(
         for value in history.values()
     ):
         warnings.append("historical_events_not_recorded")
+    warnings.extend(journal_warnings or [])
     warnings.extend(failures)
     normalized = list(dict.fromkeys(warnings))
     if failures:

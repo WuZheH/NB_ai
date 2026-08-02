@@ -74,6 +74,13 @@ export const integrityReportOutputShape = {
     transaction_fingerprint: z.string(),
     source_revision_fingerprint: z.string(),
     lifecycle_events: z.string(),
+    terminal_status: z.string(),
+    terminal_stage: z.string(),
+    journal_operation_id: z.string(),
+    journal_revision: z.union([nonNegativeInteger, z.literal("not_recorded")]),
+    receipt_recorded: z.union([z.boolean(), z.literal("not_recorded")]),
+    journal_updated_at: z.string(),
+    journal_terminal_events: z.string(),
   }),
   writes_performed: z.object({
     production_db: z.literal(false),
