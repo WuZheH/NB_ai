@@ -49,9 +49,9 @@ def list_catalog(*, inbox_root: Path, query: str | None = None, limit: int = 50)
         return {"status": "ok", "scope": "catalog", "count": 0, "items": [], "truncated": False}
     needle = (query or "").strip().casefold()
     items: list[dict[str, Any]] = []
-    for pdf in sorted(root.rglob("*.pdf"), key=lambda p: p.as_posix().casefold()):
+    for pdf in _catalog_pdf_files(root):
         resolved = pdf.resolve(strict=False)
-        if not _inside(root, resolved) or resolved.suffix.lower() != ".pdf" or not resolved.is_file():
+        if not _inside(root, resolved) or not resolved.is_file():
             continue
         relative = resolved.relative_to(root).as_posix()
         title = resolved.stem
@@ -68,6 +68,26 @@ def list_catalog(*, inbox_root: Path, query: str | None = None, limit: int = 50)
         if len(items) >= max(1, min(int(limit), 50)):
             break
     return {"status": "ok", "scope": "catalog", "count": len(items), "items": items, "truncated": len(items) >= max(1, min(int(limit), 50))}
+
+
+def _catalog_pdf_files(root: Path) -> list[Path]:
+    discovered: dict[Path, Path] = {}
+    for candidate in root.rglob("*"):
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+        if candidate.suffix.casefold() != ".pdf":
+            continue
+        resolved = candidate.resolve(strict=False)
+        if not _inside(root, resolved):
+            continue
+        discovered.setdefault(resolved, candidate)
+    return sorted(
+        discovered.values(),
+        key=lambda path: (
+            path.as_posix().casefold(),
+            path.as_posix(),
+        ),
+    )
 
 
 def note_sources(*, pdf: Path, inbox_root: Path) -> list[dict[str, Any]]:
