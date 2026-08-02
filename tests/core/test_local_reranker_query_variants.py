@@ -41,7 +41,16 @@ def _patch_reranker(monkeypatch: pytest.MonkeyPatch) -> list[list[tuple[str, str
 
 @pytest.mark.parametrize(
     "query",
-    ("R-precision", "R precision", "R\u2011precision", "R\u2014precision"),
+    (
+        "R-precision",
+        "r-precision",
+        "R precision",
+        "r precision",
+        "R\u2011precision",
+        "r\u2011precision",
+        "R\u2014precision",
+        "r\u2014precision",
+    ),
 )
 def test_identifier_variants_recall_and_rerank_with_original_query(
     monkeypatch: pytest.MonkeyPatch,

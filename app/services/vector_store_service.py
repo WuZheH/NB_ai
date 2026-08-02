@@ -1101,8 +1101,8 @@ def inspect_document_vector_state(
         or document_id <= 0
     ):
         raise ValueError("document_id must be a positive integer")
-    passage_expected = sorted(
-        set(_validated_passage_source_ids(expected_passage_source_ids))
+    passage_expected = _validated_expected_passage_source_ids(
+        expected_passage_source_ids
     )
     note_expected = sorted(
         {str(value) for value in expected_note_source_ids if str(value)}
@@ -1241,8 +1241,9 @@ def _inspect_document_table_state(
         actual = _parse_document_vector_rows(
             records,
             document_id=document_id,
+            kind=kind,
         )
-    except (TypeError, ValueError):
+    except Exception:
         return _unavailable_document_vector_state(
             sorted(expected),
             f"{kind}_row_parse_failed",
@@ -1263,6 +1264,7 @@ def _parse_document_vector_rows(
     records: Any,
     *,
     document_id: int,
+    kind: str,
 ) -> set[str]:
     if not isinstance(records, list):
         raise TypeError("document vector rows must be a list")
@@ -1283,9 +1285,26 @@ def _parse_document_vector_rows(
             row_document_id
         ):
             raise ValueError("document vector row has invalid document_id")
-        source_id = str(record.get("source_id") or "").strip()
+        raw_source_id = record.get("source_id")
+        if not isinstance(raw_source_id, str):
+            raise ValueError("document vector row has invalid source_id")
+        source_id = raw_source_id.strip()
         if not source_id:
             raise ValueError("document vector row has invalid source_id")
+        if kind == "passage":
+            source_document_id, _chunk_id = _parse_passage_source_id(
+                source_id
+            )
+            if source_document_id != row_document_id:
+                raise ValueError(
+                    "passage source_id document does not match row"
+                )
+        elif kind == "note":
+            prefix, separator, identity = source_id.partition(":")
+            if prefix != "note" or separator != ":" or not identity:
+                raise ValueError("note source_id is invalid")
+        else:
+            raise ValueError("document vector kind is invalid")
         if row_document_id == document_id:
             actual.add(source_id)
     return actual
@@ -1747,8 +1766,26 @@ def _validated_passage_source_ids(source_ids: list[str]) -> list[str]:
     return requested
 
 
+def _validated_expected_passage_source_ids(
+    source_ids: list[str],
+) -> list[str]:
+    requested: list[str] = []
+    seen: set[str] = set()
+    for raw_source_id in source_ids:
+        if not isinstance(raw_source_id, str):
+            raise ValueError("expected passage source id must be a string")
+        source_id = raw_source_id.strip()
+        _parse_passage_source_id(source_id)
+        if source_id not in seen:
+            requested.append(source_id)
+            seen.add(source_id)
+    return sorted(requested)
+
+
 def _parse_passage_source_id(source_id: str) -> tuple[int, int]:
-    parts = str(source_id).split(":")
+    if not isinstance(source_id, str):
+        raise ValueError("invalid passage source id type")
+    parts = source_id.split(":")
     if len(parts) != 3 or parts[0] != "chunk":
         raise ValueError(f"invalid passage source id: {source_id}")
     try:

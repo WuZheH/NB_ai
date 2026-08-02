@@ -182,6 +182,95 @@ def test_document_vector_state_missing_and_orphans_can_coexist(
     assert result["note"]["orphan_source_ids"] == ["note:orphan"]
 
 
+@pytest.mark.parametrize(
+    ("rows", "orphan_count"),
+    (
+        ([], 0),
+        ([{"document_id": 1, "source_id": "chunk:1:99"}], 1),
+        ([{"document_id": 2, "source_id": "chunk:2:99"}], 0),
+    ),
+)
+def test_zero_passage_expectations_still_find_document_orphans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[dict[str, Any]],
+    orphan_count: int,
+) -> None:
+    store = tmp_path / "vectors"
+    store.mkdir()
+    db = _Db(
+        {
+            service.PASSAGE_TABLE: _Table(rows),
+            service.NOTE_TABLE: _Table([]),
+        }
+    )
+    monkeypatch.setattr(
+        service,
+        "_connect_existing_vector_store",
+        lambda _path: db,
+    )
+
+    result = service.inspect_document_vector_state(
+        document_id=1,
+        expected_passage_source_ids=[],
+        expected_note_source_ids=[],
+        store_path=store,
+    )
+
+    assert result["passage"]["expected_source_ids"] == []
+    assert result["passage"]["missing_count"] == 0
+    assert result["passage"]["orphan_count"] == orphan_count
+
+
+@pytest.mark.parametrize(
+    ("kind", "bad_source_id"),
+    (
+        ("passage", True),
+        ("passage", {"id": "chunk:1:1"}),
+        ("passage", ["chunk:1:1"]),
+        ("passage", None),
+        ("passage", ""),
+        ("passage", "bad:1:1"),
+        ("passage", "chunk:2:1"),
+        ("note", True),
+        ("note", {"id": "note:1"}),
+        ("note", ["note:1"]),
+        ("note", None),
+        ("note", ""),
+        ("note", "chunk:1:1"),
+        ("note", "note:"),
+    ),
+)
+def test_malformed_source_id_rows_degrade_without_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    bad_source_id: object,
+) -> None:
+    class UnfilteredTable(_Table):
+        def filtered(self, clause: str) -> list[dict[str, Any]]:
+            if clause.startswith("document_id = "):
+                return self.rows
+            return super().filtered(clause)
+
+    good_passage = _Table([])
+    good_note = _Table([])
+    bad_table = UnfilteredTable(
+        [{"document_id": 1, "source_id": bad_source_id}]
+    )
+    db = _Db(
+        {
+            service.PASSAGE_TABLE: (
+                bad_table if kind == "passage" else good_passage
+            ),
+            service.NOTE_TABLE: bad_table if kind == "note" else good_note,
+        }
+    )
+    result = _run_with_db(tmp_path, monkeypatch, db)
+
+    assert result[kind]["reason"] == f"{kind}_row_parse_failed"
+
+
 def test_old_schema_reports_capability_unavailable_without_full_scan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

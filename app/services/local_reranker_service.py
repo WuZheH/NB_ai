@@ -310,12 +310,9 @@ def _looks_like_short_identifier(query: str) -> bool:
     )
     if dashed:
         prefix = dashed.group(1)
-        return any(character.isdigit() for character in prefix) or (
-            prefix.upper() == prefix
-            and prefix.casefold() not in {"a", "i"}
-        )
+        return prefix.casefold() not in {"a", "i"}
     spaced = re.fullmatch(
-        r"([A-Z])\s+([A-Za-z0-9]{2,18})",
+        r"([A-Za-z])\s+([A-Za-z0-9]{2,18})",
         canonical,
     )
     return bool(

@@ -253,6 +253,7 @@ def _write_terminal_journal(
     source_pdf_sha256: str = "a" * 64,
     status: str = "committed",
     stage: str = "receipt_persisted",
+    chunk_count: int = 2,
     completion_receipt: dict[str, object] | None = None,
 ) -> ImportOperationJournal:
     assert runtime.import_journal_dir is not None
@@ -261,7 +262,7 @@ def _write_terminal_journal(
     receipt = (
         {
             "kind": "success",
-            "response": {"document_id": 1, "chunk_count": 2},
+            "response": {"document_id": 1, "chunk_count": chunk_count},
         }
         if completion_receipt is None
         else completion_receipt
@@ -286,7 +287,7 @@ def _write_terminal_journal(
         stage=stage,
         writes_performed=status == "committed",
         document_id=1,
-        chunk_count=2,
+        chunk_count=chunk_count,
         error=(
             {"error_code": "fixture_failure"}
             if status in {"failed", "orphaned"}
@@ -924,6 +925,79 @@ def test_committed_journal_requires_complete_matching_success_response(
         "journal_terminal_events",
     ):
         assert result["history"][key] == "not_recorded"
+
+
+@pytest.mark.parametrize(
+    ("journal_chunks", "receipt_chunks", "projects"),
+    (
+        (999, 999, False),
+        (2, 999, False),
+        (999, 2, False),
+        (2, 2, True),
+    ),
+)
+def test_terminal_journal_cross_checks_database_chunk_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    journal_chunks: int,
+    receipt_chunks: int,
+    projects: bool,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    _write_terminal_journal(
+        runtime,
+        chunk_count=journal_chunks,
+        completion_receipt={
+            "kind": "success",
+            "response": {
+                "document_id": 1,
+                "chunk_count": receipt_chunks,
+            },
+        },
+    )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    if projects:
+        assert result["history"]["terminal_status"] == "committed"
+        assert result["history"]["receipt_recorded"] is True
+    else:
+        assert result["verdict"] == "fail"
+        assert (
+            "import_journal_database_chunk_count_mismatch"
+            in result["warnings"]
+        )
+        for key in (
+            "terminal_status",
+            "terminal_stage",
+            "journal_operation_id",
+            "receipt_recorded",
+        ):
+            assert result["history"][key] == "not_recorded"
+
+
+def test_integrity_report_allows_document_with_zero_chunks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime(tmp_path)
+    _patch_ready_dependencies(monkeypatch)
+    with sqlite3.connect(runtime.db_path) as connection:
+        connection.execute("DELETE FROM knowledge_chunks WHERE document_id=1")
+    with sqlite3.connect(runtime.fts_index_path) as connection:
+        connection.execute(
+            "DELETE FROM retrieval_fragments WHERE source_type='pdf_chunk'"
+        )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["database"]["chunk_count"] == 0
+    assert result["vectors"]["passage_expected_count"] == 0
+    assert result["vectors"]["passage_missing_count"] == 0
 
 
 def test_integrity_report_fails_closed_for_malformed_journal(

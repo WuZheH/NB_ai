@@ -96,6 +96,7 @@ def build_integrity_report(
         source=source,
         history=history,
         pdf_sha256=pdf_sha256,
+        database_chunk_count=len(chunk_ids),
     )
     expected_fts, exclusions = _expected_fts_fragments(
         actual.db_path,
@@ -108,12 +109,19 @@ def build_integrity_report(
         expected_fts=expected_fts,
         exclusions=exclusions,
     )
-    passage_sources = vector_store_service.collect_passage_sources(
-        source_ids=[
-            vector_store_service.make_passage_source_id(document_id, chunk_id)
-            for chunk_id in chunk_ids
-        ],
-        source_db_path=actual.db_path,
+    passage_sources = (
+        vector_store_service.collect_passage_sources(
+            source_ids=[
+                vector_store_service.make_passage_source_id(
+                    document_id,
+                    chunk_id,
+                )
+                for chunk_id in chunk_ids
+            ],
+            source_db_path=actual.db_path,
+        )
+        if chunk_ids
+        else []
     )
     note_sources = vector_store_service.collect_personal_note_sources(
         document_id=document_id,
@@ -445,6 +453,7 @@ def _apply_terminal_journal_projection(
     source: dict[str, Any],
     history: dict[str, Any],
     pdf_sha256: str,
+    database_chunk_count: int,
 ) -> tuple[list[str], list[str]]:
     if journal_dir is None:
         return [], []
@@ -514,6 +523,13 @@ def _apply_terminal_journal_projection(
             failures.append("import_journal_receipt_chunk_count_invalid")
         elif receipt_chunk_count != record.chunk_count:
             failures.append("import_journal_receipt_chunk_count_mismatch")
+        if (
+            record.chunk_count != database_chunk_count
+            or receipt_chunk_count != database_chunk_count
+        ):
+            failures.append(
+                "import_journal_database_chunk_count_mismatch"
+            )
 
     if committed and not failures:
         history.update(
