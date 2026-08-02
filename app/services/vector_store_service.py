@@ -1085,6 +1085,188 @@ def inspect_note_vector_impact(
     }
 
 
+def inspect_document_vector_state(
+    *,
+    document_id: int,
+    expected_passage_source_ids: list[str],
+    expected_note_source_ids: list[str],
+    store_path: Path | None = None,
+) -> dict[str, Any]:
+    """Inspect one document's passage and note vectors without mutation."""
+
+    if (
+        isinstance(document_id, bool)
+        or not isinstance(document_id, int)
+        or document_id <= 0
+    ):
+        raise ValueError("document_id must be a positive integer")
+    passage_expected = sorted(
+        set(_validated_passage_source_ids(expected_passage_source_ids))
+    )
+    note_expected = sorted(
+        {str(value) for value in expected_note_source_ids if str(value)}
+    )
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    if not actual_store_path.exists():
+        return {
+            "status": "unavailable",
+            "read_only": True,
+            "passage": _unavailable_document_vector_state(
+                passage_expected,
+                "vector_store_unavailable",
+            ),
+            "note": _unavailable_document_vector_state(
+                note_expected,
+                "vector_store_unavailable",
+            ),
+        }
+    try:
+        db = _connect_existing_vector_store(actual_store_path)
+    except (VectorStoreUnavailable, VectorStoreSchemaMismatch):
+        return {
+            "status": "unavailable",
+            "read_only": True,
+            "passage": _unavailable_document_vector_state(
+                passage_expected,
+                "vector_store_unavailable",
+            ),
+            "note": _unavailable_document_vector_state(
+                note_expected,
+                "vector_store_unavailable",
+            ),
+        }
+
+    passage = _inspect_document_table_state(
+        db,
+        PASSAGE_TABLE,
+        document_id=document_id,
+        expected_source_ids=passage_expected,
+        kind="passage",
+    )
+    note = _inspect_document_table_state(
+        db,
+        NOTE_TABLE,
+        document_id=document_id,
+        expected_source_ids=note_expected,
+        kind="note",
+    )
+    statuses = {str(passage["status"]), str(note["status"])}
+    status = (
+        "unavailable"
+        if "unavailable" in statuses
+        else "capability_unavailable"
+        if "capability_unavailable" in statuses
+        else "ok"
+    )
+    return {
+        "status": status,
+        "read_only": True,
+        "passage": passage,
+        "note": note,
+    }
+
+
+def _inspect_document_table_state(
+    db: Any,
+    table_name: str,
+    *,
+    document_id: int,
+    expected_source_ids: list[str],
+    kind: str,
+) -> dict[str, Any]:
+    expected = set(expected_source_ids)
+    if table_name not in _table_names(db):
+        return _complete_document_vector_state(expected, set())
+    table = db.open_table(table_name)
+    fields = _scoped_table_schema_fields(table)
+    if fields is None or "document_id" not in fields or "source_id" not in fields:
+        try:
+            indexed = set(
+                _existing_records_by_source_ids(
+                    db,
+                    table_name,
+                    sorted(expected),
+                )
+            ) if expected else set()
+        except VectorStoreUnavailable:
+            indexed = set()
+        return {
+            "status": "capability_unavailable",
+            "reason": f"{kind}_schema_document_id_unavailable",
+            "expected_source_ids": sorted(expected),
+            "actual_source_ids": sorted(indexed),
+            "missing_source_ids": sorted(expected - indexed),
+            "orphan_source_ids": "not_available",
+            "missing_count": len(expected - indexed),
+            "orphan_count": "not_available",
+        }
+
+    where_clause = f"document_id = {document_id}"
+    try:
+        count = int(table.count_rows(where_clause))
+        records = (
+            table.search()
+            .where(where_clause)
+            .limit(max(count, 1))
+            .to_list()
+            if count
+            else []
+        )
+    except Exception:
+        return _unavailable_document_vector_state(
+            sorted(expected),
+            f"{kind}_document_query_failed",
+        )
+    actual = {
+        str(record.get("source_id") or "")
+        for record in records
+        if int(record.get("document_id") or 0) == document_id
+        and str(record.get("source_id") or "")
+    }
+    return _complete_document_vector_state(expected, actual)
+
+
+def _scoped_table_schema_fields(table: Any) -> set[str] | None:
+    schema = getattr(table, "schema", None)
+    if callable(schema):
+        schema = schema()
+    if schema is None:
+        return None
+    return {str(field.name) for field in schema}
+
+
+def _complete_document_vector_state(
+    expected: set[str],
+    actual: set[str],
+) -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "reason": None,
+        "expected_source_ids": sorted(expected),
+        "actual_source_ids": sorted(actual),
+        "missing_source_ids": sorted(expected - actual),
+        "orphan_source_ids": sorted(actual - expected),
+        "missing_count": len(expected - actual),
+        "orphan_count": len(actual - expected),
+    }
+
+
+def _unavailable_document_vector_state(
+    expected_source_ids: list[str],
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "expected_source_ids": list(expected_source_ids),
+        "actual_source_ids": [],
+        "missing_source_ids": list(expected_source_ids),
+        "orphan_source_ids": "not_available",
+        "missing_count": len(expected_source_ids),
+        "orphan_count": "not_available",
+    }
+
+
 def cleanup_document_vectors(
     *,
     passage_source_ids: list[str],

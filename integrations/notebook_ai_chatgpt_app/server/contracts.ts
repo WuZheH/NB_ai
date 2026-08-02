@@ -198,6 +198,7 @@ export interface IntegrityReportResponse {
     note_indexed_count: number;
     note_missing_count: number;
     note_orphan_count: number | "not_available";
+    reasons: string[];
   };
   history: {
     confirmation_token_fingerprint: string;

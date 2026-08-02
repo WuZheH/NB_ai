@@ -126,50 +126,45 @@ def build_integrity_report(
         str(source["source_id"])
         for source in note_sources
     ]
-    try:
-        vector_impact = vector_store_service.inspect_document_vector_impact(
-            passage_source_ids=passage_source_ids,
-            object_keys=[],
-            store_path=actual.vector_store_path,
-        )
-        note_impact = vector_store_service.inspect_note_vector_impact(
-            note_source_ids=note_source_ids,
-            store_path=actual.vector_store_path,
-        )
-        indexed_passage_ids = {
-            str(value)
-            for value in vector_impact.get("passage_source_ids", [])
-        }
-        indexed_note_ids = {
-            str(value)
-            for value in note_impact.get("note_source_ids", [])
-        }
-        passage_missing_count = len(set(passage_source_ids) - indexed_passage_ids)
-        note_missing_count = len(set(note_source_ids) - indexed_note_ids)
-        vector_status = (
-            "ready"
-            if passage_missing_count == 0 and note_missing_count == 0
-            else "drift"
-        )
-    except (
-        vector_store_service.VectorStoreUnavailable,
-        vector_store_service.VectorStoreSchemaMismatch,
-    ):
-        indexed_passage_ids = set()
-        indexed_note_ids = set()
-        passage_missing_count = len(passage_source_ids)
-        note_missing_count = len(note_source_ids)
-        vector_status = "unavailable"
+    vector_state = vector_store_service.inspect_document_vector_state(
+        document_id=document_id,
+        expected_passage_source_ids=passage_source_ids,
+        expected_note_source_ids=note_source_ids,
+        store_path=actual.vector_store_path,
+    )
+    passage_state = dict(vector_state["passage"])
+    note_state = dict(vector_state["note"])
+    indexed_passage_ids = set(passage_state["actual_source_ids"]) & set(
+        passage_source_ids
+    )
+    indexed_note_ids = set(note_state["actual_source_ids"]) & set(
+        note_source_ids
+    )
+    passage_missing_count = int(passage_state["missing_count"])
+    note_missing_count = int(note_state["missing_count"])
+    vector_status = (
+        "unavailable"
+        if vector_state["status"] == "unavailable"
+        else "drift"
+        if passage_missing_count or note_missing_count
+        else "ready"
+    )
+    vector_reasons = [
+        str(state["reason"])
+        for state in (passage_state, note_state)
+        if state.get("reason")
+    ]
     vectors: dict[str, Any] = {
         "status": vector_status,
         "passage_expected_count": len(passage_source_ids),
         "passage_indexed_count": len(indexed_passage_ids),
         "passage_missing_count": passage_missing_count,
-        "passage_orphan_count": "not_available",
+        "passage_orphan_count": passage_state["orphan_count"],
         "note_expected_count": len(note_source_ids),
         "note_indexed_count": len(indexed_note_ids),
         "note_missing_count": note_missing_count,
-        "note_orphan_count": "not_available",
+        "note_orphan_count": note_state["orphan_count"],
+        "reasons": vector_reasons,
     }
     writes_performed = {
         "production_db": False,
@@ -790,6 +785,10 @@ def _evaluate_verdict(
             warnings.append(
                 f"vector_{field}_not_available"
             )
+    warnings.extend(
+        f"vector_inspection:{reason}"
+        for reason in vectors.get("reasons", [])
+    )
     if any(writes_performed.values()):
         failures.append("read_only_contract_violated")
     failures.extend(journal_failures or [])

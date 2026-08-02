@@ -66,6 +66,7 @@ export const integrityReportOutputShape = {
     note_indexed_count: nonNegativeInteger,
     note_missing_count: nonNegativeInteger,
     note_orphan_count: orphanCount,
+    reasons: z.array(z.string()),
   }),
   history: z.object({
     confirmation_token_fingerprint: z.string(),

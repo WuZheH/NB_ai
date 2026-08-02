@@ -151,6 +151,7 @@ class MockNotebookClient extends NotebookClient {
         note_indexed_count: 1,
         note_missing_count: 0,
         note_orphan_count: "not_available" as const,
+        reasons: ["passage_schema_document_id_unavailable"],
       },
       history: {
         confirmation_token_fingerprint: "not_recorded",

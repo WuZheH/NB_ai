@@ -218,20 +218,28 @@ def _patch_ready_dependencies(
     )
     monkeypatch.setattr(
         service.vector_store_service,
-        "inspect_document_vector_impact",
+        "inspect_document_vector_state",
         lambda **kwargs: {
-            "passage_source_ids": list(
-                kwargs["passage_source_ids"]
-            ),
-        },
-    )
-    monkeypatch.setattr(
-        service.vector_store_service,
-        "inspect_note_vector_impact",
-        lambda **kwargs: {
-            "note_source_ids": list(
-                kwargs["note_source_ids"]
-            ),
+            "status": "ok",
+            "read_only": True,
+            "passage": {
+                "status": "ok",
+                "reason": None,
+                "actual_source_ids": list(
+                    kwargs["expected_passage_source_ids"]
+                ),
+                "missing_count": 0,
+                "orphan_count": 0,
+            },
+            "note": {
+                "status": "ok",
+                "reason": None,
+                "actual_source_ids": list(
+                    kwargs["expected_note_source_ids"]
+                ),
+                "missing_count": 0,
+                "orphan_count": 0,
+            },
         },
     )
 
@@ -335,14 +343,12 @@ def test_integrity_report_explains_note_eligibility_and_is_read_only(
     assert result["vectors"]["passage_expected_count"] == 2
     assert result["vectors"]["passage_indexed_count"] == 2
     assert result["vectors"]["passage_missing_count"] == 0
-    assert (
-        result["vectors"]["passage_orphan_count"]
-        == "not_available"
-    )
+    assert result["vectors"]["passage_orphan_count"] == 0
     assert result["vectors"]["note_expected_count"] == 2
     assert result["vectors"]["note_indexed_count"] == 2
     assert result["vectors"]["note_missing_count"] == 0
-    assert result["vectors"]["note_orphan_count"] == "not_available"
+    assert result["vectors"]["note_orphan_count"] == 0
+    assert result["vectors"]["reasons"] == []
     assert set(result["writes_performed"].values()) == {False}
     assert set(result["history"].values()) == {"not_recorded"}
     assert "personal_notes_excluded_from_fts:1" in result["warnings"]
@@ -399,9 +405,24 @@ def test_integrity_report_detects_vector_missing_without_faking_orphans(
     _patch_ready_dependencies(monkeypatch)
     monkeypatch.setattr(
         service.vector_store_service,
-        "inspect_document_vector_impact",
+        "inspect_document_vector_state",
         lambda **_kwargs: {
-            "passage_source_ids": [],
+            "status": "capability_unavailable",
+            "read_only": True,
+            "passage": {
+                "status": "capability_unavailable",
+                "reason": "passage_schema_document_id_unavailable",
+                "actual_source_ids": [],
+                "missing_count": 2,
+                "orphan_count": "not_available",
+            },
+            "note": {
+                "status": "ok",
+                "reason": None,
+                "actual_source_ids": ["note:31", "note:32"],
+                "missing_count": 0,
+                "orphan_count": 0,
+            },
         },
     )
 
@@ -417,6 +438,10 @@ def test_integrity_report_detects_vector_missing_without_faking_orphans(
         == "not_available"
     )
     assert "vector_passage_missing_count" in result["warnings"]
+    assert (
+        "vector_inspection:passage_schema_document_id_unavailable"
+        in result["warnings"]
+    )
 
 
 def test_integrity_report_pdf_sha_is_not_revision_fingerprint(
