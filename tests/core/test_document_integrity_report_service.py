@@ -816,7 +816,16 @@ def test_integrity_report_rejects_journal_identity_mismatch(
 
     assert result["verdict"] == "fail"
     assert warning in result["warnings"]
-    assert result["history"]["receipt_recorded"] is False
+    for key in (
+        "terminal_status",
+        "terminal_stage",
+        "journal_operation_id",
+        "journal_revision",
+        "receipt_recorded",
+        "journal_updated_at",
+        "journal_terminal_events",
+    ):
+        assert result["history"][key] == "not_recorded"
 
 
 def test_integrity_report_rejects_failed_or_invalid_committed_journal(
@@ -835,7 +844,7 @@ def test_integrity_report_rejects_failed_or_invalid_committed_journal(
     )
     failed = service.build_integrity_report(document_id=1, runtime=runtime)
     assert "import_journal_terminal_not_committed" in failed["warnings"]
-    assert failed["history"]["receipt_recorded"] is False
+    assert failed["history"]["receipt_recorded"] == "not_recorded"
 
     for entry in runtime.import_journal_dir.iterdir():
         entry.unlink()
@@ -846,6 +855,75 @@ def test_integrity_report_rejects_failed_or_invalid_committed_journal(
     invalid = service.build_integrity_report(document_id=1, runtime=runtime)
     assert invalid["verdict"] == "fail"
     assert "import_journal_committed_receipt_invalid" in invalid["warnings"]
+    assert invalid["history"]["terminal_status"] == "not_recorded"
+
+
+@pytest.mark.parametrize(
+    ("receipt", "warning"),
+    (
+        (
+            {"kind": "success"},
+            "import_journal_receipt_response_invalid",
+        ),
+        (
+            {"kind": "success", "response": None},
+            "import_journal_receipt_response_invalid",
+        ),
+        (
+            {"kind": "success", "response": "not-a-mapping"},
+            "import_journal_receipt_response_invalid",
+        ),
+        (
+            {"kind": "success", "response": {"chunk_count": 2}},
+            "import_journal_receipt_document_invalid",
+        ),
+        (
+            {
+                "kind": "success",
+                "response": {"document_id": 2, "chunk_count": 2},
+            },
+            "import_journal_receipt_document_mismatch",
+        ),
+        (
+            {"kind": "success", "response": {"document_id": 1}},
+            "import_journal_receipt_chunk_count_invalid",
+        ),
+        (
+            {
+                "kind": "success",
+                "response": {"document_id": 1, "chunk_count": 3},
+            },
+            "import_journal_receipt_chunk_count_mismatch",
+        ),
+    ),
+)
+def test_committed_journal_requires_complete_matching_success_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receipt: dict[str, object],
+    warning: str,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    _write_terminal_journal(runtime, completion_receipt=receipt)
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["verdict"] == "fail"
+    assert warning in result["warnings"]
+    for key in (
+        "terminal_status",
+        "terminal_stage",
+        "journal_operation_id",
+        "journal_revision",
+        "receipt_recorded",
+        "journal_updated_at",
+        "journal_terminal_events",
+    ):
+        assert result["history"][key] == "not_recorded"
 
 
 def test_integrity_report_fails_closed_for_malformed_journal(

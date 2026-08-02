@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import math
+import re
 from threading import Lock
 import time
 from typing import Any
@@ -275,12 +276,7 @@ def _query_recall_variants(query: str) -> list[str]:
     normalized = normalize_query(query)
     variants = [query]
     compact = compact_identifier(normalized.normalized_query)
-    looks_like_short_identifier = (
-        len(compact) <= 20
-        and 2 <= len(normalized.terms) <= 3
-        and any(len(term) == 1 for term in normalized.terms)
-    )
-    if normalized.identifier_variants or looks_like_short_identifier:
+    if _looks_like_short_identifier(query):
         for value in (
             normalized.normalized_query,
             compact,
@@ -293,6 +289,39 @@ def _query_recall_variants(query: str) -> list[str]:
             if len(variants) == 3:
                 break
     return variants
+
+
+def _looks_like_short_identifier(query: str) -> bool:
+    canonical = _compact_text(query).translate(
+        str.maketrans(
+            {
+                "‐": "-",
+                "‑": "-",
+                "‒": "-",
+                "–": "-",
+                "—": "-",
+                "―": "-",
+            }
+        )
+    )
+    dashed = re.fullmatch(
+        r"([A-Za-z0-9]{1,3})-([A-Za-z0-9]{2,18})",
+        canonical,
+    )
+    if dashed:
+        prefix = dashed.group(1)
+        return any(character.isdigit() for character in prefix) or (
+            prefix.upper() == prefix
+            and prefix.casefold() not in {"a", "i"}
+        )
+    spaced = re.fullmatch(
+        r"([A-Z])\s+([A-Za-z0-9]{2,18})",
+        canonical,
+    )
+    return bool(
+        spaced
+        and spaced.group(1).casefold() not in {"a", "i"}
+    )
 
 
 def _merge_variant_candidates(

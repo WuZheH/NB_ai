@@ -5,6 +5,7 @@ from functools import lru_cache
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 import shutil
 import sqlite3
@@ -1122,17 +1123,17 @@ def inspect_document_vector_state(
         }
     try:
         db = _connect_existing_vector_store(actual_store_path)
-    except (VectorStoreUnavailable, VectorStoreSchemaMismatch):
+    except Exception:
         return {
             "status": "unavailable",
             "read_only": True,
             "passage": _unavailable_document_vector_state(
                 passage_expected,
-                "vector_store_unavailable",
+                "vector_store_connection_failed",
             ),
             "note": _unavailable_document_vector_state(
                 note_expected,
-                "vector_store_unavailable",
+                "vector_store_connection_failed",
             ),
         }
 
@@ -1175,10 +1176,29 @@ def _inspect_document_table_state(
     kind: str,
 ) -> dict[str, Any]:
     expected = set(expected_source_ids)
-    if table_name not in _table_names(db):
+    try:
+        table_names = _table_names(db)
+    except Exception:
+        return _unavailable_document_vector_state(
+            sorted(expected),
+            f"{kind}_table_list_failed",
+        )
+    if table_name not in table_names:
         return _complete_document_vector_state(expected, set())
-    table = db.open_table(table_name)
-    fields = _scoped_table_schema_fields(table)
+    try:
+        table = db.open_table(table_name)
+    except Exception:
+        return _unavailable_document_vector_state(
+            sorted(expected),
+            f"{kind}_table_open_failed",
+        )
+    try:
+        fields = _scoped_table_schema_fields(table)
+    except Exception:
+        return _unavailable_document_vector_state(
+            sorted(expected),
+            f"{kind}_schema_read_failed",
+        )
     if fields is None or "document_id" not in fields or "source_id" not in fields:
         try:
             indexed = set(
@@ -1188,7 +1208,7 @@ def _inspect_document_table_state(
                     sorted(expected),
                 )
             ) if expected else set()
-        except VectorStoreUnavailable:
+        except Exception:
             indexed = set()
         return {
             "status": "capability_unavailable",
@@ -1217,12 +1237,16 @@ def _inspect_document_table_state(
             sorted(expected),
             f"{kind}_document_query_failed",
         )
-    actual = {
-        str(record.get("source_id") or "")
-        for record in records
-        if int(record.get("document_id") or 0) == document_id
-        and str(record.get("source_id") or "")
-    }
+    try:
+        actual = _parse_document_vector_rows(
+            records,
+            document_id=document_id,
+        )
+    except (TypeError, ValueError):
+        return _unavailable_document_vector_state(
+            sorted(expected),
+            f"{kind}_row_parse_failed",
+        )
     return _complete_document_vector_state(expected, actual)
 
 
@@ -1233,6 +1257,38 @@ def _scoped_table_schema_fields(table: Any) -> set[str] | None:
     if schema is None:
         return None
     return {str(field.name) for field in schema}
+
+
+def _parse_document_vector_rows(
+    records: Any,
+    *,
+    document_id: int,
+) -> set[str]:
+    if not isinstance(records, list):
+        raise TypeError("document vector rows must be a list")
+    actual: set[str] = set()
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise TypeError("document vector row must be a mapping")
+        raw_document_id = record.get("document_id")
+        if isinstance(raw_document_id, bool):
+            raise ValueError("document vector row has invalid document_id")
+        try:
+            row_document_id = int(raw_document_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "document vector row has invalid document_id"
+            ) from exc
+        if row_document_id <= 0 or str(raw_document_id).strip() != str(
+            row_document_id
+        ):
+            raise ValueError("document vector row has invalid document_id")
+        source_id = str(record.get("source_id") or "").strip()
+        if not source_id:
+            raise ValueError("document vector row has invalid source_id")
+        if row_document_id == document_id:
+            actual.add(source_id)
+    return actual
 
 
 def _complete_document_vector_state(

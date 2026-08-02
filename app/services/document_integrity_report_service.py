@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from collections.abc import Mapping
 from collections import Counter
 from contextlib import closing
 from dataclasses import dataclass
@@ -461,18 +462,6 @@ def _apply_terminal_journal_projection(
         return [], ["import_journal_multiple_matches"]
 
     record = matches[0]
-    history.update(
-        {
-            "terminal_status": record.status,
-            "terminal_stage": record.stage,
-            "journal_operation_id": record.operation_id,
-            "journal_revision": record.revision,
-            "receipt_recorded": False,
-            "journal_updated_at": record.updated_at,
-            "journal_terminal_events": _journal_terminal_events(record),
-        }
-    )
-
     failures: list[str] = []
     _append_mismatch(
         failures,
@@ -499,24 +488,45 @@ def _apply_terminal_journal_projection(
 
     receipt = dict(record.completion_receipt or {})
     response = receipt.get("response")
-    if isinstance(response, dict):
-        receipt_document_id = response.get("document_id")
-        if (
-            isinstance(receipt_document_id, int)
-            and not isinstance(receipt_document_id, bool)
-            and receipt_document_id != document_id
-        ):
-            failures.append("import_journal_receipt_document_mismatch")
-
     committed = (
         record.status == "committed"
         and record.stage == "receipt_persisted"
     )
-    valid_success_receipt = receipt.get("kind") == "success"
-    if committed and not valid_success_receipt:
+    if committed and receipt.get("kind") != "success":
         failures.append("import_journal_committed_receipt_invalid")
-    if committed and valid_success_receipt and not failures:
-        history["receipt_recorded"] = True
+    if committed and not isinstance(response, Mapping):
+        failures.append("import_journal_receipt_response_invalid")
+    if committed and isinstance(response, Mapping):
+        receipt_document_id = response.get("document_id")
+        if (
+            isinstance(receipt_document_id, bool)
+            or not isinstance(receipt_document_id, int)
+        ):
+            failures.append("import_journal_receipt_document_invalid")
+        elif receipt_document_id != document_id:
+            failures.append("import_journal_receipt_document_mismatch")
+        receipt_chunk_count = response.get("chunk_count")
+        if (
+            isinstance(receipt_chunk_count, bool)
+            or not isinstance(receipt_chunk_count, int)
+            or receipt_chunk_count < 0
+        ):
+            failures.append("import_journal_receipt_chunk_count_invalid")
+        elif receipt_chunk_count != record.chunk_count:
+            failures.append("import_journal_receipt_chunk_count_mismatch")
+
+    if committed and not failures:
+        history.update(
+            {
+                "terminal_status": record.status,
+                "terminal_stage": record.stage,
+                "journal_operation_id": record.operation_id,
+                "journal_revision": record.revision,
+                "receipt_recorded": True,
+                "journal_updated_at": record.updated_at,
+                "journal_terminal_events": _journal_terminal_events(record),
+            }
+        )
         return [], []
     if record.status in {"failed", "orphaned"}:
         return ["import_journal_terminal_not_committed"], failures

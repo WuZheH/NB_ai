@@ -101,6 +101,37 @@ def test_long_natural_language_query_uses_single_recall(
     assert result["query_variants"] == [query]
 
 
+@pytest.mark.parametrize(
+    "query",
+    (
+        "A long-hyphenated natural-language question about uncertainty",
+        "posterior-predictive uncertainty",
+        "a model",
+        "A model",
+        "I think",
+    ),
+)
+def test_non_identifier_queries_use_single_recall(
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        service.local_embedding_service,
+        "search_embedding_sidecar",
+        lambda variant, *, limit: (
+            calls.append(variant)
+            or {"results": [_candidate(1, "natural language candidate")]}
+        ),
+    )
+    _patch_reranker(monkeypatch)
+
+    result = service.search_reranker_sidecar(query)
+
+    assert calls == [query]
+    assert result["query_variants"] == [query]
+
+
 def test_variant_merge_is_deduplicated_balanced_and_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

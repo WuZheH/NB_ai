@@ -78,6 +78,26 @@ class _Db:
         return self.tables[name]
 
 
+def _run_with_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    db: object,
+) -> dict[str, Any]:
+    store = tmp_path / "vectors"
+    store.mkdir()
+    monkeypatch.setattr(
+        service,
+        "_connect_existing_vector_store",
+        lambda _path: db,
+    )
+    return service.inspect_document_vector_state(
+        document_id=1,
+        expected_passage_source_ids=["chunk:1:1"],
+        expected_note_source_ids=["note:1"],
+        store_path=store,
+    )
+
+
 def _inspect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -182,6 +202,115 @@ def test_old_schema_reports_capability_unavailable_without_full_scan(
         for table in db.tables.values()
         for query in table.queries
     )
+
+
+def test_connection_failure_degrades_structurally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = tmp_path / "vectors"
+    store.mkdir()
+
+    def fail_connect(_path: Path) -> object:
+        raise RuntimeError("connect failed")
+
+    monkeypatch.setattr(service, "_connect_existing_vector_store", fail_connect)
+
+    result = service.inspect_document_vector_state(
+        document_id=1,
+        expected_passage_source_ids=["chunk:1:1"],
+        expected_note_source_ids=["note:1"],
+        store_path=store,
+    )
+
+    assert result["status"] == "unavailable"
+    assert result["passage"]["reason"] == "vector_store_connection_failed"
+
+
+def test_table_list_failure_degrades_structurally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ListFailDb:
+        def table_names(self) -> list[str]:
+            raise RuntimeError("table list failed")
+
+    result = _run_with_db(tmp_path, monkeypatch, ListFailDb())
+
+    assert result["status"] == "unavailable"
+    assert result["passage"]["reason"] == "passage_table_list_failed"
+    assert result["note"]["reason"] == "note_table_list_failed"
+
+
+def test_table_open_failure_degrades_structurally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OpenFailDb:
+        def table_names(self) -> list[str]:
+            return [service.PASSAGE_TABLE, service.NOTE_TABLE]
+
+        def open_table(self, _name: str) -> object:
+            raise RuntimeError("table open failed")
+
+    result = _run_with_db(tmp_path, monkeypatch, OpenFailDb())
+
+    assert result["passage"]["reason"] == "passage_table_open_failed"
+    assert result["note"]["reason"] == "note_table_open_failed"
+
+
+def test_schema_failure_degrades_structurally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SchemaFailTable:
+        @property
+        def schema(self) -> object:
+            raise RuntimeError("schema failed")
+
+    table = SchemaFailTable()
+    db = _Db({service.PASSAGE_TABLE: table, service.NOTE_TABLE: table})  # type: ignore[dict-item]
+    result = _run_with_db(tmp_path, monkeypatch, db)
+
+    assert result["passage"]["reason"] == "passage_schema_read_failed"
+    assert result["note"]["reason"] == "note_schema_read_failed"
+
+
+def test_query_failure_degrades_structurally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = _Table([], fail_query=True)
+    db = _Db({service.PASSAGE_TABLE: table, service.NOTE_TABLE: table})
+    result = _run_with_db(tmp_path, monkeypatch, db)
+
+    assert result["passage"]["reason"] == "passage_document_query_failed"
+    assert result["note"]["reason"] == "note_document_query_failed"
+
+
+def test_malformed_document_id_row_degrades_structurally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MalformedTable(_Table):
+        def filtered(self, clause: str) -> list[dict[str, Any]]:
+            if clause.startswith("document_id = "):
+                return self.rows
+            return super().filtered(clause)
+
+    passage = MalformedTable(
+        [{"document_id": "not-an-int", "source_id": "chunk:1:1"}]
+    )
+    note = MalformedTable(
+        [{"document_id": True, "source_id": "note:1"}]
+    )
+    db = _Db({service.PASSAGE_TABLE: passage, service.NOTE_TABLE: note})
+
+    result = _run_with_db(tmp_path, monkeypatch, db)
+
+    assert result["status"] == "unavailable"
+    assert result["passage"]["reason"] == "passage_row_parse_failed"
+    assert result["note"]["reason"] == "note_row_parse_failed"
 
 
 @pytest.mark.parametrize("invalid", (0, -1, True, False))
