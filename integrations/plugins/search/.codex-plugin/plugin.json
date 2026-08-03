@@ -1,0 +1,25 @@
+{
+  "name": "search",
+  "version": "0.1.0",
+  "description": "Chat-first access to the user's private local Search research library.",
+  "author": {
+    "name": "WuZheH"
+  },
+  "repository": "https://github.com/WuZheH/NB_ai",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Search",
+    "shortDescription": "Search private local research evidence.",
+    "longDescription": "Search queries, opens, and exports evidence from the local research library. Import and permanent deletion always require preview and explicit user confirmation.",
+    "developerName": "WuZheH",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": [
+      "Search my library for motion diffusion evidence.",
+      "List the papers in my local Search library.",
+      "Preview an import from my Search Import Inbox."
+    ]
+  },
+  "mcpServers": "./.mcp.json",
+  "apps": "./.app.json"
+}

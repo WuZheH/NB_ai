@@ -1,0 +1,11 @@
+{
+  "name": "@search/design-system",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tokens.css": "./src/tokens.css",
+    "./base.css": "./src/base.css",
+    "./components.css": "./src/components.css"
+  }
+}

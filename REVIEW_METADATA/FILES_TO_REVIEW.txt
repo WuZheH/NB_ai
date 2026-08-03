@@ -1,0 +1,85 @@
+CREAD-A12 FIX3 — FILES TO REVIEW
+==================================
+
+Core services:
+  app/services/high_quality_search_service.py
+    - search_high_quality()
+    - _group_passages_by_document()
+    - _document_metadata_by_id()
+    - passage_recall_limit / DEFAULT_PASSAGE_RECALL_LIMIT
+
+  app/services/local_reranker_service.py
+    - search_reranker_sidecar()
+    - _query_recall_variants()
+    - _merge_variant_candidates()
+
+  app/services/local_embedding_service.py
+    - search_embedding_sidecar()
+    - _search_embedding_sidecar_in_memory()
+    - _search_vector_store_passages()
+
+  app/services/vector_store_service.py
+    - search_passage_vectors()
+    - search_object_vectors()
+    - _search_table()
+    - _passage_source_rows()
+
+  app/services/retrieval/query_normalizer.py
+    - normalize_query()
+    - _identifier_variants()
+
+Notebook search domain:
+  app/domains/retrieval/notebook_search_service.py
+    - search_notebook()
+    - _pdf_candidates()
+    - _filter_low_relevance_pdf_candidates()
+    - _requested_document_warnings()
+
+  app/domains/retrieval/fragment_repository.py
+    - list_notebook_fragments()
+    - get_notebook_fragments()
+    - _document_types()
+
+  app/domains/retrieval/result_contracts.py
+    - class NotebookSearchResponse
+    - class NotebookFragment
+
+  app/domains/retrieval/__init__.py
+    - search_notebook() facade
+
+API routes and schemas:
+  app/api/retrieval_api.py
+    - search_notebook_retrieval() -> /api/v1/retrieval/notebook-search
+
+  app/api/library/search.py
+    - search_high_quality() -> passage_recall_limit Query(ge=1, le=50)
+    - search_reranker_sidecar()
+    - search_embedding_sidecar()
+    - vector_store_search_passages()
+
+  app/schemas/notebook_search.py
+    - class NotebookSearchRequest (document_ids: list[int])
+
+  app/schemas/retrieval_search.py
+    - class RetrievalSearchRequest / RetrievalSearchResponse
+
+Runtime / MCP:
+  app/runtime/supervisor.py
+  app/runtime/cli.py
+  app/runtime/config.py
+
+Evidence export:
+  app/domains/retrieval/evidence_export_adapter.py
+  app/services/retrieval/evidence_export_service.py
+
+Tests:
+  tests/core/test_notebook_search_service.py
+  tests/core/test_local_reranker_query_variants.py
+  tests/core/test_no_fts_fallback.py
+  tests/core/test_notebook_api_contract.py
+  tests/core/test_high_quality_search_contract.py
+  tests/core/test_zotero_note_vector_index.py
+  tests/core/test_b5b1_temp_passage_vector_sync.py
+  tests/core/test_b5b2_temp_note_vector_sync.py
+  tests/core/test_c4_note_vector_document_filter_cleanup.py
+  tests/core/test_document_vector_state.py

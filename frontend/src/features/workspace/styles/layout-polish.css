@@ -1,0 +1,351 @@
+/* ============================================================
+   PHASE8B-FIX10 NOTEBOOK-STYLE LAYOUT POLISH
+   Reading-first column ratio, compact header, quiet empty states.
+   ============================================================ */
+.notebookLmInspiredWorkspace {
+  --workspace-left-width: 40%;
+  --workspace-center-width: 36%;
+  --workspace-right-width: 24%;
+}
+
+.notebookLmInspiredWorkspace.researchWorkspacePage {
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceTopbar {
+  min-height: 56px;
+  padding: 9px 14px;
+  border-radius: 20px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceTopbar h2 {
+  margin: 0 0 2px;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceTopbar span {
+  font-size: 11.5px;
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceTopbar .workspaceSampleNotice {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 22px;
+  max-width: min(360px, 100%);
+  margin-top: 4px;
+  padding: 2px 10px;
+  border-radius: var(--nb-radius-pill);
+  font-size: 10.5px;
+  line-height: 1.2;
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceTopActions {
+  gap: 6px;
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceTopActions .workspacePillButton {
+  min-height: 29px;
+  padding: 0 12px;
+  font-size: 11.5px;
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceLayout {
+  grid-template-columns:
+    minmax(360px, calc(var(--workspace-left-width) - 8px))
+    minmax(340px, calc(var(--workspace-center-width) - 8px))
+    minmax(280px, calc(var(--workspace-right-width) - 8px));
+  gap: 10px;
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceColumn {
+  padding: 10px;
+  border-radius: 22px;
+}
+
+.notebookLmInspiredWorkspace .sourceColumn {
+  padding: 8px;
+}
+
+.notebookLmInspiredWorkspace .sourceColumn .workspacePanelStack,
+.notebookLmInspiredWorkspace .sourceColumn .sourcePdfPanel {
+  gap: 8px;
+}
+
+.notebookLmInspiredWorkspace .sourceColumn .workspacePdfViewportCard {
+  gap: 8px;
+  padding: 8px;
+  border-radius: 20px;
+}
+
+.notebookLmInspiredWorkspace .workspacePdfViewportHeader {
+  gap: 8px;
+}
+
+.notebookLmInspiredWorkspace .workspacePdfViewportHeader code {
+  opacity: 0.62;
+  font-size: 10.5px;
+}
+
+.notebookLmInspiredWorkspace .pdfHighlightStatus {
+  padding: 7px 9px;
+  border-radius: 12px;
+}
+
+.notebookLmInspiredWorkspace .workspacePdfHeroShell {
+  padding: 8px;
+  border-radius: 18px;
+}
+
+.notebookLmInspiredWorkspace .workspacePdfPaperPreview {
+  min-height: 260px;
+  border-radius: 20px;
+}
+
+.notebookLmInspiredWorkspace .workspacePdfPaperLine.text {
+  min-height: 74px;
+  -webkit-line-clamp: 4;
+}
+
+.notebookLmInspiredWorkspace .workspaceFullPdfFrameWrap {
+  min-height: 460px;
+}
+
+.notebookLmInspiredWorkspace .workspaceFullPdfFrame {
+  min-height: min(68vh, 760px);
+}
+
+.notebookLmInspiredWorkspace .workspacePdfViewportCard .pdfPreviewPanel {
+  min-height: 440px;
+  padding: 8px;
+  border-radius: 14px;
+}
+
+.notebookLmInspiredWorkspace .workspacePdfViewportCard .pdfPreviewScroller {
+  min-height: 372px;
+  max-height: min(66vh, 720px);
+  padding: 8px;
+}
+
+.notebookLmInspiredWorkspace .workspacePdfViewportCard .pdfPreviewHeader {
+  margin-bottom: 8px;
+}
+
+.notebookLmInspiredWorkspace .workspacePdfViewportCard .pdfPreviewHeader p {
+  display: none;
+}
+
+.notebookLmInspiredWorkspace .sourceDetailsDisclosure {
+  padding: 7px 9px;
+}
+
+.notebookLmInspiredWorkspace .sourceDetailsDisclosure summary {
+  min-height: 24px;
+  font-size: 11.5px;
+}
+
+.notebookLmInspiredWorkspace .workbenchColumn {
+  gap: 8px;
+}
+
+.notebookLmInspiredWorkspace .workbenchColumn .workspacePanelStack {
+  gap: 8px;
+}
+
+.notebookLmInspiredWorkspace .chapterWorkflowBanner {
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 18px;
+}
+
+.notebookLmInspiredWorkspace .chapterWorkflowBannerMain {
+  gap: 6px;
+}
+
+.notebookLmInspiredWorkspace .chapterWorkflowBanner h2 {
+  font-size: 12.5px;
+}
+
+.notebookLmInspiredWorkspace .chapterWorkflowBanner p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10.5px;
+}
+
+.notebookLmInspiredWorkspace .chapterWorkflowBannerActions .workspacePillButton {
+  min-height: 25px;
+  padding: 0 9px;
+  font-size: 10.5px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchBox {
+  padding: 7px;
+  border-radius: 26px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchBox input,
+.notebookLmInspiredWorkspace .workspaceSearchBox button {
+  min-height: 48px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchNotice {
+  padding: 8px 10px;
+  border-radius: 18px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchNotice strong {
+  font-size: 12px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchNotice span {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchResultsShell.idle {
+  gap: 0;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchResultsShell.idle .workspaceSearchNoQuery {
+  padding: 9px 10px;
+  border-style: dashed;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.028);
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchResultsShell.idle .workspaceSearchNoQuery strong {
+  font-size: 12px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchResultsShell.idle .workspaceSearchNoQuery span {
+  font-size: 11px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchResultsShell:not(.idle) {
+  gap: 8px;
+  padding: 10px;
+}
+
+.notebookLmInspiredWorkspace .workspaceStructuredSection,
+.notebookLmInspiredWorkspace .workspaceSearchResultCard,
+.notebookLmInspiredWorkspace .workspaceSearchGateCard {
+  padding: 10px;
+  border-radius: 16px;
+}
+
+.notebookLmInspiredWorkspace .workspacePillButton:hover:not(.disabled),
+.notebookLmInspiredWorkspace .quietButton:hover:not(:disabled) {
+  transform: none;
+}
+
+.notebookLmInspiredWorkspace .mechanismGraphPanel {
+  gap: 8px;
+}
+
+.notebookLmInspiredWorkspace .mechanismGraphViewport {
+  min-height: 284px;
+  border-radius: 18px;
+  background-size: 38px 38px, 38px 38px, auto, auto;
+}
+
+.notebookLmInspiredWorkspace .mechanismGraphEdges line {
+  stroke: rgba(174, 184, 196, 0.18);
+  stroke-width: 0.55;
+}
+
+.notebookLmInspiredWorkspace .mechanismGraphEdges line.focused {
+  stroke: rgba(147, 207, 167, 0.78);
+  stroke-width: 1;
+}
+
+.notebookLmInspiredWorkspace .mechanismGraphNode {
+  width: 66px;
+  min-height: 38px;
+  padding: 5px 6px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+}
+
+.notebookLmInspiredWorkspace .mechanismGraphNode span {
+  max-width: 54px;
+  font-size: 9px;
+  line-height: 1.12;
+}
+
+.notebookLmInspiredWorkspace .mechanismGraphNode.focused {
+  transform: translate(-50%, -50%) scale(1.16);
+  box-shadow: 0 0 0 5px rgba(155, 184, 215, 0.1), 0 12px 28px rgba(0, 0, 0, 0.24);
+}
+
+.notebookLmInspiredWorkspace .mechanismGraphDetail {
+  gap: 8px;
+  padding: 10px;
+  border-radius: 18px;
+}
+
+.notebookLmInspiredWorkspace .graphNodeDetailDisclosure {
+  padding: 7px 8px;
+}
+
+.notebookLmInspiredWorkspace .graphNodeDetailDisclosure summary {
+  min-height: 24px;
+  font-size: 11.5px;
+}
+
+.notebookLmInspiredWorkspace .graphWorkflowDisclosure {
+  padding: 7px 8px;
+}
+
+@media (max-width: 1420px) {
+  .notebookLmInspiredWorkspace {
+    --workspace-left-width: 36%;
+    --workspace-center-width: 38%;
+    --workspace-right-width: 26%;
+  }
+
+  .notebookLmInspiredWorkspace .researchWorkspaceLayout {
+    grid-template-columns:
+      minmax(320px, calc(var(--workspace-left-width) - 8px))
+      minmax(340px, calc(var(--workspace-center-width) - 8px))
+      minmax(260px, calc(var(--workspace-right-width) - 8px));
+  }
+}
+
+@media (max-width: 1180px) {
+  .researchWorkspaceLayout {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+  .researchWorkspaceColumn {
+    min-height: 420px;
+  }
+  .advancedWorkflowDrawer {
+    top: 8px;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: auto;
+  }
+  .chapterWorkflowBanner {
+    grid-template-columns: 1fr;
+  }
+  .chapterWorkflowBannerActions {
+    justify-content: flex-start;
+  }
+  .notebookHomeTopbar,
+  .notebookHomeTabs,
+  .notebookHomeSectionHeader {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .notebookHomeToolbar {
+    justify-content: flex-start;
+  }
+}

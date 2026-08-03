@@ -1,0 +1,851 @@
+/* ============================================================
+   PHASE8B-FIX11B NOTEBOOKLM REFERENCE ALIGNMENT
+   Center-first workspace, compact Sources, Studio-style right rail.
+   ============================================================ */
+.notebookLmInspiredWorkspace {
+  --workspace-left-width: 26%;
+  --workspace-center-width: 48%;
+  --workspace-right-width: 26%;
+}
+
+.notebookLmInspiredWorkspace.researchWorkspacePage {
+  gap: 10px;
+  padding: 10px 14px 14px;
+  background: #202329;
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceTopbar {
+  min-height: 52px;
+  padding: 8px 14px;
+  border-radius: 18px;
+  background: rgba(28, 31, 37, 0.96);
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceLayout {
+  grid-template-columns:
+    minmax(280px, calc(var(--workspace-left-width) - 10px))
+    minmax(520px, calc(var(--workspace-center-width) - 10px))
+    minmax(280px, calc(var(--workspace-right-width) - 10px));
+  gap: 14px;
+}
+
+.notebookLmInspiredWorkspace .researchWorkspaceColumn {
+  padding: 14px;
+  border-radius: 20px;
+  background: rgba(29, 33, 40, 0.96);
+}
+
+.notebookLmInspiredWorkspace .workbenchColumn {
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+  background: rgba(30, 34, 41, 0.97);
+}
+
+.notebookLmInspiredWorkspace .sourceColumn,
+.notebookLmInspiredWorkspace .studioColumn {
+  background: rgba(28, 32, 39, 0.96);
+}
+
+.notebookLmInspiredWorkspace .sourceColumn .workspacePdfViewportCard,
+.notebookLmInspiredWorkspace .sourceColumn .sourceEvidenceCard,
+.notebookLmInspiredWorkspace .sourceColumn .developerEvidenceDetails {
+  margin-top: 8px;
+}
+
+.compactSourcePanel {
+  gap: 10px;
+}
+
+.compactSourcePanel > .sourcePdfPanel {
+  gap: 12px;
+}
+
+.compactSourcePanel .sourcePdfPreviewDisclosure,
+.compactSourcePanel .sourceEvidenceDisclosure {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.compactSourcePanel .sourcePdfPreviewDisclosure:not([open]) summary,
+.compactSourcePanel .sourceEvidenceDisclosure:not([open]) summary {
+  color: var(--nb-text);
+}
+
+.compactSourcePanel .sourcePdfPreviewDisclosure .workspacePdfViewportCard {
+  max-height: min(64vh, 620px);
+  overflow: auto;
+}
+
+.notebookLmInspiredWorkspace .workspaceSourceCard.primarySource {
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  padding: 13px;
+  border-radius: 18px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSourceIcon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: #ff8c72;
+  background: rgba(255, 111, 86, 0.12);
+  font-size: 10px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSourceCard h4 {
+  margin-bottom: 3px;
+  color: var(--nb-muted);
+  font-size: 11px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSourceCard strong {
+  display: block;
+  color: var(--nb-text);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.workspaceSourceActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.workspaceSourceActions span {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--nb-border);
+  border-radius: var(--nb-radius-pill);
+  color: var(--nb-muted);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.notebookLmInspiredWorkspace .sourceSelectionHint {
+  padding: 11px 12px;
+  border-radius: 18px;
+  color: var(--nb-muted);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.notebookLmInspiredWorkspace .searchWorkflowPanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
+  gap: 12px;
+}
+
+.notebookLmInspiredWorkspace .searchWorkflowPanel > .workspacePanelHeader {
+  align-items: start;
+}
+
+.notebookLmInspiredWorkspace .searchWorkflowPanel > .workspacePanelHeader h3 {
+  font-size: 18px;
+}
+
+.notebookLmInspiredWorkspace .searchWorkflowPanel > .workspacePanelHeader > div:first-child > span {
+  display: block;
+  margin-top: 5px;
+  color: var(--nb-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.workspaceSearchChipRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.workspaceSearchBody {
+  display: grid;
+  align-content: start;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  gap: 12px;
+  padding-bottom: 96px;
+  scroll-padding-bottom: 136px;
+}
+
+.workspaceSearchConversation {
+  min-height: 0;
+}
+.workspaceSearchConversation.withResults {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+
+.workspaceSearchConversation.idle {
+  display: grid;
+  min-height: 320px;
+  align-content: center;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchConversation.idle .workspaceSearchNoQuery {
+  max-width: 520px;
+  margin: 0 auto;
+  border-color: rgba(255, 255, 255, 0.07);
+  background: transparent;
+  text-align: center;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchConversation.idle .workspaceSearchNoQuery strong {
+  font-size: 15px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchConversation.idle .workspaceSearchNoQuery span {
+  max-width: 420px;
+  margin-inline: auto;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchBox {
+  align-self: end;
+  flex: 0 0 auto;
+  position: relative;
+  z-index: auto;
+  width: 100%;
+  margin-top: 2px;
+  padding: 9px;
+  border-radius: 28px;
+  background: rgba(23, 27, 33, 0.96);
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchComposer {
+  box-shadow: none;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchBox input {
+  min-height: 56px;
+  border-radius: 24px;
+  font-size: 14px;
+}
+
+.notebookLmInspiredWorkspace .workspaceSearchBox button {
+  min-width: 74px;
+  min-height: 56px;
+  border-radius: var(--nb-radius-pill);
+}
+
+.workspaceSearchResultCard[data-card-layout="flow"] {
+  position: static;
+  z-index: auto;
+  align-content: start;
+  overflow: visible;
+  background: #252a33;
+}
+
+.workspaceSearchResultHeaderText {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.workspaceSearchResultMain strong {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.workspaceSearchCitationLabel {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 24px;
+  padding: 2px 9px;
+  border: 1px solid rgba(155, 184, 215, 0.28);
+  border-radius: var(--nb-radius-pill);
+  background: rgba(155, 184, 215, 0.12);
+  color: var(--nb-accent);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.workspaceSearchResultChips {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.workspaceSearchTypeChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 23px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--nb-radius-pill);
+  background: rgba(255, 255, 255, 0.052);
+  color: var(--nb-muted);
+  font-size: 10.5px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.workspaceSearchSnippet {
+  margin: 0;
+  color: var(--nb-text);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.workspaceSearchResultActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.workspaceSearchResultActions .workspacePillButton {
+  position: static;
+  z-index: auto;
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.resultMetaDisclosure,
+.resultExpandDisclosure,
+.searchLayerDisclosure,
+.sourceSampleDisclosure,
+.structuredDebugDisclosure,
+.approvedObjectDisclosure {
+  position: static;
+  z-index: auto;
+  overflow: visible;
+}
+
+.resultMetaDisclosure {
+  position: static;
+  z-index: auto;
+  overflow: visible;
+}
+
+.resultExpandDisclosure {
+  position: static;
+  z-index: auto;
+  overflow: visible;
+}
+
+.searchLayerDisclosure {
+  position: static;
+  z-index: auto;
+  overflow: visible;
+}
+
+.sourceSampleDisclosure {
+  position: static;
+  z-index: auto;
+  overflow: visible;
+}
+
+.resultMetaDisclosure[open],
+.resultExpandDisclosure[open],
+.searchLayerDisclosure[open],
+.sourceSampleDisclosure[open],
+.structuredDebugDisclosure[open],
+.approvedObjectDisclosure[open] {
+  border-color: rgba(155, 184, 215, 0.28);
+  background: #20252e;
+}
+
+.resultMetaDisclosure[open] {
+  max-height: min(44vh, 520px);
+  overflow-y: auto;
+}
+
+.resultMetaDisclosure .workspaceSearchResultMeta {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.resultMetaDisclosure .workspaceSearchResultMeta span {
+  display: block;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  background: #171c24;
+  color: var(--nb-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.resultMetaDisclosure .workspaceSearchEvidenceFields {
+  margin-top: 8px;
+}
+
+.resultMetaDisclosure .workspaceSearchEvidenceFields section {
+  background: #171c24;
+}
+
+.resultExpandDisclosure[open] > .workspaceSearchResultCard {
+  margin-top: 8px;
+}
+
+.workspaceStudioToolGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.workspaceStudioToolCard,
+.workspaceStudioFeatureCard {
+  border: 1px solid var(--nb-border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.052);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.workspaceStudioToolCard {
+  display: grid;
+  gap: 5px;
+  min-height: 74px;
+  padding: 12px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspaceStudioToolCard.active {
+  background: linear-gradient(135deg, rgba(155, 184, 215, 0.13), rgba(255, 255, 255, 0.045));
+}
+
+.workspaceStudioToolCard.disabled {
+  opacity: 0.58;
+}
+
+.workspaceStudioToolCard span {
+  color: var(--nb-text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.workspaceStudioToolCard small {
+  color: var(--nb-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.workspaceStudioFeatureCard {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.workspaceStudioFeatureHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workspaceStudioFeatureHeader h4 {
+  margin: 2px 0 0;
+  color: var(--nb-text);
+  font-size: 15px;
+}
+
+.notebookLmInspiredWorkspace .mechanismGraphViewport {
+  min-height: 240px;
+  border-radius: 18px;
+}
+
+.notebookLmInspiredWorkspace .mechanismGraphDetail {
+  margin-top: 8px;
+}
+
+.notebookLmInspiredWorkspace .graphNodeDetailDisclosure .mechanismGraphDetail {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.mechanismDraftReviewPanel {
+  align-content: start;
+}
+
+.mechanismDraftReviewContext,
+.mechanismDraftReviewEmpty p,
+.mechanismDraftSummary p,
+.mechanismPrimarySourceCard p,
+.mechanismPrimarySourceCard small,
+.mechanismDraftReviewFact p,
+.mechanismDraftReviewNotice {
+  margin: 0;
+  color: var(--nb-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.mechanismDraftReviewInput {
+  display: grid;
+  gap: 6px;
+}
+
+.mechanismDraftReviewInput > span {
+  color: var(--nb-text);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.mechanismDraftReviewInput textarea,
+.mechanismDraftReviewInput input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--nb-border);
+  border-radius: 8px;
+  background: #171c24;
+  color: var(--nb-text);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.mechanismDraftReviewInput textarea {
+  min-height: 126px;
+  padding: 9px;
+  resize: vertical;
+}
+
+.mechanismDraftReviewInput.compact textarea {
+  min-height: 68px;
+}
+
+.mechanismDraftReviewInput input {
+  min-height: 36px;
+  padding: 8px 9px;
+}
+
+.mechanismDraftPrimaryAction,
+.mechanismDraftReviewActions button {
+  min-height: 36px;
+  border: 1px solid var(--nb-border);
+  border-radius: 8px;
+  background: rgba(155, 184, 215, 0.12);
+  color: var(--nb-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.mechanismDraftPrimaryAction:disabled,
+.mechanismDraftReviewActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.mechanismDraftReviewEmpty,
+.mechanismDraftSummary,
+.mechanismPrimarySourceCard,
+.mechanismDraftReviewNotice,
+.mechanismDraftSafetyBoundary,
+.mechanismDraftReviewFact {
+  padding: 9px;
+  border: 1px solid var(--nb-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.mechanismDraftReviewEmpty,
+.mechanismDraftReviewWorkspace,
+.mechanismPrimarySources,
+.mechanismDraftReviewDetails,
+.mechanismDraftReviewActions {
+  display: grid;
+  gap: 8px;
+}
+
+.mechanismDraftSummary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+.mechanismDraftSummary h5 {
+  margin: 5px 0 0;
+  color: var(--nb-text);
+  font-size: 13px;
+}
+
+.mechanismDraftSummary p {
+  grid-column: 1 / -1;
+}
+
+.mechanismDraftModeChip,
+.mechanismPrimarySourceCard > span {
+  color: var(--nb-text);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.mechanismPrimarySourceCard {
+  display: grid;
+  gap: 6px;
+}
+
+.mechanismPrimarySourceCard code {
+  width: max-content;
+  max-width: 100%;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: rgba(155, 184, 215, 0.1);
+  color: var(--nb-text);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.mechanismDraftReviewDetails[open] {
+  padding-bottom: 2px;
+}
+
+.mechanismDraftReviewActions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mechanismDraftReviewNotice.error {
+  border-color: rgba(224, 132, 132, 0.5);
+  color: #f0b0b0;
+}
+
+.mechanismDraftReviewNotice.success {
+  border-color: rgba(132, 199, 164, 0.5);
+  color: #b9dfcb;
+}
+
+.mechanismDraftSafetyBoundary {
+  color: var(--nb-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.workspaceStudioToolSurface[hidden] {
+  display: none;
+}
+
+.manualChatGPTBridgePanel {
+  align-content: start;
+}
+
+.manualBridgeSelection {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--nb-border);
+}
+
+.manualBridgeSelection > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.manualBridgeSelection span,
+.manualBridgeSelection small {
+  color: var(--nb-muted);
+  font-size: 10px;
+}
+
+.manualBridgeSelection strong {
+  max-height: 48px;
+  overflow: hidden;
+  color: var(--nb-text);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.manualBridgeSelection .manualBridgeSecondaryAction:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.manualBridgeFlow {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.manualBridgeStatusLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.manualBridgeStatusLine > span:not(.workspaceStatusPill) {
+  color: var(--nb-muted);
+  font-size: 10px;
+}
+
+.manualBridgePrompt textarea {
+  min-height: 220px;
+}
+
+.manualBridgeSecondaryAction {
+  min-height: 34px;
+  border: 1px solid var(--nb-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--nb-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.manualBridgeSchemaDisclosure pre {
+  max-height: 220px;
+  margin: 8px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--nb-border);
+  border-radius: 8px;
+  background: #171c24;
+  color: var(--nb-muted);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.manualBridgeValidationReady {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--nb-border);
+}
+
+.manualBridgeValidationReady > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.manualBridgeValidationReady strong {
+  color: var(--nb-text);
+  font-size: 11px;
+}
+
+.manualBridgeValidationReady > span {
+  color: var(--nb-muted);
+  font-size: 10px;
+}
+
+.notebookHomePage.fullNotebookHomePage {
+  min-height: 100%;
+  padding: 28px clamp(28px, 9vw, 210px) 56px;
+  gap: 28px;
+  background: #202329;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookHomeTopbar,
+.notebookHomePage.fullNotebookHomePage .notebookHomeTabs,
+.notebookHomePage.fullNotebookHomePage .notebookHomeSection {
+  max-width: 1620px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookHomeTopbar {
+  min-height: 54px;
+  padding: 0;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookHomeBrandMark {
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookHomeTopbar h2 {
+  font-size: 28px;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookHomeTabs {
+  margin-top: 10px;
+  padding: 0;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookHomeTabs button {
+  min-height: 44px;
+  padding: 0 18px;
+  font-size: 14px;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookHomeSection {
+  padding: 0;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookHomeSectionHeader h3 {
+  font-size: 27px;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookCardGrid.featured,
+.notebookHomePage.fullNotebookHomePage .notebookCardGrid {
+  grid-template-columns: repeat(auto-fit, minmax(340px, 386px));
+  gap: 26px;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookCard {
+  min-height: 268px;
+  border-radius: 14px;
+  background: rgba(53, 56, 66, 0.88);
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookCard.featured {
+  min-height: 268px;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookCardCover {
+  height: 148px;
+  border-radius: 13px;
+}
+
+.notebookHomePage.fullNotebookHomePage .notebookCardBody strong {
+  font-size: 22px;
+}
+
+@media (max-width: 1420px) {
+  .notebookLmInspiredWorkspace {
+    --workspace-left-width: 27%;
+    --workspace-center-width: 46%;
+    --workspace-right-width: 27%;
+  }
+
+  .notebookLmInspiredWorkspace .researchWorkspaceLayout {
+    grid-template-columns:
+      minmax(260px, calc(var(--workspace-left-width) - 10px))
+      minmax(440px, calc(var(--workspace-center-width) - 10px))
+      minmax(260px, calc(var(--workspace-right-width) - 10px));
+  }
+}
+
+@media (max-width: 1180px) {
+  .notebookLmInspiredWorkspace .researchWorkspaceLayout {
+    grid-template-columns: 1fr;
+  }
+}

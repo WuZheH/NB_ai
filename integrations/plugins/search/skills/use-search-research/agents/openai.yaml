@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use Search research"
+  short_description: "Query local research evidence safely"
+  default_prompt: "Use Search to answer from my local research library."

@@ -1,0 +1,87 @@
+# Local cleanup and Python caches
+.codex_tmp/
+.cleanup_quarantine/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest_tmp/
+pytest-cache-files-*/
+pytest-of-*/
+torchinductor_*/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend rebuildable artifacts
+**/node_modules/
+**/.npm-cache/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+integrations/search_desktop/node_modules/
+integrations/search_desktop/dist/
+integrations/search_desktop/dist-candidates/
+integrations/search_desktop/.npm-cache/
+**/dist-candidates/
+**/.test-build/
+**/.test-work-*/
+
+# Private local corpus, databases, derived indexes, and runtime data
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.pdf
+*.arrow
+*.parquet
+*.npy
+*.npz
+*.lance
+*.lancedb
+
+# Local model weights
+model_cache/
+models/
+!/app/models/
+!/app/models/**/*.py
+*.safetensors
+*.gguf
+*.onnx
+*.pt
+*.pth
+pytorch_model*.bin
+
+# Runtime output and logs
+outputs/
+release/
+releases/
+logs/
+user-data/
+**/electron-user-data/
+*.log
+*.tmp
+*.temp
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+credentials/
+.cloudflared/
+cloudflared.exe
+search-desktop.local.json
+cert.pem
+*.pem
+*.key
+*.p12
+*.pfx
+.venv/
+venv/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
