@@ -74,8 +74,9 @@ def search_high_quality(
     vector_store_status = reranker_payload.get("vector_store_status") or objects_payload.get("vector_store_status")
     fallback_reason = reranker_payload.get("fallback_reason") or objects_payload.get("fallback_reason")
     degraded_reason = reranker_payload.get("degraded_reason") or objects_payload.get("degraded_reason")
+    document_prefilter = reranker_payload.get("document_prefilter")
 
-    return {
+    payload: dict[str, Any] = {
         "status": "ok",
         "implementation_status": "connected",
         "query": normalized_query,
@@ -114,6 +115,9 @@ def search_high_quality(
         "external_llm_called": False,
         "final_hypothesis_created": False,
     }
+    if document_prefilter is not None:
+        payload["document_prefilter"] = document_prefilter
+    return payload
 
 
 def _object_item(item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:

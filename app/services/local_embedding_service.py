@@ -81,6 +81,7 @@ def _search_embedding_sidecar_in_memory(
     fallback_reason: str | None,
     vector_store_status: dict[str, Any] | None,
     document_ids: tuple[int, ...] | None = None,
+    document_prefilter: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     timings: dict[str, float] = {}
@@ -96,6 +97,7 @@ def _search_embedding_sidecar_in_memory(
             retrieval_backend=retrieval_backend,
             fallback_reason=fallback_reason,
             vector_store_status=vector_store_status,
+            document_prefilter=document_prefilter,
         )
 
     query_start = time.perf_counter()
@@ -120,6 +122,7 @@ def _search_embedding_sidecar_in_memory(
         retrieval_backend=retrieval_backend,
         fallback_reason=fallback_reason,
         vector_store_status=vector_store_status,
+        document_prefilter=document_prefilter,
     )
 
 
@@ -138,6 +141,7 @@ def _search_vector_store_passages(query: str, limit: int = 10, document_ids: tup
                 fallback_reason=fallback_reason,
                 vector_store_status=vector_status,
                 document_ids=document_ids,
+                document_prefilter=_prefilter_not_applied(document_ids),
             )
 
         started = time.perf_counter()
@@ -150,6 +154,7 @@ def _search_vector_store_passages(query: str, limit: int = 10, document_ids: tup
                 fallback_reason="vector_table_missing",
                 vector_store_status=vector_status,
                 document_ids=document_ids,
+                document_prefilter=_prefilter_not_applied(document_ids),
             )
         results = [_vector_passage_result(item) for item in payload.get("results") or []]
         results = _enrich_passage_page_metadata(results)
@@ -160,6 +165,7 @@ def _search_vector_store_passages(query: str, limit: int = 10, document_ids: tup
             retrieval_backend="lancedb",
             fallback_reason=None,
             vector_store_status=vector_status,
+            document_prefilter=payload.get("document_prefilter"),
         )
     except Exception:
         return _search_embedding_sidecar_in_memory(
@@ -168,7 +174,24 @@ def _search_vector_store_passages(query: str, limit: int = 10, document_ids: tup
             retrieval_backend="fallback_in_memory",
             fallback_reason="vector_search_failed",
             vector_store_status={"available": False, "stale": False, "reason": "vector_search_failed"},
+            document_ids=document_ids,
+            document_prefilter=_prefilter_not_applied(document_ids),
         )
+
+
+def _prefilter_not_applied(document_ids: tuple[int, ...] | None) -> dict[str, Any] | None:
+    """Stable fallback document_prefilter record when the vector prefilter did not run.
+
+    Only emitted when a document restriction was actually requested
+    (``document_ids is not None``); contains no paths, schema details or stacks.
+    """
+    if document_ids is None:
+        return None
+    return {
+        "applied": False,
+        "available": False,
+        "document_ids": list(document_ids),
+    }
 
 
 def reset_runtime_cache() -> None:
@@ -333,8 +356,9 @@ def _response(
     retrieval_backend: str = "in_memory",
     fallback_reason: str | None = None,
     vector_store_status: dict[str, Any] | None = None,
+    document_prefilter: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "query": query,
         "model": MODEL_NAME,
         "mode": "local_embedding_sidecar_v1",
@@ -349,6 +373,9 @@ def _response(
             "zotero_write_performed": False,
         },
     }
+    if document_prefilter is not None:
+        payload["document_prefilter"] = document_prefilter
+    return payload
 
 
 def _vector_passage_result(item: dict[str, Any]) -> dict[str, Any]:

@@ -103,6 +103,7 @@ def search_notebook(
         fallback_reason = pdf_payload.get("fallback_reason")
         if fallback_reason:
             warnings.append(f"legacy_pdf_fallback:{fallback_reason}")
+        warnings.extend(_document_prefilter_warnings(normalized_document_ids, pdf_payload))
         candidates.extend(
             _pdf_candidates(
                 pdf_payload,
@@ -445,6 +446,25 @@ def _requested_document_warnings(
             }
         )
     return warnings
+
+
+def _document_prefilter_warnings(
+    normalized_document_ids: tuple[int, ...] | None,
+    pdf_payload: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Stable warnings when the vector document prefilter did not constrain recall.
+
+    Emitted only when a document restriction was requested. Codes are fixed
+    strings; no paths, schema contents or exception stacks are exposed.
+    """
+    if normalized_document_ids is None:
+        return []
+    prefilter = pdf_payload.get("document_prefilter")
+    if prefilter is None or not prefilter.get("available"):
+        return [{"code": "document_prefilter_unavailable"}]
+    if not prefilter.get("applied"):
+        return [{"code": "document_prefilter_failed"}]
+    return []
 
 
 def _dedupe_warnings(

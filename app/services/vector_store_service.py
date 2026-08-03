@@ -2129,13 +2129,23 @@ def _build_document_id_where(document_ids: tuple[int, ...]) -> str:
     Single document: ``document_id = 2``
     Multiple documents: ``document_id IN (2, 5)``
 
-    All values are already validated positive ints — no SQL injection risk.
+    Defense-in-depth: only non-empty, positive, non-bool integers are accepted.
+    Anything else raises ValueError, so no unvalidated object can ever reach the
+    WHERE expression.
     """
     if not document_ids:
         raise ValueError("document_ids must not be empty")
-    if len(document_ids) == 1:
-        return f"document_id = {document_ids[0]}"
-    ids = ", ".join(str(doc_id) for doc_id in document_ids)
+    normalized: list[int] = []
+    for document_id in document_ids:
+        if isinstance(document_id, bool) or not isinstance(document_id, int):
+            raise ValueError("document_ids must contain positive integers")
+        if document_id < 1:
+            raise ValueError("document_ids must contain positive integers")
+        normalized.append(document_id)
+    normalized = sorted(set(normalized))
+    if len(normalized) == 1:
+        return f"document_id = {normalized[0]}"
+    ids = ", ".join(str(doc_id) for doc_id in normalized)
     return f"document_id IN ({ids})"
 
 

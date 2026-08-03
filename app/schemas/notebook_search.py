@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.domains.retrieval.result_contracts import (
@@ -37,13 +39,33 @@ class NotebookSearchRequest(BaseModel):
             raise ValueError("source_types must contain at least one supported source")
         return list(dict.fromkeys(values))
 
-    @field_validator("document_ids")
+    @field_validator("document_ids", mode="before")
     @classmethod
-    def unique_document_ids(cls, values: list[int]) -> list[int]:
-        invalid = [value for value in values if value < 1]
-        if invalid:
-            raise ValueError("document_ids must contain positive integers")
-        return list(dict.fromkeys(values))
+    def strict_document_ids(cls, values: Any) -> list[int]:
+        """Validate raw document_ids elements BEFORE Pydantic type coercion.
+
+        Public contract:
+          - ``[]`` → no document restriction (search all documents).
+          - Only non-empty positive integers are accepted.
+          - ``bool``, ``str``, ``float``, ``0`` and negative values are rejected
+            (422 via FastAPI validation).
+          - Duplicates are removed, preserving order.
+        """
+        if values is None:
+            return []
+        if not isinstance(values, list):
+            raise ValueError("document_ids must be a list of positive integers")
+        result: list[int] = []
+        seen: set[int] = set()
+        for value in values:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError("document_ids must contain positive integers")
+            if value < 1:
+                raise ValueError("document_ids must contain positive integers")
+            if value not in seen:
+                seen.add(value)
+                result.append(value)
+        return result
 
 
 __all__ = ["NotebookSearchRequest", "NotebookSearchResponse"]

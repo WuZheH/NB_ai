@@ -29,7 +29,8 @@ class _Query:
         self.query_vector = query_vector
         self._where_clause: str | None = None
         self._limit_value: int | None = None
-        self._called: list[str] = []
+        # Full chain starts at search: the query object is created by it.
+        self._called: list[str] = ["search"]
 
     def where(self, clause: str) -> "_Query":
         self._called.append("where")
@@ -46,6 +47,7 @@ class _Query:
         return self.table._filtered(  # noqa: SLF001
             self._where_clause,
             self._limit_value,
+            call_log=self._called,
         )
 
 
@@ -63,6 +65,7 @@ class _Table:
         self.fail_filter = fail_filter
         self.ignore_filter = ignore_filter
         self.queries: list[tuple[str | None, int | None]] = []
+        self.query_call_orders: list[list[str]] = []
         self._call_order: list[str] = []
 
     def search(self, query_vector: list[float] | None = None) -> _Query:
@@ -73,8 +76,12 @@ class _Table:
         self,
         where_clause: str | None,
         limit_value: int | None,
+        *,
+        call_log: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         self.queries.append((where_clause, limit_value))
+        if call_log is not None:
+            self.query_call_orders.append(list(call_log))
         if self.fail_filter:
             raise RuntimeError("filter query failed")
         rows = list(self.rows)
@@ -226,9 +233,14 @@ def test_lancedb_call_order_is_search_where_limit_tolist(
 
     service.search_passage_vectors("test query", limit=10, document_ids=(2,))
 
-    order = table._call_order  # noqa: SLF001
-    assert order == ["search"], f"Table-level: expected ['search'], got {order}"
-    # Check query-level call order
+    assert len(table.query_call_orders) == 1, "exactly one LanceDB query executed"
+    chain = table.query_call_orders[0]
+    assert chain == ["search", "where", "limit", "to_list"], (
+        f"expected search → where → limit → to_list, got {chain}"
+    )
+    # Table-level: search must be the only table method invoked
+    assert table._call_order == ["search"], f"Table-level: got {table._call_order}"  # noqa: SLF001
+    # Where clause and limit values
     assert len(table.queries) == 1
     where_clause, limit_value = table.queries[0]
     assert where_clause == "document_id = 2", f"where clause mismatch: {where_clause}"
@@ -472,8 +484,18 @@ def test_backend_ignore_filter_does_not_crash(
 def test_filter_failure_is_caught(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When where/filter throws, the search must not propagate the exception."""
-    rows = [_make_row(1, 101)]
+    """The vector filter exception must NOT reach the embedding sidecar caller.
+
+    local_embedding_service catches the vector-search failure and falls back to
+    the in-memory path, which must keep the requested document_ids.
+    """
+    from app.services import local_embedding_service as embedding
+    from app.services.local_embedding_service import EmbeddingCandidate
+
+    rows = [
+        _make_row(1, 101, "doc 1 passage"),
+        _make_row(2, 201, "doc 2 passage"),
+    ]
     table = _Table(
         rows,
         fields=("document_id", "chunk_id", "passage_text", "vector"),
@@ -482,12 +504,40 @@ def test_filter_failure_is_caught(
     db = _Db({service.PASSAGE_TABLE: table})
     _patch_vector_store(monkeypatch, db)
 
-    # The exception from the fake filter should propagate since _search_table
-    # delegates to LanceDB which would raise on filter failure. This verifies
-    # the caller handles it (currently falls back to in-memory via
-    # _search_embedding_sidecar_in_memory).
-    with pytest.raises(RuntimeError, match="filter query failed"):
-        service.search_passage_vectors("test", limit=10, document_ids=(2,))
+    monkeypatch.setattr(
+        embedding,
+        "_load_candidates",
+        lambda: [
+            EmbeddingCandidate(
+                chunk_id=101,
+                document_id=1,
+                title="Doc 1",
+                heading_path="",
+                passage_text="doc 1 passage",
+            ),
+            EmbeddingCandidate(
+                chunk_id=201,
+                document_id=2,
+                title="Doc 2",
+                heading_path="",
+                passage_text="doc 2 passage",
+            ),
+        ],
+    )
+
+    # Must NOT raise: the failure falls back to in-memory retrieval.
+    result = embedding.search_embedding_sidecar("test", limit=10, document_ids=(2,))
+
+    assert result["fallback_reason"] == "vector_search_failed"
+    assert result["retrieval_backend"] == "fallback_in_memory"
+    assert result["document_prefilter"] == {
+        "applied": False,
+        "available": False,
+        "document_ids": [2],
+    }
+    # The in-memory fallback enforced document_ids: only document 2 remains.
+    result_ids = {item["document_id"] for item in result["results"]}
+    assert result_ids == {2}, f"expected only document 2, got {result_ids}"
 
 
 # ===================================================================
@@ -530,3 +580,366 @@ def test_build_document_id_where_multi() -> None:
 def test_build_document_id_where_rejects_empty() -> None:
     with pytest.raises(ValueError):
         service._build_document_id_where(())  # noqa: SLF001
+
+
+# ===================================================================
+# Test: _build_document_id_where defensive validation
+# ===================================================================
+
+def test_build_document_id_where_rejects_bool() -> None:
+    with pytest.raises(ValueError, match="positive integers"):
+        service._build_document_id_where((True,))  # noqa: SLF001
+
+
+def test_build_document_id_where_rejects_non_int() -> None:
+    with pytest.raises(ValueError, match="positive integers"):
+        service._build_document_id_where(("2",))  # type: ignore[arg-type]  # noqa: SLF001
+    with pytest.raises(ValueError, match="positive integers"):
+        service._build_document_id_where((2.0,))  # type: ignore[arg-type]  # noqa: SLF001
+    with pytest.raises(ValueError, match="positive integers"):
+        service._build_document_id_where((2, object()))  # type: ignore[arg-type]  # noqa: SLF001
+
+
+def test_build_document_id_where_rejects_zero_and_negative() -> None:
+    with pytest.raises(ValueError, match="positive integers"):
+        service._build_document_id_where((0,))  # noqa: SLF001
+    with pytest.raises(ValueError, match="positive integers"):
+        service._build_document_id_where((-2,))  # noqa: SLF001
+
+
+def test_build_document_id_where_deduplicates_and_sorts() -> None:
+    clause = service._build_document_id_where((5, 2, 2, 5))  # noqa: SLF001
+    assert clause == "document_id IN (2, 5)"
+
+
+# ===================================================================
+# Test: document_ids strict schema validation (before Pydantic coercion)
+# ===================================================================
+
+def test_schema_rejects_bool_string_float_zero_negative_document_ids() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.notebook_search import NotebookSearchRequest
+
+    for bad in (
+        [True],
+        [1, True],
+        ["1"],
+        [2, "3"],
+        [1.0],
+        [1.5],
+        [0],
+        [-1],
+        [0, 2],
+    ):
+        with pytest.raises(ValidationError):
+            NotebookSearchRequest.model_validate(
+                {"query": "q", "source_types": ["pdf_chunk"], "document_ids": bad}
+            )
+
+
+def test_schema_accepts_positive_ints_deduplicates_and_allows_empty() -> None:
+    from app.schemas.notebook_search import NotebookSearchRequest
+
+    request = NotebookSearchRequest.model_validate(
+        {"query": "q", "source_types": ["pdf_chunk"], "document_ids": [5, 2, 2, 5]}
+    )
+    assert request.document_ids == [5, 2]
+
+    empty = NotebookSearchRequest.model_validate(
+        {"query": "q", "source_types": ["pdf_chunk"], "document_ids": []}
+    )
+    assert empty.document_ids == []
+
+    omitted = NotebookSearchRequest.model_validate(
+        {"query": "q", "source_types": ["pdf_chunk"]}
+    )
+    assert omitted.document_ids == []
+
+
+# ===================================================================
+# Test: document_prefilter propagation through the sidecar chain
+# ===================================================================
+
+def test_embedding_sidecar_propagates_applied_document_prefilter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import local_embedding_service as embedding
+
+    rows = [_make_row(1, 101), _make_row(2, 201)]
+    table = _Table(rows, fields=("document_id", "chunk_id", "passage_text", "vector"))
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    result = embedding.search_embedding_sidecar("q", limit=10, document_ids=(2,))
+
+    assert result["retrieval_backend"] == "lancedb"
+    assert result["document_prefilter"] == {
+        "applied": True,
+        "available": True,
+        "document_ids": [2],
+    }
+
+
+def test_reranker_and_high_quality_propagate_document_prefilter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import high_quality_search_service, local_reranker_service
+
+    # Old schema (no document_id column): prefilter unavailable record must
+    # flow embedding → reranker → high_quality.
+    rows = [_make_row(1, 101), _make_row(2, 201)]
+    table = _Table(rows, fields=("chunk_id", "passage_text", "vector"))
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+    monkeypatch.setattr(
+        high_quality_search_service,
+        "require_runtime_machine_config",
+        lambda: _ready_machine_config(),
+    )
+    monkeypatch.setattr(local_reranker_service, "_load_reranker", lambda _timings: object())
+    monkeypatch.setattr(
+        local_reranker_service,
+        "_predict_scores",
+        lambda _model, pairs: [0.9] * len(pairs),
+    )
+
+    expected = {"applied": False, "available": False, "document_ids": [2]}
+
+    reranker_payload = local_reranker_service.search_reranker_sidecar(
+        "q", recall_limit=20, limit=5, document_ids=(2,)
+    )
+    assert reranker_payload["document_prefilter"] == expected
+
+    high_quality_payload = high_quality_search_service.search_high_quality(
+        "q", include_objects=False, document_ids=(2,)
+    )
+    assert high_quality_payload["document_prefilter"] == expected
+
+
+def _ready_machine_config() -> Any:
+    from pathlib import Path
+
+    from app.runtime.machine_config import MachineConfig, MachineModelConfig
+
+    return MachineConfig(
+        path=Path("/fixture"),
+        status="model_ready",
+        embedding=MachineModelConfig(Path("/fixture/embedding"), "Qwen3-Embedding-0.6B"),
+        reranker=MachineModelConfig(Path("/fixture/reranker"), "Qwen3-Reranker-0.6B"),
+    )
+
+
+def _notebook_fragment(
+    fragment_id: str,
+    *,
+    document_id: int,
+    chunk_id: int | None = None,
+    text: str | None = None,
+) -> Any:
+    from app.domains.retrieval.result_contracts import NotebookFragment, OpenTarget
+
+    return NotebookFragment(
+        fragment_id=fragment_id,
+        source_type="pdf_chunk",
+        document_id=document_id,
+        document_title=f"Document {document_id}",
+        document_type="paper",
+        chunk_id=chunk_id,
+        text=text,
+        content_hash="a" * 64,
+        provenance=[{"store": "fixture"}],
+        open_target=OpenTarget(zotero_disabled_reason="fixture"),
+    )
+
+
+# ===================================================================
+# Test: notebook end-to-end — backend ignores the filter
+# ===================================================================
+
+def test_notebook_search_excludes_other_documents_when_backend_ignores_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: even when LanceDB ignores the where clause, the final
+    notebook response must never contain documents outside the requested set."""
+    from app.domains.retrieval import notebook_search_service as ns
+    from app.services import local_reranker_service
+    from app.services.retrieval.fragment_id import (
+        canonical_source_locator,
+        fragment_uuid,
+    )
+
+    rows = [_make_row(1, 101), _make_row(2, 201), _make_row(3, 301)]
+    table = _Table(
+        rows,
+        fields=("document_id", "chunk_id", "passage_text", "vector"),
+        ignore_filter=True,
+    )
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    fragment_id_by_doc = {
+        row["document_id"]: fragment_uuid(
+            canonical_source_locator(
+                "pdf_chunk",
+                document_id=row["document_id"],
+                chunk_id=row["chunk_id"],
+            )
+        )
+        for row in rows
+    }
+
+    def fake_details(
+        ids: Any,
+        *,
+        document_ids: Any = None,
+        registry: Any = None,
+    ) -> list[Any]:
+        assert registry is None
+        assert set(document_ids or []) == {2}
+        result = []
+        for value in ids:
+            document_id = next(
+                doc for doc, fragment_id in fragment_id_by_doc.items() if fragment_id == value
+            )
+            chunk_id = next(
+                row["chunk_id"] for row in rows if row["document_id"] == document_id
+            )
+            result.append(
+                _notebook_fragment(
+                    value,
+                    document_id=document_id,
+                    chunk_id=chunk_id,
+                    text=f"full source chunk {document_id}:{chunk_id}",
+                )
+            )
+        return result
+
+    monkeypatch.setattr(ns, "_requested_document_warnings", lambda _ids: [])
+    monkeypatch.setattr(ns, "get_notebook_fragments", fake_details)
+    monkeypatch.setattr(
+        ns.high_quality_search_service,
+        "require_runtime_machine_config",
+        lambda: _ready_machine_config(),
+    )
+    monkeypatch.setattr(
+        local_reranker_service,
+        "_load_reranker",
+        lambda _timings: object(),
+    )
+    monkeypatch.setattr(
+        local_reranker_service,
+        "_predict_scores",
+        lambda _model, pairs: [0.9] * len(pairs),
+    )
+
+    response = ns.search_notebook(
+        {
+            "query": "test query",
+            "limit": 10,
+            "source_types": ["pdf_chunk"],
+            "document_ids": [2],
+        }
+    )
+
+    # The where clause WAS sent to the (ignoring) backend.
+    where_clause, _limit = table.queries[0]
+    assert where_clause == "document_id = 2"
+    # Prefilter applied from our perspective → no prefilter warning.
+    assert response["warnings"] == []
+    # Defense in depth: the final response contains only document 2.
+    result_document_ids = {item["document_id"] for item in response["results"]}
+    assert result_document_ids == {2}, (
+        f"other documents leaked into the response: {result_document_ids}"
+    )
+
+
+# ===================================================================
+# Test: notebook end-to-end — old schema, prefilter unavailable
+# ===================================================================
+
+def test_notebook_search_returns_stable_warning_when_prefilter_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Old schema (no document_id column) must yield a stable warning and the
+    final response must still exclude other documents."""
+    from app.domains.retrieval import notebook_search_service as ns
+    from app.services import local_reranker_service
+    from app.services.retrieval.fragment_id import (
+        canonical_source_locator,
+        fragment_uuid,
+    )
+
+    rows = [_make_row(1, 101), _make_row(2, 201)]
+    table = _Table(rows, fields=("chunk_id", "passage_text", "vector"))
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    fragment_id_by_doc = {
+        row["document_id"]: fragment_uuid(
+            canonical_source_locator(
+                "pdf_chunk",
+                document_id=row["document_id"],
+                chunk_id=row["chunk_id"],
+            )
+        )
+        for row in rows
+    }
+
+    def fake_details(
+        ids: Any,
+        *,
+        document_ids: Any = None,
+        registry: Any = None,
+    ) -> list[Any]:
+        assert registry is None
+        result = []
+        for value in ids:
+            document_id = next(
+                doc for doc, fragment_id in fragment_id_by_doc.items() if fragment_id == value
+            )
+            chunk_id = next(
+                row["chunk_id"] for row in rows if row["document_id"] == document_id
+            )
+            result.append(
+                _notebook_fragment(
+                    value,
+                    document_id=document_id,
+                    chunk_id=chunk_id,
+                    text=f"full source chunk {document_id}:{chunk_id}",
+                )
+            )
+        return result
+
+    monkeypatch.setattr(ns, "_requested_document_warnings", lambda _ids: [])
+    monkeypatch.setattr(ns, "get_notebook_fragments", fake_details)
+    monkeypatch.setattr(
+        ns.high_quality_search_service,
+        "require_runtime_machine_config",
+        lambda: _ready_machine_config(),
+    )
+    monkeypatch.setattr(
+        local_reranker_service,
+        "_load_reranker",
+        lambda _timings: object(),
+    )
+    monkeypatch.setattr(
+        local_reranker_service,
+        "_predict_scores",
+        lambda _model, pairs: [0.9] * len(pairs),
+    )
+
+    response = ns.search_notebook(
+        {
+            "query": "test query",
+            "limit": 10,
+            "source_types": ["pdf_chunk"],
+            "document_ids": [2],
+        }
+    )
+
+    assert {"code": "document_prefilter_unavailable"} in response["warnings"]
+    result_document_ids = {item["document_id"] for item in response["results"]}
+    assert result_document_ids == {2}, (
+        f"other documents leaked into the response: {result_document_ids}"
+    )

@@ -71,6 +71,7 @@ def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10,
     retrieval_backend = str(recall_payload.get("retrieval_backend") or "in_memory")
     fallback_reason = recall_payload.get("fallback_reason")
     vector_store_status = recall_payload.get("vector_store_status")
+    document_prefilter = recall_payload.get("document_prefilter")
     if not candidates:
         return _response(
             query=normalized_query,
@@ -86,6 +87,7 @@ def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10,
             retrieval_backend=retrieval_backend,
             fallback_reason=fallback_reason,
             vector_store_status=vector_store_status,
+            document_prefilter=document_prefilter,
             query_variants=query_variants,
             variant_recall_count=variant_recall_count,
             deduplicated_candidate_count=0,
@@ -131,6 +133,7 @@ def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10,
         retrieval_backend=retrieval_backend,
         fallback_reason=fallback_reason,
         vector_store_status=vector_store_status,
+        document_prefilter=document_prefilter,
         query_variants=query_variants,
         variant_recall_count=variant_recall_count,
         deduplicated_candidate_count=len(candidates),
@@ -230,6 +233,7 @@ def _response(
     retrieval_backend: str = "in_memory",
     fallback_reason: str | None = None,
     vector_store_status: dict[str, Any] | None = None,
+    document_prefilter: dict[str, Any] | None = None,
     query_variants: list[str] | None = None,
     variant_recall_count: dict[str, int] | None = None,
     deduplicated_candidate_count: int | None = None,
@@ -252,6 +256,8 @@ def _response(
             "zotero_write_performed": False,
         },
     }
+    if document_prefilter is not None:
+        payload["document_prefilter"] = document_prefilter
     if query_variants is not None:
         payload["query_variants"] = list(query_variants)
     if variant_recall_count is not None:
