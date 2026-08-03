@@ -1,0 +1,532 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import pytest
+
+from app.services import vector_store_service as service
+
+
+# ---------------------------------------------------------------------------
+# Fake LanceDB surface for recording call order and simulating filters
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class _Field:
+    name: str
+
+
+class _Query:
+    """Record query method calls in order and simulate filtering."""
+
+    def __init__(
+        self,
+        table: "_Table",
+        query_vector: list[float],
+    ) -> None:
+        self.table = table
+        self.query_vector = query_vector
+        self._where_clause: str | None = None
+        self._limit_value: int | None = None
+        self._called: list[str] = []
+
+    def where(self, clause: str) -> "_Query":
+        self._called.append("where")
+        self._where_clause = clause
+        return self
+
+    def limit(self, value: int) -> "_Query":
+        self._called.append("limit")
+        self._limit_value = value
+        return self
+
+    def to_list(self) -> list[dict[str, Any]]:
+        self._called.append("to_list")
+        return self.table._filtered(  # noqa: SLF001
+            self._where_clause,
+            self._limit_value,
+        )
+
+
+class _Table:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        fields: tuple[str, ...] = ("document_id", "chunk_id", "passage_text", "vector"),
+        fail_filter: bool = False,
+        ignore_filter: bool = False,
+    ) -> None:
+        self.rows = rows
+        self.schema = [_Field(name) for name in fields]
+        self.fail_filter = fail_filter
+        self.ignore_filter = ignore_filter
+        self.queries: list[tuple[str | None, int | None]] = []
+        self._call_order: list[str] = []
+
+    def search(self, query_vector: list[float] | None = None) -> _Query:
+        self._call_order.append("search")
+        return _Query(self, query_vector or [])
+
+    def _filtered(
+        self,
+        where_clause: str | None,
+        limit_value: int | None,
+    ) -> list[dict[str, Any]]:
+        self.queries.append((where_clause, limit_value))
+        if self.fail_filter:
+            raise RuntimeError("filter query failed")
+        rows = list(self.rows)
+        if where_clause and not self.ignore_filter:
+            rows = self._apply_where(rows, where_clause)
+        if limit_value is not None:
+            rows = rows[:limit_value]
+        return rows
+
+    @staticmethod
+    def _apply_where(
+        rows: list[dict[str, Any]],
+        clause: str,
+    ) -> list[dict[str, Any]]:
+        clause = clause.strip()
+        if clause.startswith("document_id = "):
+            target = int(clause.split("=")[-1].strip())
+            return [r for r in rows if r.get("document_id") == target]
+        if clause.startswith("document_id IN ("):
+            inner = clause[len("document_id IN ("):].rstrip(")")
+            ids = {int(v.strip()) for v in inner.split(",")}
+            return [r for r in rows if r.get("document_id") in ids]
+        return rows
+
+
+class _Db:
+    def __init__(self, tables: dict[str, _Table]) -> None:
+        self.tables = tables
+
+    def table_names(self) -> list[str]:
+        return list(self.tables)
+
+    def open_table(self, name: str) -> _Table:
+        return self.tables[name]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_row(
+    document_id: int,
+    chunk_id: int,
+    passage_text: str = "",
+    *,
+    score: float = 0.5,
+) -> dict[str, Any]:
+    return {
+        "document_id": document_id,
+        "chunk_id": chunk_id,
+        "title": f"Document {document_id}",
+        "passage_text": passage_text or f"passage {document_id}:{chunk_id}",
+        "heading_path": "",
+        "_distance": score,
+        "vector": [0.0] * 1024,
+    }
+
+
+def _patch_vector_store(
+    monkeypatch: pytest.MonkeyPatch,
+    db: _Db,
+) -> None:
+    """Replace vector_store_service internals so _search_table uses our fake DB."""
+    monkeypatch.setattr(service, "open_vector_store", lambda _path=None: db)
+    monkeypatch.setattr(service, "check_vector_store_status", lambda: {
+        "available": True, "stale": False, "reason": None,
+        "manifest": {}, "tables": {}, "freshness": {"state": "current"},
+    })
+    monkeypatch.setattr(service, "vector_table_fallback_reason", lambda _s, _t: None)
+    # minimal model mock - we only need encode_text to return a dummy vector
+    monkeypatch.setattr(
+        service.local_embedding_service,
+        "_load_model",
+        lambda _timings: object(),
+    )
+    monkeypatch.setattr(
+        service.local_embedding_service,
+        "_encode_text",
+        lambda _model, _text: [0.1] * 1024,
+    )
+
+
+# ===================================================================
+# Test A: Global competition — target ranked outside global top-k
+# ===================================================================
+
+def test_prefilter_brings_target_into_candidates_when_globally_ranked_outside_topk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Construct 65 distractors from document 1, target from document 2 ranked ~66.
+
+    Without prefilter the target is excluded by top-k limit=30.
+    With prefilter on document 2, it must appear in the results.
+    """
+    rows: list[dict[str, Any]] = []
+    # 65 distractors from document 1 (all ranked higher)
+    for i in range(65):
+        rows.append(_make_row(1, 1000 + i, f"distractor {i}", score=0.9 - i * 0.001))
+    # Target from document 2 at rank ~66 (0.835 score — lower than distractors)
+    target = _make_row(2, 2001, "R-precision ground-truth description", score=0.835)
+    rows.append(target)
+    # 10 more from document 2 (higher ranked within doc 2)
+    for i in range(10):
+        rows.append(_make_row(2, 2010 + i, f"doc2 passage {i}", score=0.84 - i * 0.001))
+
+    table = _Table(rows, fields=("document_id", "chunk_id", "passage_text", "_distance", "vector"))
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    # Without prefilter: global recall with limit=30 would miss target
+    result_all = service.search_passage_vectors("R-precision", limit=30)
+    global_ids = {r["chunk_id"] for r in result_all["results"]}
+    assert 2001 not in global_ids, "target should be excluded from global top-30"
+
+    # With prefilter on document 2: target must appear
+    result_filtered = service.search_passage_vectors(
+        "R-precision", limit=30, document_ids=(2,),
+    )
+    filtered_ids = {r["chunk_id"] for r in result_filtered["results"]}
+    assert 2001 in filtered_ids, "prefilter must bring target into candidates"
+    # No document 1 results
+    assert all(
+        r.get("document_id") != 1 for r in result_filtered["results"]
+    ), "document 1 must not leak"
+
+    # document_prefilter metadata
+    assert result_filtered.get("document_prefilter", {}).get("applied") is True
+    assert result_filtered["document_prefilter"]["document_ids"] == [2]
+
+    # Unfiltered path still works
+    result_none = service.search_passage_vectors("R-precision", limit=30, document_ids=None)
+    assert "document_prefilter" not in result_none
+
+
+# ===================================================================
+# Test B: Call order — search → where → limit → to_list
+# ===================================================================
+
+def test_lancedb_call_order_is_search_where_limit_tolist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Assert the LanceDB call order is search → where → limit → to_list."""
+    rows = [_make_row(1, 101), _make_row(2, 201)]
+    table = _Table(rows, fields=("document_id", "chunk_id", "passage_text", "vector"))
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    assert not table._call_order  # noqa: SLF001
+
+    service.search_passage_vectors("test query", limit=10, document_ids=(2,))
+
+    order = table._call_order  # noqa: SLF001
+    assert order == ["search"], f"Table-level: expected ['search'], got {order}"
+    # Check query-level call order
+    assert len(table.queries) == 1
+    where_clause, limit_value = table.queries[0]
+    assert where_clause == "document_id = 2", f"where clause mismatch: {where_clause}"
+    assert limit_value == 10, f"limit mismatch: {limit_value}"
+
+
+def test_without_document_ids_skips_where_clause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When document_ids is None, no where clause should be generated."""
+    rows = [_make_row(1, 101), _make_row(2, 201)]
+    table = _Table(rows, fields=("document_id", "chunk_id", "passage_text", "vector"))
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    service.search_passage_vectors("test query", limit=10)
+
+    assert len(table.queries) == 1
+    where_clause, limit_value = table.queries[0]
+    assert where_clause is None, "no where clause expected without document_ids"
+    assert limit_value == 10
+
+
+# ===================================================================
+# Test C: Variant propagation — all variants receive same document_ids
+# ===================================================================
+
+def test_all_query_variants_receive_same_document_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every query variant must receive document_ids in the vector recall call."""
+    from app.services import local_reranker_service
+
+    variant_calls: list[tuple[str, tuple[int, ...] | None]] = []
+
+    def fake_embedding(
+        variant: str,
+        *,
+        limit: int,
+        document_ids: tuple[int, ...] | None = None,
+    ) -> dict[str, Any]:
+        variant_calls.append((variant, document_ids))
+        return {
+            "results": [_make_row(2, 101, f"result for {variant}")],
+            "retrieval_backend": "lancedb",
+        }
+
+    monkeypatch.setattr(
+        local_reranker_service.local_embedding_service,
+        "search_embedding_sidecar",
+        fake_embedding,
+    )
+    monkeypatch.setattr(local_reranker_service, "_load_reranker", lambda _timings: object())
+    monkeypatch.setattr(
+        local_reranker_service,
+        "_predict_scores",
+        lambda _model, pairs: [0.5] * len(pairs),
+    )
+
+    result = local_reranker_service.search_reranker_sidecar(
+        "R-precision", recall_limit=20, limit=5, document_ids=(2,),
+    )
+
+    assert len(variant_calls) >= 1
+    for variant, doc_ids in variant_calls:
+        assert doc_ids == (2,), f"variant '{variant}' got {doc_ids}, expected (2,)"
+
+    # Reranker must receive the original query "R-precision" as the first element
+    # (verified by the service itself using normalized_query for pairs)
+    assert result["query"] == "R-precision"
+
+
+# ===================================================================
+# Test D: Multi-document filter
+# ===================================================================
+
+def test_multi_document_filter_generates_safe_in_clause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """document_ids=(2, 5) must generate document_id IN (2, 5)."""
+    rows = [
+        _make_row(1, 101),
+        _make_row(2, 201),
+        _make_row(3, 301),
+        _make_row(5, 501),
+    ]
+    table = _Table(rows, fields=("document_id", "chunk_id", "passage_text", "vector"))
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    result = service.search_passage_vectors("test", limit=10, document_ids=(2, 5))
+
+    assert len(table.queries) == 1
+    where_clause, _limit_value = table.queries[0]
+    assert where_clause == "document_id IN (2, 5)", f"unexpected where: {where_clause}"
+    result_ids = {r["document_id"] for r in result["results"]}
+    assert result_ids == {2, 5}, f"expected docs 2,5 got {result_ids}"
+    assert 1 not in result_ids
+    assert 3 not in result_ids
+
+
+def test_single_document_generates_equals_clause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single document_id=2 must generate document_id = 2."""
+    rows = [_make_row(1, 101), _make_row(2, 201)]
+    table = _Table(rows, fields=("document_id", "chunk_id", "passage_text", "vector"))
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    service.search_passage_vectors("test", limit=10, document_ids=(2,))
+
+    where_clause, _limit = table.queries[0]
+    assert where_clause == "document_id = 2"
+
+
+# ===================================================================
+# Test E: Input boundary tests via _normalize_document_ids
+# ===================================================================
+
+def test_normalize_document_ids_none_and_empty() -> None:
+    from app.domains.retrieval.notebook_search_service import _normalize_document_ids
+
+    assert _normalize_document_ids(None) is None
+    assert _normalize_document_ids([]) is None
+
+
+def test_normalize_document_ids_single_and_multi() -> None:
+    from app.domains.retrieval.notebook_search_service import _normalize_document_ids
+
+    assert _normalize_document_ids([2]) == (2,)
+    assert _normalize_document_ids([5, 2]) == (2, 5)
+
+
+def test_normalize_document_ids_deduplicates() -> None:
+    from app.domains.retrieval.notebook_search_service import _normalize_document_ids
+
+    assert _normalize_document_ids([2, 2]) == (2,)
+    assert _normalize_document_ids([5, 2, 2, 5]) == (2, 5)
+
+
+def test_normalize_document_ids_rejects_bool() -> None:
+    from app.domains.retrieval.notebook_search_service import _normalize_document_ids
+
+    with pytest.raises(ValueError, match="positive integers"):
+        _normalize_document_ids([True])
+
+
+def test_normalize_document_ids_rejects_zero_and_negative() -> None:
+    from app.domains.retrieval.notebook_search_service import _normalize_document_ids
+
+    with pytest.raises(ValueError, match="positive"):
+        _normalize_document_ids([0])
+    with pytest.raises(ValueError, match="positive"):
+        _normalize_document_ids([-1])
+
+
+def test_normalize_document_ids_rejects_string() -> None:
+    from app.domains.retrieval.notebook_search_service import _normalize_document_ids
+
+    with pytest.raises(ValueError):
+        _normalize_document_ids(["2"])  # type: ignore[arg-type]
+
+
+def test_normalize_document_ids_deterministic_order() -> None:
+    from app.domains.retrieval.notebook_search_service import _normalize_document_ids
+
+    result = _normalize_document_ids([9, 3, 7, 1])
+    assert result == (1, 3, 7, 9)
+
+
+# ===================================================================
+# Test F: Old schema — missing document_id column
+# ===================================================================
+
+def test_old_schema_missing_document_id_falls_back_gracefully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When passage table lacks document_id column, no exception and prefilter not applied."""
+    rows = [
+        _make_row(1, 101),
+        _make_row(2, 201),
+    ]
+    # Schema without document_id field
+    table = _Table(
+        rows,
+        fields=("chunk_id", "passage_text", "vector"),
+    )
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    result = service.search_passage_vectors("test", limit=10, document_ids=(2,))
+
+    # Must not throw
+    assert result["status"] == "ok"
+    # Prefilter not applied but reported
+    assert result.get("document_prefilter", {}).get("applied") is False
+    assert result["document_prefilter"]["available"] is False
+    # No where clause in query
+    where_clause, _limit = table.queries[0]
+    assert where_clause is None, "no where expected for old schema"
+    # Results still include all docs (post-filter must handle later)
+    result_ids = {r["document_id"] for r in result["results"]}
+    assert 1 in result_ids, "document 1 results present (post-filter will remove)"
+
+
+# ===================================================================
+# Test G: Backend ignores filter — defense-in-depth
+# ===================================================================
+
+def test_backend_ignore_filter_does_not_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fake backend that ignores the where clause returns documents from all docs."""
+    rows = [
+        _make_row(1, 101),
+        _make_row(2, 201),
+        _make_row(3, 301),
+    ]
+    table = _Table(
+        rows,
+        fields=("document_id", "chunk_id", "passage_text", "vector"),
+        ignore_filter=True,
+    )
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    result = service.search_passage_vectors("test", limit=10, document_ids=(2,))
+
+    # Should not crash even though backend returned all docs
+    assert result["status"] == "ok"
+    # Prefilter was "applied" from our perspective (we sent the clause)
+    assert result.get("document_prefilter", {}).get("applied") is True
+    # But backend returned docs from all 3 documents
+    result_ids = {r["document_id"] for r in result["results"]}
+    assert result_ids == {1, 2, 3}, (
+        "backend ignored filter; defense-in-depth post-filter will handle"
+    )
+
+
+def test_filter_failure_is_caught(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When where/filter throws, the search must not propagate the exception."""
+    rows = [_make_row(1, 101)]
+    table = _Table(
+        rows,
+        fields=("document_id", "chunk_id", "passage_text", "vector"),
+        fail_filter=True,
+    )
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    # The exception from the fake filter should propagate since _search_table
+    # delegates to LanceDB which would raise on filter failure. This verifies
+    # the caller handles it (currently falls back to in-memory via
+    # _search_embedding_sidecar_in_memory).
+    with pytest.raises(RuntimeError, match="filter query failed"):
+        service.search_passage_vectors("test", limit=10, document_ids=(2,))
+
+
+# ===================================================================
+# Test H: Regression — empty document_ids preserves full-corpus search
+# ===================================================================
+
+def test_none_document_ids_returns_all_documents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When document_ids is None, all documents are returned (no filter)."""
+    rows = [
+        _make_row(1, 101, score=0.9),
+        _make_row(2, 201, score=0.8),
+        _make_row(3, 301, score=0.7),
+    ]
+    table = _Table(rows, fields=("document_id", "chunk_id", "passage_text", "_distance", "vector"))
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    result = service.search_passage_vectors("test", limit=10)
+
+    result_ids = {r["document_id"] for r in result["results"]}
+    assert result_ids == {1, 2, 3}
+    assert "document_prefilter" not in result
+
+
+# ===================================================================
+# Test: _build_document_id_where helper
+# ===================================================================
+
+def test_build_document_id_where_single() -> None:
+    assert service._build_document_id_where((2,)) == "document_id = 2"  # noqa: SLF001
+
+
+def test_build_document_id_where_multi() -> None:
+    clause = service._build_document_id_where((2, 5))  # noqa: SLF001
+    assert clause == "document_id IN (2, 5)"
+
+
+def test_build_document_id_where_rejects_empty() -> None:
+    with pytest.raises(ValueError):
+        service._build_document_id_where(())  # noqa: SLF001

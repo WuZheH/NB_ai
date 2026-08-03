@@ -40,6 +40,42 @@ class NotebookSearchUnavailable(RuntimeError):
     pass
 
 
+def _normalize_document_ids(raw: list[int] | None) -> tuple[int, ...] | None:
+    """Normalize document_ids to a canonical internal type.
+
+    Public API contract:
+      - ``[]`` or ``None`` → no filter (search all documents).
+      - Non-empty list → search only the specified documents.
+
+    Internal contract:
+      - ``None``: no document filter.
+      - ``tuple[int, ...]``: sorted, deduplicated, positive-integer-only
+        document IDs.
+      - ``bool`` is NOT accepted as ``int``.
+      - The caller (Pydantic schema) already rejects non-positive values;
+        this function adds a defense-in-depth bool guard and canonical sort.
+    """
+    if raw is None:
+        return None
+    if not raw:
+        return None
+    unique: list[int] = []
+    seen: set[int] = set()
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("document_ids must contain positive integers")
+        candidate = int(value)
+        if candidate < 1:
+            raise ValueError("document_ids must contain positive integers")
+        if candidate not in seen:
+            unique.append(candidate)
+            seen.add(candidate)
+    if not unique:
+        return None
+    unique.sort()
+    return tuple(unique)
+
+
 def search_notebook(
     request: NotebookSearchRequest | dict[str, Any],
 ) -> dict[str, Any]:
@@ -52,6 +88,7 @@ def search_notebook(
     warnings: list[str | dict[str, Any]] = _requested_document_warnings(
         search_request.document_ids
     )
+    normalized_document_ids = _normalize_document_ids(search_request.document_ids)
     candidates: list[dict[str, Any]] = []
     backends: list[str] = []
 
@@ -60,6 +97,7 @@ def search_notebook(
         pdf_payload = high_quality_search_service.search_high_quality(
             search_request.query,
             include_objects=False,
+            document_ids=normalized_document_ids,
         )
         backends.append(str(pdf_payload.get("retrieval_backend") or "legacy_high_quality"))
         fallback_reason = pdf_payload.get("fallback_reason")

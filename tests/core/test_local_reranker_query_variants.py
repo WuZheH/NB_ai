@@ -63,7 +63,7 @@ def test_identifier_variants_recall_and_rerank_with_original_query(
         "description and 31 randomly selected mismatched descriptions...",
     )
 
-    def recall(variant: str, *, limit: int) -> dict[str, Any]:
+    def recall(variant: str, *, limit: int, document_ids: tuple[int, ...] | None = None) -> dict[str, Any]:
         calls.append(variant)
         assert limit == 20
         results = (
@@ -97,7 +97,7 @@ def test_long_natural_language_query_uses_single_recall(
     monkeypatch.setattr(
         service.local_embedding_service,
         "search_embedding_sidecar",
-        lambda variant, *, limit: (
+        lambda variant, *, limit, document_ids=None: (
             calls.append(variant)
             or {"results": [_candidate(1, "posterior predictive uncertainty")]}
         ),
@@ -128,7 +128,7 @@ def test_non_identifier_queries_use_single_recall(
     monkeypatch.setattr(
         service.local_embedding_service,
         "search_embedding_sidecar",
-        lambda variant, *, limit: (
+        lambda variant, *, limit, document_ids=None: (
             calls.append(variant)
             or {"results": [_candidate(1, "natural language candidate")]}
         ),
@@ -146,7 +146,7 @@ def test_variant_merge_is_deduplicated_balanced_and_bounded(
 ) -> None:
     calls: list[str] = []
 
-    def recall(variant: str, *, limit: int) -> dict[str, Any]:
+    def recall(variant: str, *, limit: int, document_ids: tuple[int, ...] | None = None) -> dict[str, Any]:
         calls.append(variant)
         offset = calls.index(variant) * 100
         results = [_candidate(1, "shared")]
@@ -185,7 +185,7 @@ def test_vector_backend_fallback_metadata_is_preserved(
     monkeypatch.setattr(
         service.local_embedding_service,
         "search_embedding_sidecar",
-        lambda _variant, *, limit: {
+        lambda _variant, *, limit, document_ids=None: {
             "results": [_candidate(1, "fallback candidate")],
             "retrieval_backend": "in_memory",
             "fallback_reason": "vector_store_unavailable",
