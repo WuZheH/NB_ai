@@ -587,12 +587,37 @@ def test_dry_run_uses_read_only_query_only_connection(
     ]
 
 
-def test_production_apply_is_hard_blocked():
+def test_production_apply_is_hard_blocked(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = (
+        tmp_path
+        / "data"
+        / "db"
+        / "research_memory.db"
+    )
+    db_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    make_legacy_database(db_path)
+
+    before = db_path.read_bytes()
+
+    monkeypatch.setattr(
+        migration,
+        "DEFAULT_DB_PATH",
+        db_path,
+    )
+
     with pytest.raises(
         migration.MigrationSafetyError,
         match="Production schema migration",
     ):
         migration.migrate_database(
-            migration.DEFAULT_DB_PATH,
+            db_path,
             dry_run=False,
         )
+
+    assert db_path.read_bytes() == before

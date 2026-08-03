@@ -235,9 +235,13 @@ def _body_importer(*, preview: dict, db_path: Path) -> dict:
 
 
 @pytest.fixture
-def chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    database = _temp_db(tmp_path / "db")
-    data_dir = _data_dir(tmp_path / "data")
+def chain(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path_factory.mktemp("b5")
+    database = _temp_db(root / "db")
+    data_dir = _data_dir(root / "data")
     _install_preview(monkeypatch)
     loads: list[dict] = []
     texts: list[str] = []
