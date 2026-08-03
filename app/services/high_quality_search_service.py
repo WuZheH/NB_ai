@@ -23,6 +23,7 @@ def search_high_quality(
     object_limit: int = DEFAULT_OBJECT_LIMIT,
     passage_recall_limit: int = DEFAULT_PASSAGE_RECALL_LIMIT,
     passage_limit: int = DEFAULT_PASSAGE_LIMIT,
+    document_ids: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     normalized_query = _compact_text(query)
     if not normalized_query:
@@ -63,6 +64,7 @@ def search_high_quality(
         normalized_query,
         recall_limit=safe_passage_recall_limit,
         limit=safe_passage_limit,
+        document_ids=document_ids,
     )
 
     objects = [_object_item(item, objects_payload) for item in (objects_payload.get("results") or [])]

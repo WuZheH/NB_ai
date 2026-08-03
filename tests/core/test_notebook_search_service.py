@@ -122,7 +122,7 @@ def test_pdf_only_uses_legacy_order_scores_and_defaults(monkeypatch: pytest.Monk
         {"query": "EDSR", "limit": 10, "source_types": ["pdf_chunk"]}
     )
 
-    assert calls == [("EDSR", {"include_objects": False})]
+    assert calls == [("EDSR", {"include_objects": False, "document_ids": None})]
     assert [item["fragment_id"] for item in response["results"]] == [
         _pdf_id(1, 101),
         _pdf_id(2, 202),

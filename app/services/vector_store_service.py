@@ -1535,6 +1535,7 @@ def search_passage_vectors(
     limit: int = 10,
     store_path: Path | None = None,
     status: dict[str, Any] | None = None,
+    document_ids: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     return _search_table(
         query=query,
@@ -1542,6 +1543,7 @@ def search_passage_vectors(
         limit=limit,
         store_path=store_path,
         status=status,
+        document_ids=document_ids,
     )
 
 
@@ -1566,6 +1568,7 @@ def _search_table(
     limit: int,
     store_path: Path | None = None,
     status: dict[str, Any] | None = None,
+    document_ids: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     if store_path is None:
         status = status or check_vector_store_status()
@@ -1589,8 +1592,38 @@ def _search_table(
     model = local_embedding_service._load_model({})
     query_vector = local_embedding_service._encode_text(model, query)
     table = db.open_table(table_name)
-    results = table.search(query_vector).limit(max(1, min(limit, 50))).to_list()
-    return {"status": "ok", "results": [_json_safe(item) for item in results]}
+    safe_limit = max(1, min(limit, 50))
+
+    document_prefilter_applied = False
+    document_prefilter_available = False
+    if document_ids:
+        table_fields = _scoped_table_schema_fields(table)
+        if table_fields is not None and "document_id" in table_fields:
+            document_prefilter_available = True
+            where_clause = _build_document_id_where(document_ids)
+            results = (
+                table.search(query_vector)
+                .where(where_clause)
+                .limit(safe_limit)
+                .to_list()
+            )
+            document_prefilter_applied = True
+        else:
+            results = table.search(query_vector).limit(safe_limit).to_list()
+    else:
+        results = table.search(query_vector).limit(safe_limit).to_list()
+
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "results": [_json_safe(item) for item in results],
+    }
+    if document_ids is not None:
+        payload["document_prefilter"] = {
+            "applied": document_prefilter_applied,
+            "available": document_prefilter_available,
+            "document_ids": list(document_ids),
+        }
+    return payload
 
 
 def _passage_source_rows(
@@ -2088,6 +2121,22 @@ def _delete_vector_ids(table: Any, vector_ids: list[str]) -> None:
 
 def _sql_quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def _build_document_id_where(document_ids: tuple[int, ...]) -> str:
+    """Build a safe LanceDB WHERE clause from validated positive integers.
+
+    Single document: ``document_id = 2``
+    Multiple documents: ``document_id IN (2, 5)``
+
+    All values are already validated positive ints — no SQL injection risk.
+    """
+    if not document_ids:
+        raise ValueError("document_ids must not be empty")
+    if len(document_ids) == 1:
+        return f"document_id = {document_ids[0]}"
+    ids = ", ".join(str(doc_id) for doc_id in document_ids)
+    return f"document_id IN ({ids})"
 
 
 def _sync_status(table_name: str, sources: list[dict[str, Any]], db: Any) -> dict[str, int]:

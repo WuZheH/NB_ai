@@ -40,7 +40,7 @@ class LocalRerankerUnavailable(RuntimeError):
     pass
 
 
-def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10) -> dict[str, Any]:
+def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10, document_ids: tuple[int, ...] | None = None) -> dict[str, Any]:
     normalized_query = _compact_text(query)
     if not normalized_query:
         raise ValueError("query must not be empty.")
@@ -57,6 +57,7 @@ def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10)
             local_embedding_service.search_embedding_sidecar(
                 variant,
                 limit=safe_recall_limit,
+                document_ids=document_ids,
             ),
         )
         for variant in query_variants

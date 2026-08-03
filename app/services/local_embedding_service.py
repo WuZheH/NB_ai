@@ -54,12 +54,12 @@ class EmbeddingCandidate:
     pdf_page_end: int | None = None
 
 
-def search_embedding_sidecar(query: str, limit: int = 10) -> dict[str, Any]:
+def search_embedding_sidecar(query: str, limit: int = 10, document_ids: tuple[int, ...] | None = None) -> dict[str, Any]:
     normalized_query = _compact_text(query)
     if not normalized_query:
         raise ValueError("query must not be empty.")
 
-    vector_payload = _search_vector_store_passages(normalized_query, limit=limit)
+    vector_payload = _search_vector_store_passages(normalized_query, limit=limit, document_ids=document_ids)
     if vector_payload is not None:
         return vector_payload
 
@@ -69,6 +69,7 @@ def search_embedding_sidecar(query: str, limit: int = 10) -> dict[str, Any]:
         retrieval_backend="in_memory",
         fallback_reason=None,
         vector_store_status=None,
+        document_ids=document_ids,
     )
 
 
@@ -79,11 +80,14 @@ def _search_embedding_sidecar_in_memory(
     retrieval_backend: str,
     fallback_reason: str | None,
     vector_store_status: dict[str, Any] | None,
+    document_ids: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     timings: dict[str, float] = {}
     model = _load_model(timings)
     candidates = _load_candidates()
+    if document_ids:
+        candidates = [c for c in candidates if c.document_id in document_ids]
     if not candidates:
         return _response(
             query=normalized_query,
@@ -119,7 +123,7 @@ def _search_embedding_sidecar_in_memory(
     )
 
 
-def _search_vector_store_passages(query: str, limit: int = 10) -> dict[str, Any] | None:
+def _search_vector_store_passages(query: str, limit: int = 10, document_ids: tuple[int, ...] | None = None) -> dict[str, Any] | None:
     try:
         from app.services import vector_store_service
 
@@ -133,10 +137,11 @@ def _search_vector_store_passages(query: str, limit: int = 10) -> dict[str, Any]
                 retrieval_backend="fallback_in_memory",
                 fallback_reason=fallback_reason,
                 vector_store_status=vector_status,
+                document_ids=document_ids,
             )
 
         started = time.perf_counter()
-        payload = vector_store_service.search_passage_vectors(query, limit=limit, status=status)
+        payload = vector_store_service.search_passage_vectors(query, limit=limit, status=status, document_ids=document_ids)
         if payload.get("status") != "ok":
             return _search_embedding_sidecar_in_memory(
                 query,
@@ -144,6 +149,7 @@ def _search_vector_store_passages(query: str, limit: int = 10) -> dict[str, Any]
                 retrieval_backend="fallback_in_memory",
                 fallback_reason="vector_table_missing",
                 vector_store_status=vector_status,
+                document_ids=document_ids,
             )
         results = [_vector_passage_result(item) for item in payload.get("results") or []]
         results = _enrich_passage_page_metadata(results)
