@@ -164,6 +164,53 @@ def _patch_vector_store(
     )
 
 
+def _patch_passage_page_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep prefilter tests independent from runtime page metadata storage."""
+
+    monkeypatch.setattr(
+        service,
+        "load_chunk_page_metadata",
+        lambda _chunk_ids: {},
+    )
+
+
+def _patch_high_quality_document_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep prefilter tests independent from the runtime document database."""
+
+    from app.services import high_quality_search_service
+
+    def fake_document_metadata(
+        document_ids: set[Any],
+    ) -> dict[Any, dict[str, Any]]:
+        metadata: dict[Any, dict[str, Any]] = {}
+
+        for raw_document_id in document_ids:
+            try:
+                document_id = int(raw_document_id)
+            except (TypeError, ValueError):
+                continue
+
+            item = {
+                "title": f"Document {document_id}",
+                "document_type": "paper",
+                "object_import_mode": None,
+            }
+            metadata[document_id] = item
+            metadata[str(document_id)] = item
+
+        return metadata
+
+    monkeypatch.setattr(
+        high_quality_search_service,
+        "_document_metadata_by_id",
+        fake_document_metadata,
+    )
+
+
 # ===================================================================
 # Test A: Global competition — target ranked outside global top-k
 # ===================================================================
@@ -693,6 +740,8 @@ def test_embedding_sidecar_propagates_applied_document_prefilter(
 ) -> None:
     from app.services import local_embedding_service as embedding
 
+    _patch_passage_page_metadata(monkeypatch)
+
     rows = [_make_row(1, 101), _make_row(2, 201)]
     table = _Table(rows, fields=("document_id", "chunk_id", "passage_text", "vector"))
     db = _Db({service.PASSAGE_TABLE: table})
@@ -712,6 +761,9 @@ def test_reranker_and_high_quality_propagate_document_prefilter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.services import high_quality_search_service, local_reranker_service
+
+    _patch_high_quality_document_metadata(monkeypatch)
+    _patch_passage_page_metadata(monkeypatch)
 
     # Old schema (no document_id column): prefilter unavailable record must
     # flow embedding → reranker → high_quality.
@@ -911,6 +963,9 @@ def test_notebook_search_excludes_other_documents_when_backend_ignores_filter(
         fragment_uuid,
     )
 
+    _patch_high_quality_document_metadata(monkeypatch)
+    _patch_passage_page_metadata(monkeypatch)
+
     rows = [_make_row(1, 101), _make_row(2, 201), _make_row(3, 301)]
     table = _Table(
         rows,
@@ -1012,6 +1067,9 @@ def test_notebook_search_returns_stable_warning_when_prefilter_unavailable(
         fragment_uuid,
     )
 
+    _patch_high_quality_document_metadata(monkeypatch)
+    _patch_passage_page_metadata(monkeypatch)
+
     rows = [_make_row(1, 101), _make_row(2, 201)]
     table = _Table(rows, fields=("chunk_id", "passage_text", "vector"))
     db = _Db({service.PASSAGE_TABLE: table})
@@ -1105,6 +1163,8 @@ def test_notebook_search_returns_failed_warning_when_vector_prefilter_execution_
         canonical_source_locator,
         fragment_uuid,
     )
+
+    _patch_high_quality_document_metadata(monkeypatch)
 
     rows = [_make_row(1, 101), _make_row(2, 201)]
     table = _Table(
