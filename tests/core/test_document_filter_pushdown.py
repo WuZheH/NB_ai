@@ -164,6 +164,18 @@ def _patch_vector_store(
     )
 
 
+def _patch_passage_page_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep prefilter tests independent from runtime page metadata storage."""
+
+    monkeypatch.setattr(
+        service,
+        "load_chunk_page_metadata",
+        lambda _chunk_ids: {},
+    )
+
+
 def _patch_high_quality_document_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -728,11 +740,7 @@ def test_embedding_sidecar_propagates_applied_document_prefilter(
 ) -> None:
     from app.services import local_embedding_service as embedding
 
-    monkeypatch.setattr(
-        service,
-        "load_chunk_page_metadata",
-        lambda _chunk_ids: {},
-    )
+    _patch_passage_page_metadata(monkeypatch)
 
     rows = [_make_row(1, 101), _make_row(2, 201)]
     table = _Table(rows, fields=("document_id", "chunk_id", "passage_text", "vector"))
@@ -755,6 +763,7 @@ def test_reranker_and_high_quality_propagate_document_prefilter(
     from app.services import high_quality_search_service, local_reranker_service
 
     _patch_high_quality_document_metadata(monkeypatch)
+    _patch_passage_page_metadata(monkeypatch)
 
     # Old schema (no document_id column): prefilter unavailable record must
     # flow embedding → reranker → high_quality.
@@ -955,6 +964,7 @@ def test_notebook_search_excludes_other_documents_when_backend_ignores_filter(
     )
 
     _patch_high_quality_document_metadata(monkeypatch)
+    _patch_passage_page_metadata(monkeypatch)
 
     rows = [_make_row(1, 101), _make_row(2, 201), _make_row(3, 301)]
     table = _Table(
@@ -1058,6 +1068,7 @@ def test_notebook_search_returns_stable_warning_when_prefilter_unavailable(
     )
 
     _patch_high_quality_document_metadata(monkeypatch)
+    _patch_passage_page_metadata(monkeypatch)
 
     rows = [_make_row(1, 101), _make_row(2, 201)]
     table = _Table(rows, fields=("chunk_id", "passage_text", "vector"))
