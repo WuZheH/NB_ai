@@ -728,6 +728,12 @@ def test_embedding_sidecar_propagates_applied_document_prefilter(
 ) -> None:
     from app.services import local_embedding_service as embedding
 
+    monkeypatch.setattr(
+        service,
+        "load_chunk_page_metadata",
+        lambda _chunk_ids: {},
+    )
+
     rows = [_make_row(1, 101), _make_row(2, 201)]
     table = _Table(rows, fields=("document_id", "chunk_id", "passage_text", "vector"))
     db = _Db({service.PASSAGE_TABLE: table})
