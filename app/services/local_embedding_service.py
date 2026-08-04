@@ -145,16 +145,25 @@ def _search_vector_store_passages(query: str, limit: int = 10, document_ids: tup
             )
 
         started = time.perf_counter()
-        payload = vector_store_service.search_passage_vectors(query, limit=limit, status=status, document_ids=document_ids)
-        if payload.get("status") != "ok":
+        payload = vector_store_service.search_passage_vectors(
+            query,
+            limit=limit,
+            status=status,
+            document_ids=document_ids,
+        )
+        payload_status = str(payload.get("status") or "vector_table_missing")
+        if payload_status != "ok":
+            document_prefilter = payload.get("document_prefilter")
+            if not isinstance(document_prefilter, dict):
+                document_prefilter = _prefilter_not_applied(document_ids)
             return _search_embedding_sidecar_in_memory(
                 query,
                 limit=limit,
                 retrieval_backend="fallback_in_memory",
-                fallback_reason="vector_table_missing",
+                fallback_reason=payload_status,
                 vector_store_status=vector_status,
                 document_ids=document_ids,
-                document_prefilter=_prefilter_not_applied(document_ids),
+                document_prefilter=document_prefilter,
             )
         results = [_vector_passage_result(item) for item in payload.get("results") or []]
         results = _enrich_passage_page_metadata(results)

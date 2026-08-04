@@ -71,7 +71,10 @@ def search_reranker_sidecar(query: str, recall_limit: int = 20, limit: int = 10,
     retrieval_backend = str(recall_payload.get("retrieval_backend") or "in_memory")
     fallback_reason = recall_payload.get("fallback_reason")
     vector_store_status = recall_payload.get("vector_store_status")
-    document_prefilter = recall_payload.get("document_prefilter")
+    document_prefilter = _aggregate_document_prefilter(
+        recall_payloads,
+        document_ids,
+    )
     if not candidates:
         return _response(
             query=normalized_query,
@@ -372,6 +375,63 @@ def _merge_variant_candidates(
             break
         offset += 1
     return merged, recall_counts
+
+
+def _aggregate_document_prefilter(
+    recall_payloads: list[tuple[str, dict[str, Any]]],
+    document_ids: tuple[int, ...] | None,
+) -> dict[str, Any] | None:
+    """Conservatively aggregate document-prefilter state across variants.
+
+    Rules:
+      1. No document_ids requested → no document_prefilter record.
+      2. Any variant with ``available=True, applied=False`` (a confirmed filter
+         execution failure) makes the whole result ``available=True, applied=False``.
+      3. No failure, but any variant missing the record or ``available=False``
+         → ``available=False, applied=False`` (unavailable).
+      4. Only when every variant is ``available=True, applied=True`` is the
+         aggregate ``applied=True``.
+      5. failed has priority over unavailable: a confirmed filter failure must
+         never be masked by another variant's success or unavailability.
+    """
+    if not document_ids:
+        return None
+
+    states = [
+        payload.get("document_prefilter")
+        for _variant, payload in recall_payloads
+    ]
+
+    failed = any(
+        isinstance(state, dict)
+        and state.get("available") is True
+        and state.get("applied") is not True
+        for state in states
+    )
+    if failed:
+        return {
+            "applied": False,
+            "available": True,
+            "document_ids": list(document_ids),
+        }
+
+    unavailable = any(
+        not isinstance(state, dict)
+        or state.get("available") is not True
+        for state in states
+    )
+    if unavailable:
+        return {
+            "applied": False,
+            "available": False,
+            "document_ids": list(document_ids),
+        }
+
+    return {
+        "applied": True,
+        "available": True,
+        "document_ids": list(document_ids),
+    }
 
 
 def _candidate_identity(candidate: dict[str, Any]) -> tuple[str, str]:

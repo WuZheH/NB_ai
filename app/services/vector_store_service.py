@@ -1601,12 +1601,23 @@ def _search_table(
         if table_fields is not None and "document_id" in table_fields:
             document_prefilter_available = True
             where_clause = _build_document_id_where(document_ids)
-            results = (
-                table.search(query_vector)
-                .where(where_clause)
-                .limit(safe_limit)
-                .to_list()
-            )
+            try:
+                results = (
+                    table.search(query_vector)
+                    .where(where_clause)
+                    .limit(safe_limit)
+                    .to_list()
+                )
+            except Exception:
+                return {
+                    "status": "document_prefilter_failed",
+                    "results": [],
+                    "document_prefilter": {
+                        "applied": False,
+                        "available": True,
+                        "document_ids": list(document_ids),
+                    },
+                }
             document_prefilter_applied = True
         else:
             results = table.search(query_vector).limit(safe_limit).to_list()

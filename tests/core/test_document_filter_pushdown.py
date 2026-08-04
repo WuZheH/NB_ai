@@ -484,10 +484,11 @@ def test_backend_ignore_filter_does_not_crash(
 def test_filter_failure_is_caught(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The vector filter exception must NOT reach the embedding sidecar caller.
+    """A real filter-execution failure must surface as document_prefilter_failed.
 
-    local_embedding_service catches the vector-search failure and falls back to
-    the in-memory path, which must keep the requested document_ids.
+    The schema confirms document_id support, the WHERE query fails, and the
+    embedding sidecar falls back to in-memory retrieval while preserving the
+    failed status and the requested document_ids.
     """
     from app.services import local_embedding_service as embedding
     from app.services.local_embedding_service import EmbeddingCandidate
@@ -528,16 +529,42 @@ def test_filter_failure_is_caught(
     # Must NOT raise: the failure falls back to in-memory retrieval.
     result = embedding.search_embedding_sidecar("test", limit=10, document_ids=(2,))
 
-    assert result["fallback_reason"] == "vector_search_failed"
+    assert result["fallback_reason"] == "document_prefilter_failed"
     assert result["retrieval_backend"] == "fallback_in_memory"
     assert result["document_prefilter"] == {
         "applied": False,
-        "available": False,
+        "available": True,
         "document_ids": [2],
     }
     # The in-memory fallback enforced document_ids: only document 2 remains.
     result_ids = {item["document_id"] for item in result["results"]}
     assert result_ids == {2}, f"expected only document 2, got {result_ids}"
+    assert 1 not in result_ids
+
+
+def test_vector_prefilter_execution_failure_returns_failed_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A WHERE-query execution failure on a document_id-capable schema must be
+    returned as document_prefilter_failed, never re-raised or masked."""
+    rows = [_make_row(1, 101)]
+    table = _Table(
+        rows,
+        fields=("document_id", "chunk_id", "passage_text", "vector"),
+        fail_filter=True,
+    )
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    result = service.search_passage_vectors("test", limit=10, document_ids=(2,))
+
+    assert result["status"] == "document_prefilter_failed"
+    assert result["results"] == []
+    assert result["document_prefilter"] == {
+        "applied": False,
+        "available": True,
+        "document_ids": [2],
+    }
 
 
 # ===================================================================
@@ -715,6 +742,121 @@ def test_reranker_and_high_quality_propagate_document_prefilter(
         "q", include_objects=False, document_ids=(2,)
     )
     assert high_quality_payload["document_prefilter"] == expected
+
+
+# ===================================================================
+# Test: multi-variant conservative prefilter aggregation
+# ===================================================================
+
+def test_aggregate_document_prefilter_rules() -> None:
+    from app.services.local_reranker_service import _aggregate_document_prefilter
+
+    applied = {"applied": True, "available": True, "document_ids": [2]}
+    failed = {"applied": False, "available": True, "document_ids": [2]}
+    unavailable = {"applied": False, "available": False, "document_ids": [2]}
+
+    # 1. No document_ids → no record.
+    assert _aggregate_document_prefilter([("a", {})], None) is None
+    assert _aggregate_document_prefilter([("a", {})], ()) is None
+
+    # 4. All variants applied → applied.
+    assert _aggregate_document_prefilter(
+        [("a", {"document_prefilter": applied}), ("b", {"document_prefilter": applied})],
+        (2,),
+    ) == applied
+
+    # 3. Any variant missing the record → unavailable.
+    assert _aggregate_document_prefilter(
+        [("a", {"document_prefilter": applied}), ("b", {})],
+        (2,),
+    ) == unavailable
+
+    # 3. Any variant available=False → unavailable.
+    assert _aggregate_document_prefilter(
+        [("a", {"document_prefilter": applied}), ("b", {"document_prefilter": unavailable})],
+        (2,),
+    ) == unavailable
+
+    # 2 + 5. failed beats unavailable regardless of order.
+    assert _aggregate_document_prefilter(
+        [("a", {"document_prefilter": unavailable}), ("b", {"document_prefilter": failed})],
+        (2,),
+    ) == failed
+    assert _aggregate_document_prefilter(
+        [("a", {"document_prefilter": failed}), ("b", {"document_prefilter": unavailable})],
+        (2,),
+    ) == failed
+
+    # 2 + 5. failed beats success regardless of order.
+    assert _aggregate_document_prefilter(
+        [("a", {"document_prefilter": applied}), ("b", {"document_prefilter": failed})],
+        (2,),
+    ) == failed
+    assert _aggregate_document_prefilter(
+        [("a", {"document_prefilter": failed}), ("b", {"document_prefilter": applied})],
+        (2,),
+    ) == failed
+
+
+def test_reranker_aggregates_document_prefilter_across_all_query_variants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure occurs in the SECOND variant; the aggregated result must be
+    failed even though the first variant succeeded."""
+    from app.services import local_reranker_service as reranker
+
+    def fake_variants(query: str) -> list[str]:
+        return ["variant-success", "variant-failed"]
+
+    def fake_embedding(
+        variant: str,
+        *,
+        limit: int,
+        document_ids: tuple[int, ...] | None = None,
+    ) -> dict[str, Any]:
+        if variant == "variant-success":
+            return {
+                "results": [_make_row(2, 101, "doc2 vector hit")],
+                "retrieval_backend": "lancedb",
+                "document_prefilter": {
+                    "applied": True,
+                    "available": True,
+                    "document_ids": [2],
+                },
+            }
+        return {
+            "results": [_make_row(2, 201, "doc2 fallback hit")],
+            "retrieval_backend": "fallback_in_memory",
+            "fallback_reason": "document_prefilter_failed",
+            "document_prefilter": {
+                "applied": False,
+                "available": True,
+                "document_ids": [2],
+            },
+        }
+
+    monkeypatch.setattr(reranker, "_query_recall_variants", fake_variants)
+    monkeypatch.setattr(
+        reranker.local_embedding_service,
+        "search_embedding_sidecar",
+        fake_embedding,
+    )
+    monkeypatch.setattr(reranker, "_load_reranker", lambda _timings: object())
+    monkeypatch.setattr(
+        reranker,
+        "_predict_scores",
+        lambda _model, pairs: [0.9] * len(pairs),
+    )
+
+    result = reranker.search_reranker_sidecar(
+        "test query", recall_limit=20, limit=5, document_ids=(2,)
+    )
+
+    assert result["document_prefilter"] == {
+        "applied": False,
+        "available": True,
+        "document_ids": [2],
+    }
 
 
 def _ready_machine_config() -> Any:
@@ -939,6 +1081,129 @@ def test_notebook_search_returns_stable_warning_when_prefilter_unavailable(
     )
 
     assert {"code": "document_prefilter_unavailable"} in response["warnings"]
+    result_document_ids = {item["document_id"] for item in response["results"]}
+    assert result_document_ids == {2}, (
+        f"other documents leaked into the response: {result_document_ids}"
+    )
+
+
+# ===================================================================
+# Test: notebook end-to-end — vector prefilter execution failure
+# ===================================================================
+
+def test_notebook_search_returns_failed_warning_when_vector_prefilter_execution_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real chain: LanceDB filter query fails → in-memory fallback → reranker →
+    high_quality → notebook search. The warning must be the stable failed code,
+    never unavailable, and the final response must exclude other documents."""
+    from app.domains.retrieval import notebook_search_service as ns
+    from app.services import local_embedding_service as embedding
+    from app.services import local_reranker_service
+    from app.services.local_embedding_service import EmbeddingCandidate
+    from app.services.retrieval.fragment_id import (
+        canonical_source_locator,
+        fragment_uuid,
+    )
+
+    rows = [_make_row(1, 101), _make_row(2, 201)]
+    table = _Table(
+        rows,
+        fields=("document_id", "chunk_id", "passage_text", "vector"),
+        fail_filter=True,
+    )
+    db = _Db({service.PASSAGE_TABLE: table})
+    _patch_vector_store(monkeypatch, db)
+
+    # In-memory fallback candidates include BOTH documents; only the requested
+    # one may survive.
+    monkeypatch.setattr(
+        embedding,
+        "_load_candidates",
+        lambda: [
+            EmbeddingCandidate(
+                chunk_id=101,
+                document_id=1,
+                title="Doc 1",
+                heading_path="",
+                passage_text="doc 1 passage",
+            ),
+            EmbeddingCandidate(
+                chunk_id=201,
+                document_id=2,
+                title="Doc 2",
+                heading_path="",
+                passage_text="doc 2 passage",
+            ),
+        ],
+    )
+
+    fragment_id_by_doc = {
+        row["document_id"]: fragment_uuid(
+            canonical_source_locator(
+                "pdf_chunk",
+                document_id=row["document_id"],
+                chunk_id=row["chunk_id"],
+            )
+        )
+        for row in rows
+    }
+
+    def fake_details(
+        ids: Any,
+        *,
+        document_ids: Any = None,
+        registry: Any = None,
+    ) -> list[Any]:
+        assert registry is None
+        assert set(document_ids or []) == {2}
+        result = []
+        for value in ids:
+            document_id = next(
+                doc for doc, fragment_id in fragment_id_by_doc.items() if fragment_id == value
+            )
+            chunk_id = next(
+                row["chunk_id"] for row in rows if row["document_id"] == document_id
+            )
+            result.append(
+                _notebook_fragment(
+                    value,
+                    document_id=document_id,
+                    chunk_id=chunk_id,
+                    text=f"full source chunk {document_id}:{chunk_id}",
+                )
+            )
+        return result
+
+    monkeypatch.setattr(ns, "_requested_document_warnings", lambda _ids: [])
+    monkeypatch.setattr(ns, "get_notebook_fragments", fake_details)
+    monkeypatch.setattr(
+        ns.high_quality_search_service,
+        "require_runtime_machine_config",
+        lambda: _ready_machine_config(),
+    )
+    monkeypatch.setattr(
+        local_reranker_service,
+        "_load_reranker",
+        lambda _timings: object(),
+    )
+    monkeypatch.setattr(
+        local_reranker_service,
+        "_predict_scores",
+        lambda _model, pairs: [0.9] * len(pairs),
+    )
+
+    response = ns.search_notebook(
+        {
+            "query": "test query",
+            "limit": 10,
+            "source_types": ["pdf_chunk"],
+            "document_ids": [2],
+        }
+    )
+
+    assert {"code": "document_prefilter_failed"} in response["warnings"]
+    assert {"code": "document_prefilter_unavailable"} not in response["warnings"]
     result_document_ids = {item["document_id"] for item in response["results"]}
     assert result_document_ids == {2}, (
         f"other documents leaked into the response: {result_document_ids}"
