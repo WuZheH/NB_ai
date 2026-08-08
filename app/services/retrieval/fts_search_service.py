@@ -69,8 +69,17 @@ def search_retrieval(
         if isinstance(request, RetrievalSearchRequest)
         else RetrievalSearchRequest.model_validate(request)
     )
-    index = Path(index_path) if index_path is not None else DEFAULT_INDEX_PATH
-    manifest = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
+    if index_path is None and manifest_path is None:
+        from app.services.retrieval_generation_service import (
+            current_retrieval_generation,
+        )
+
+        generation = current_retrieval_generation()
+        index = generation.fts_index_path
+        manifest = generation.fts_manifest_path
+    else:
+        index = Path(index_path) if index_path is not None else DEFAULT_INDEX_PATH
+        manifest = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
     aliases_path = Path(query_aliases_path)
     status = _cached_index_status(
         _status_signature(index, manifest, aliases_path),

@@ -86,8 +86,17 @@ def get_index_status(
     notes_root: str | Path = DEFAULT_NOTES_ROOT,
     query_aliases_path: str | Path = DEFAULT_QUERY_ALIASES_PATH,
 ) -> dict[str, Any]:
-    index = Path(index_path) if index_path is not None else DEFAULT_INDEX_PATH
-    manifest_file = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
+    if index_path is None and manifest_path is None:
+        from app.services.retrieval_generation_service import (
+            current_retrieval_generation,
+        )
+
+        generation = current_retrieval_generation()
+        index = generation.fts_index_path
+        manifest_file = generation.fts_manifest_path
+    else:
+        index = Path(index_path) if index_path is not None else DEFAULT_INDEX_PATH
+        manifest_file = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
     index_exists = index.is_file()
     manifest_exists = manifest_file.is_file()
     library_database_exists, library_has_documents = _inspect_library_database(

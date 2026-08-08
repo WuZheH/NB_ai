@@ -189,6 +189,11 @@ def open_vector_store(path: Path | None = None) -> Any:
     return lancedb.connect(str(target))
 
 
+def connect_existing_vector_store(path: Path) -> Any:
+    """Open an existing LanceDB store without creating directories or tables."""
+    return _connect_existing_vector_store(Path(path))
+
+
 def get_vector_manifest(path: Path | None = None) -> dict[str, Any] | None:
     manifest_path = path or MANIFEST_PATH
     if not manifest_path.exists():
@@ -216,15 +221,24 @@ def check_vector_store_status(
     except VectorStoreUnavailable as exc:
         return _status_payload(available=False, reason=str(exc), stale=False, manifest=None, tables={})
 
-    actual_store_path = store_path or LANCEDB_DIR
-    actual_manifest_path = manifest_path or MANIFEST_PATH
+    if store_path is None and manifest_path is None:
+        from app.services.retrieval_generation_service import (
+            current_retrieval_generation,
+        )
+
+        generation = current_retrieval_generation()
+        actual_store_path = generation.vector_store_path
+        actual_manifest_path = generation.vector_manifest_path
+    else:
+        actual_store_path = store_path or LANCEDB_DIR
+        actual_manifest_path = manifest_path or MANIFEST_PATH
     if not actual_store_path.exists():
         return _status_payload(available=False, reason="vector_store_missing", stale=False, manifest=None, tables={})
     manifest = get_vector_manifest(actual_manifest_path)
     if manifest is None:
         return _status_payload(available=False, reason="vector_manifest_missing", stale=False, manifest=None, tables={})
 
-    db = open_vector_store(actual_store_path)
+    db = _connect_existing_vector_store(Path(actual_store_path))
     tables = {
         PASSAGE_TABLE: _table_status(db, PASSAGE_TABLE),
         OBJECT_TABLE: _table_status(db, OBJECT_TABLE),
@@ -1570,8 +1584,19 @@ def _search_table(
     status: dict[str, Any] | None = None,
     document_ids: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
+    resolved_manifest_path: Path | None = None
     if store_path is None:
-        status = status or check_vector_store_status()
+        from app.services.retrieval_generation_service import (
+            current_retrieval_generation,
+        )
+
+        generation = current_retrieval_generation()
+        store_path = generation.vector_store_path
+        resolved_manifest_path = generation.vector_manifest_path
+        status = status or check_vector_store_status(
+            store_path=store_path,
+            manifest_path=resolved_manifest_path,
+        )
         reason = vector_table_fallback_reason(status, table_name)
         if reason:
             return {
@@ -1586,7 +1611,7 @@ def _search_table(
                     "requested_table_reason": reason,
                 },
             }
-    db = open_vector_store(store_path)
+    db = _connect_existing_vector_store(Path(store_path))
     if table_name not in _table_names(db):
         return {"status": "vector_table_missing", "results": []}
     model = local_embedding_service._load_model({})

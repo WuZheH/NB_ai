@@ -1011,7 +1011,7 @@ def search_zotero_note_vectors(
     limit: int = DEFAULT_RECALL_LIMIT,
     source_types: Iterable[NotebookSourceType] = NOTE_SOURCE_TYPES,
     document_ids: Iterable[int] | None = None,
-    index_dir: str | Path = ZOTERO_NOTE_VECTOR_DIR,
+    index_dir: str | Path | None = None,
     encode_query: Callable[[str], list[float]] | None = None,
 ) -> dict[str, Any]:
     normalized_query = " ".join(str(query or "").split())
@@ -1021,7 +1021,15 @@ def search_zotero_note_vectors(
     if not requested.issubset(NOTE_SOURCE_TYPES):
         raise ValueError(f"unsupported note source types: {sorted(requested.difference(NOTE_SOURCE_TYPES))}")
     selected_documents = {int(value) for value in document_ids or []}
-    manifest, entries = _load_existing(Path(index_dir), required=True)
+    if index_dir is None:
+        from app.services.retrieval_generation_service import (
+            current_retrieval_generation,
+        )
+
+        resolved_index_dir = current_retrieval_generation().native_note_vector_path
+    else:
+        resolved_index_dir = Path(index_dir)
+    manifest, entries = _load_existing(resolved_index_dir, required=True)
     encoder = encode_query or _default_encoder()
     query_embedding = [float(value) for value in encoder(normalized_query)]
     if len(query_embedding) != int(manifest["dimension"]):

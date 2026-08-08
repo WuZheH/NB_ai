@@ -7,6 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.library.read_common import *  # noqa: F401,F403
 from app.core.paths import DEFAULT_DB_PATH
 from app.services.library import book_archive_service
+from app.services.retrieval_generation_service import product_read_generation_guard
 
 
 router = APIRouter()
@@ -25,6 +26,7 @@ def _empty_library_response() -> dict[str, Any]:
 
 
 @router.get("/read-shelf")
+@product_read_generation_guard
 def read_shelf(
     include_test_data: bool = False,
     limit: int = Query(default=100, ge=20, le=500),
@@ -82,6 +84,7 @@ def _read_shelf_failure(error_code: str, message: str) -> HTTPException:
 
 
 @router.get("/search")
+@product_read_generation_guard
 def search_library(
     q: str = Query(..., min_length=1),
     limit: int = Query(default=20, ge=1, le=50),
@@ -191,6 +194,7 @@ def search_library(
 
 
 @router.get("/search/embedding-sidecar")
+@product_read_generation_guard
 def search_embedding_sidecar(
     q: str = Query(..., min_length=1),
     limit: int = Query(default=10, ge=1, le=50),
@@ -231,6 +235,7 @@ def search_embedding_sidecar(
 
 
 @router.get("/search/high-quality")
+@product_read_generation_guard
 def search_high_quality(
     q: str = Query(..., min_length=1),
     object_limit: int = Query(default=50, ge=1, le=50),
@@ -264,6 +269,7 @@ def search_high_quality(
 
 
 @router.get("/search/reranker-sidecar")
+@product_read_generation_guard
 def search_reranker_sidecar(
     q: str = Query(..., min_length=1),
     recall_limit: int = Query(default=20, ge=1, le=50),
@@ -307,6 +313,7 @@ def search_reranker_sidecar(
 
 
 @router.get("/search/semantic-objects")
+@product_read_generation_guard
 def search_semantic_objects(
     q: str = Query(..., min_length=1),
     recall_limit: int = Query(default=20, ge=1, le=50),
@@ -352,6 +359,7 @@ def search_semantic_objects(
 
 
 @router.get("/vector-store/status")
+@product_read_generation_guard
 def vector_store_status() -> dict[str, Any]:
     return {
         "status": "ok",
@@ -404,6 +412,7 @@ def _duplicate_key(item: dict[str, Any]) -> str | None:
 
 
 @router.get("/vector-store/search-passages")
+@product_read_generation_guard
 def vector_store_search_passages(
     q: str = Query(..., min_length=1),
     limit: int = Query(default=10, ge=1, le=50),
@@ -422,6 +431,7 @@ def vector_store_search_passages(
 
 
 @router.get("/vector-store/search-objects")
+@product_read_generation_guard
 def vector_store_search_objects(
     q: str = Query(..., min_length=1),
     limit: int = Query(default=10, ge=1, le=50),

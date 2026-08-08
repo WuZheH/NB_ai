@@ -15,6 +15,7 @@ from app.schemas.chat_tools import (
     ListLibraryRequest,
 )
 from app.services import chat_tool_service
+from app.services.retrieval_generation_service import product_read_generation_guard
 
 
 router = APIRouter(prefix="/api/v1/chat-tools", tags=["chat-tools"])
@@ -39,6 +40,7 @@ def require_chat_adapter(request: Request) -> None:
 
 
 @router.post("/list-library")
+@product_read_generation_guard
 def list_library(payload: ListLibraryRequest, request: Request) -> dict[str, Any]:
     require_chat_adapter(request)
     return _call(
@@ -52,6 +54,7 @@ def list_library(payload: ListLibraryRequest, request: Request) -> dict[str, Any
 
 
 @router.post("/integrity-report")
+@product_read_generation_guard
 def integrity_report(payload: IntegrityReportRequest, request: Request) -> dict[str, Any]:
     require_chat_adapter(request)
     return _call(chat_tool_service.integrity_report, payload.document_id)

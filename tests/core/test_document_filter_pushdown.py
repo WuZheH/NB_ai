@@ -145,8 +145,8 @@ def _patch_vector_store(
     db: _Db,
 ) -> None:
     """Replace vector_store_service internals so _search_table uses our fake DB."""
-    monkeypatch.setattr(service, "open_vector_store", lambda _path=None: db)
-    monkeypatch.setattr(service, "check_vector_store_status", lambda: {
+    monkeypatch.setattr(service, "_connect_existing_vector_store", lambda _path: db)
+    monkeypatch.setattr(service, "check_vector_store_status", lambda **_kwargs: {
         "available": True, "stale": False, "reason": None,
         "manifest": {}, "tables": {}, "freshness": {"state": "current"},
     })

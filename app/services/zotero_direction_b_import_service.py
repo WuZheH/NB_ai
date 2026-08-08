@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -22,6 +22,7 @@ from app.services import (
     book_import_service,
     commit_book_service,
     vector_store_service,
+    retrieval_generation_service,
     zotero_direction_b_commit_service,
     zotero_selected_book_preview_service,
 )
@@ -268,7 +269,14 @@ def _commit_selected_book_import(
     now_ts: float | None = None,
     stage_callback: DirectionBStageCallback | None = None,
 ) -> dict[str, Any]:
-    with _DIRECTION_B_IMPORT_LOCK:
+    generation_guard = (
+        retrieval_generation_service.production_write_generation(
+            data_dir=runtime.data_dir
+        )
+        if runtime.persistence_scope == "production"
+        else nullcontext()
+    )
+    with _DIRECTION_B_IMPORT_LOCK, generation_guard:
         try:
             return _commit_selected_book_import_locked(
                 preview_token=preview_token,
@@ -333,6 +341,18 @@ def _commit_selected_book_import_locked(
         )
 
     production = runtime.persistence_scope == "production"
+    active_generation_before: (
+        retrieval_generation_service.RetrievalGenerationSnapshot | None
+    ) = None
+    generation_candidate: (
+        retrieval_generation_service.CandidateGeneration | None
+    ) = None
+    activated_generation: (
+        retrieval_generation_service.RetrievalGenerationSnapshot | None
+    ) = None
+    previous_pointer_bytes: bytes | None = None
+    pointer_switched = False
+    activation_state_written = False
 
     canonical_pairs = (
         (path, Path(DEFAULT_DB_PATH).resolve(strict=False)),
@@ -360,6 +380,37 @@ def _commit_selected_book_import_locked(
                 "Direction-B temp import cannot use production targets."
             ),
             status_code=503,
+        )
+
+    if production:
+        try:
+            active_generation_before = (
+                retrieval_generation_service
+                .resolve_active_retrieval_generation(
+                    data_dir=data_root,
+                    db_path=path,
+                )
+            )
+            previous_pointer_bytes = (
+                retrieval_generation_service
+                .read_active_pointer_bytes(data_dir=data_root)
+            )
+            retrieval_generation_service.verify_generation_database_revision(
+                active_generation_before,
+                path,
+            )
+        except retrieval_generation_service.RetrievalGenerationError as exc:
+            raise DirectionBSelectedBookImportError(
+                code=exc.code,
+                message=exc.message,
+                status_code=503,
+            ) from exc
+        fts_index_path = active_generation_before.fts_index_path
+        fts_manifest_path = active_generation_before.fts_manifest_path
+        vector_store_path = active_generation_before.vector_store_path
+        vector_manifest_path = active_generation_before.vector_manifest_path
+        zotero_note_vector_path = (
+            active_generation_before.native_note_vector_path
         )
 
     if not data_root.is_dir():
@@ -483,11 +534,7 @@ def _commit_selected_book_import_locked(
         / uuid4().hex[:8]
     )
 
-    staging_fts_index = (
-        staging_root
-        / "search_index"
-        / fts_index_path.name
-    )
+    staging_fts_index = staging_root / "search_index" / fts_index_path.name
     staging_fts_manifest = (
         staging_root
         / "search_index"
@@ -509,30 +556,41 @@ def _commit_selected_book_import_locked(
     )
 
     try:
-            _prepare_derived_staging(
-            fts_index_path=fts_index_path,
-            fts_manifest_path=fts_manifest_path,
-            vector_store_path=vector_store_path,
-            vector_manifest_path=vector_manifest_path,
-            staging_fts_index=staging_fts_index,
-            staging_fts_manifest=staging_fts_manifest,
-            staging_vector_store=staging_vector_store,
-            staging_vector_manifest=staging_vector_manifest,
-            zotero_note_vector_path=(
-                zotero_note_vector_path
-            ),
-            staging_zotero_note_vector_path=(
-                staging_zotero_note_vector_path
-                ),
-            )
-            if not production:
-                _initialize_empty_temp_staging_fts_manifest(
-                    research_db_path=path,
-                    data_root=data_root,
-                    staging_fts_index=staging_fts_index,
-                    staging_fts_manifest=staging_fts_manifest,
+        if production:
+            assert active_generation_before is not None
+            generation_candidate = (
+                retrieval_generation_service.prepare_candidate_generation(
+                    active_generation_before,
+                    data_dir=data_root,
                 )
-            rollback_snapshot = _create_rollback_copy(path)
+            )
+            staging_fts_index = generation_candidate.fts_index_path
+            staging_fts_manifest = generation_candidate.fts_manifest_path
+            staging_vector_store = generation_candidate.vector_store_path
+            staging_vector_manifest = generation_candidate.vector_manifest_path
+            staging_zotero_note_vector_path = (
+                generation_candidate.native_note_vector_path
+            )
+        else:
+            _prepare_derived_staging(
+                fts_index_path=fts_index_path,
+                fts_manifest_path=fts_manifest_path,
+                vector_store_path=vector_store_path,
+                vector_manifest_path=vector_manifest_path,
+                staging_fts_index=staging_fts_index,
+                staging_fts_manifest=staging_fts_manifest,
+                staging_vector_store=staging_vector_store,
+                staging_vector_manifest=staging_vector_manifest,
+                zotero_note_vector_path=zotero_note_vector_path,
+                staging_zotero_note_vector_path=staging_zotero_note_vector_path,
+            )
+            _initialize_empty_temp_staging_fts_manifest(
+                research_db_path=path,
+                data_root=data_root,
+                staging_fts_index=staging_fts_index,
+                staging_fts_manifest=staging_fts_manifest,
+            )
+        rollback_snapshot = _create_rollback_copy(path)
     except Exception:
         _remove_generated_tree(staging_root)
         raise
@@ -915,30 +973,105 @@ def _commit_selected_book_import_locked(
             ),
         )
 
-        forward_stage(
-            "derived_backup_started",
-            document_id=document_id,
-            chunk_count=chunk_count,
-            writes_performed=True,
-        )
-        derived_state = _backup_derived_artifacts(
-            rollback_root=derived_rollback_root,
-            fts_index_path=fts_index_path,
-            fts_manifest_path=fts_manifest_path,
-            vector_store_path=vector_store_path,
-            vector_manifest_path=vector_manifest_path,
-            zotero_note_vector_path=(
-                zotero_note_vector_path
-            ),
-        )
-        forward_stage(
-            "derived_backup_completed",
-            document_id=document_id,
-            chunk_count=chunk_count,
-            writes_performed=True,
-        )
+        if production:
+            forward_stage(
+                "derived_backup_started",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=True,
+            )
+            assert generation_candidate is not None
+            try:
+                activated_generation = (
+                    retrieval_generation_service
+                    .finalize_candidate_generation(
+                        generation_candidate,
+                        production_db_sha256=after_db_sha256,
+                        profile_versions={
+                            "fts_schema": (
+                                fts_status_service.INDEX_SCHEMA_VERSION
+                            ),
+                            "source_registry": (
+                                fts_status_service.SOURCE_REGISTRY_VERSION
+                            ),
+                        },
+                    )
+                )
+            except Exception as exc:
+                raise DirectionBSelectedBookImportError(
+                    code="zotero_direction_b_production_index_publish_failed",
+                    message="Direction-B generation validation failed.",
+                    status_code=500,
+                    details={
+                        "publish_substage": "generation_validate",
+                        **_extract_cause_metadata(exc),
+                    },
+                ) from exc
+            forward_stage(
+                "derived_backup_completed",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=True,
+            )
+        else:
+            forward_stage(
+                "derived_backup_started",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=True,
+            )
+            derived_state = _backup_derived_artifacts(
+                rollback_root=derived_rollback_root,
+                fts_index_path=fts_index_path,
+                fts_manifest_path=fts_manifest_path,
+                vector_store_path=vector_store_path,
+                vector_manifest_path=vector_manifest_path,
+                zotero_note_vector_path=zotero_note_vector_path,
+            )
+            forward_stage(
+                "derived_backup_completed",
+                document_id=document_id,
+                chunk_count=chunk_count,
+                writes_performed=True,
+            )
 
         try:
+            if production:
+                assert active_generation_before is not None
+                assert activated_generation is not None
+                try:
+                    retrieval_generation_service.begin_generation_activation(
+                        active_generation_before,
+                        activated_generation,
+                        production_db_sha256=after_db_sha256,
+                        data_dir=data_root,
+                    )
+                    activation_state_written = True
+                except Exception as exc:
+                    activation_state_written = (
+                        retrieval_generation_service.activation_state_path(
+                            data_root
+                        ).is_file()
+                    )
+                    publish_substage = getattr(
+                        exc, "publish_substage", "activation_state_write"
+                    )
+                    cause = getattr(exc, "cause", exc)
+                    raise DirectionBSelectedBookImportError(
+                        code=(
+                            "zotero_direction_b_"
+                            "production_index_publish_failed"
+                        ),
+                        message=(
+                            "Direction-B activation state could not be "
+                            "persisted."
+                        ),
+                        status_code=500,
+                        details={
+                            "publish_substage": publish_substage,
+                            **_extract_cause_metadata(cause),
+                        },
+                    ) from exc
             forward_stage(
                 "publish_started",
                 document_id=document_id,
@@ -946,22 +1079,26 @@ def _commit_selected_book_import_locked(
                 writes_performed=True,
             )
             publish_attempted = True
-            _publish_staged_derived_indexes(
-                staging_fts_index=staging_fts_index,
-                staging_fts_manifest=staging_fts_manifest,
-                staging_vector_store=staging_vector_store,
-                staging_vector_manifest=staging_vector_manifest,
-                fts_index_path=fts_index_path,
-                fts_manifest_path=fts_manifest_path,
-                vector_store_path=vector_store_path,
-                vector_manifest_path=vector_manifest_path,
-                staging_zotero_note_vector_path=(
-                    staging_zotero_note_vector_path
-                ),
-                zotero_note_vector_path=(
-                    zotero_note_vector_path
-                ),
-            )
+            if production:
+                assert activated_generation is not None
+                retrieval_generation_service.publish_active_generation(
+                    activated_generation,
+                    data_dir=data_root,
+                )
+                pointer_switched = True
+            else:
+                _publish_staged_derived_indexes(
+                    staging_fts_index=staging_fts_index,
+                    staging_fts_manifest=staging_fts_manifest,
+                    staging_vector_store=staging_vector_store,
+                    staging_vector_manifest=staging_vector_manifest,
+                    fts_index_path=fts_index_path,
+                    fts_manifest_path=fts_manifest_path,
+                    vector_store_path=vector_store_path,
+                    vector_manifest_path=vector_manifest_path,
+                    staging_zotero_note_vector_path=staging_zotero_note_vector_path,
+                    zotero_note_vector_path=zotero_note_vector_path,
+                )
             derived_index_publish_performed = True
             forward_stage(
                 "publish_completed",
@@ -972,9 +1109,17 @@ def _commit_selected_book_import_locked(
         except Exception as exc:
             publish_substage: str | None = None
             cause_meta: dict[str, Any] = {}
+            if isinstance(exc, DirectionBSelectedBookImportError):
+                raise
             if isinstance(exc, DirectionBDerivedPublishError):
                 publish_substage = exc.publish_substage
                 cause_meta = _extract_cause_metadata(exc.original_exception)
+            elif isinstance(
+                exc,
+                retrieval_generation_service.ActivePointerPublishError,
+            ):
+                publish_substage = exc.publish_substage
+                cause_meta = _extract_cause_metadata(exc.cause)
             else:
                 cause_meta = _extract_cause_metadata(exc)
             raise DirectionBSelectedBookImportError(
@@ -1003,6 +1148,7 @@ def _commit_selected_book_import_locked(
             writes_performed=True,
         )
         if production:
+            assert activated_generation is not None
             _verify_production_final_state(
                 runtime=runtime,
                 document_id=document_id,
@@ -1013,6 +1159,7 @@ def _commit_selected_book_import_locked(
                     )
                     or 0
                 ),
+                generation=activated_generation,
             )
         forward_stage(
             "final_verification_completed",
@@ -1020,6 +1167,32 @@ def _commit_selected_book_import_locked(
             chunk_count=chunk_count,
             writes_performed=True,
         )
+        if production:
+            try:
+                retrieval_generation_service.clear_activation_state(
+                    data_dir=data_root
+                )
+                activation_state_written = False
+            except Exception as exc:
+                cause = getattr(exc, "cause", exc)
+                raise DirectionBSelectedBookImportError(
+                    code=(
+                        "zotero_direction_b_"
+                        "production_index_publish_failed"
+                    ),
+                    message=(
+                        "Direction-B activation state could not be cleared."
+                    ),
+                    status_code=500,
+                    details={
+                        "publish_substage": getattr(
+                            exc,
+                            "publish_substage",
+                            "activation_state_clear",
+                        ),
+                        **_extract_cause_metadata(cause),
+                    },
+                ) from exc
 
         return {
             "status": "committed",
@@ -1103,7 +1276,36 @@ def _commit_selected_book_import_locked(
                 + type(callback_exc).__name__
             )
 
-        if publish_attempted and derived_state is not None:
+        if production and pointer_switched:
+            try:
+                current_stage = "active_pointer_rollback"
+                retrieval_generation_service.restore_active_pointer(
+                    previous_pointer_bytes,
+                    data_dir=data_root,
+                )
+                if (
+                    retrieval_generation_service.read_active_pointer_bytes(
+                        data_dir=data_root
+                    )
+                    != previous_pointer_bytes
+                ):
+                    raise RuntimeError("active pointer rollback verification failed")
+            except Exception as rollback_exc:
+                derived_rollback_exc = rollback_exc
+                try:
+                    retrieval_generation_service.mark_activation_degraded(
+                        data_dir=data_root,
+                        error_code="active_pointer_rollback_failed",
+                        publish_substage="active_pointer_rollback",
+                    )
+                except Exception:
+                    # The durable activating marker is deliberately retained
+                    # if upgrading it to degraded cannot be completed.
+                    pass
+                retrieval_generation_service.PRODUCTION_GENERATION_COORDINATOR.mark_degraded(
+                    "active_pointer_rollback_failed"
+                )
+        elif not production and publish_attempted and derived_state is not None:
             try:
                 _restore_derived_artifacts(
                     rollback_root=derived_rollback_root,
@@ -1112,27 +1314,68 @@ def _commit_selected_book_import_locked(
                     fts_manifest_path=fts_manifest_path,
                     vector_store_path=vector_store_path,
                     vector_manifest_path=vector_manifest_path,
-                    zotero_note_vector_path=(
-                        zotero_note_vector_path
-                    ),
+                    zotero_note_vector_path=zotero_note_vector_path,
                 )
             except Exception as rollback_exc:
                 derived_rollback_exc = rollback_exc
                 retain_derived_rollback = True
 
-        try:
-            _restore_rollback_copy(
-                path,
-                rollback_snapshot,
-            )
-        except Exception as rollback_exc:
-            db_rollback_exc = rollback_exc
+        if not (production and derived_rollback_exc is not None):
+            try:
+                _restore_rollback_copy(
+                    path,
+                    rollback_snapshot,
+                )
+            except Exception as rollback_exc:
+                db_rollback_exc = rollback_exc
+                retain_db_rollback = True
+        else:
+            # A failed pointer rollback leaves the new generation active.
+            # Keep its matching DB revision rather than exposing DB-old/index-new.
             retain_db_rollback = True
 
         rollback_completed = (
             db_rollback_exc is None
             and derived_rollback_exc is None
         )
+        if production and activation_state_written:
+            if rollback_completed:
+                try:
+                    restored_generation = (
+                        retrieval_generation_service
+                        .resolve_active_retrieval_generation(
+                            data_dir=data_root,
+                            db_path=path,
+                            verify_fingerprints=True,
+                        )
+                    )
+                    if active_generation_before is None or (
+                        restored_generation.mode
+                        != active_generation_before.mode
+                        or restored_generation.generation_id
+                        != active_generation_before.generation_id
+                    ):
+                        raise RuntimeError(
+                            "restored retrieval generation does not match"
+                        )
+                    retrieval_generation_service.verify_generation_database_revision(
+                        restored_generation,
+                        path,
+                    )
+                    retrieval_generation_service.clear_activation_state(
+                        data_dir=data_root
+                    )
+                    activation_state_written = False
+                except Exception as activation_rollback_exc:
+                    derived_rollback_exc = activation_rollback_exc
+                    rollback_completed = False
+                    retrieval_generation_service.PRODUCTION_GENERATION_COORDINATOR.mark_degraded(
+                        "activation_rollback_verification_failed"
+                    )
+            elif derived_rollback_exc is None:
+                retrieval_generation_service.PRODUCTION_GENERATION_COORDINATOR.mark_degraded(
+                    "activation_rollback_incomplete"
+                )
         current_stage = "rollback_completed"
         try:
             _emit_stage(
@@ -1174,6 +1417,7 @@ def _commit_selected_book_import_locked(
             stable_details.setdefault("document_id", document_id)
         stable_details.setdefault("chunk_count", chunk_count)
         stable_details.setdefault("publish_substage", None)
+        stable_details.setdefault("safe_to_retry", False)
         for cause_key in (
             "cause_type",
             "cause_message",
@@ -1274,6 +1518,14 @@ def _commit_selected_book_import_locked(
         _best_effort_remove_generated_tree(
             staging_root
         )
+
+        if (
+            generation_candidate is not None
+            and generation_candidate.candidate_dir.exists()
+        ):
+            _best_effort_remove_generated_tree(
+                generation_candidate.candidate_dir
+            )
 
         if not retain_derived_rollback:
             _best_effort_remove_generated_tree(
@@ -2577,6 +2829,9 @@ def _verify_production_final_state(
     document_id: int,
     expected_db_sha256: str,
     expected_native_note_vector_count: int,
+    generation: (
+        retrieval_generation_service.RetrievalGenerationSnapshot
+    ),
 ) -> None:
     if (
         _sha256_file(runtime.db_path)
@@ -2632,7 +2887,7 @@ def _verify_production_final_state(
 
     try:
         manifest = json.loads(
-            Path(runtime.fts_manifest_path)
+            generation.fts_manifest_path
             .read_text(encoding="utf-8")
         )
     except Exception as exc:
@@ -2670,8 +2925,8 @@ def _verify_production_final_state(
         )
 
     status = fts_status_service.get_index_status(
-        index_path=runtime.fts_index_path,
-        manifest_path=runtime.fts_manifest_path,
+        index_path=generation.fts_index_path,
+        manifest_path=generation.fts_manifest_path,
         production_db_path=runtime.db_path,
     )
 
@@ -2695,13 +2950,28 @@ def _verify_production_final_state(
         note_vector_index
         .inspect_zotero_note_vector_document_impact(
             document_id,
-            index_dir=(
-                Path(runtime.data_dir)
-                / "vector_store"
-                / "zotero_user_notes_v1"
-            ),
+            index_dir=generation.native_note_vector_path,
         )
     )
+
+    resolved = (
+        retrieval_generation_service
+        .resolve_active_retrieval_generation(
+            data_dir=runtime.data_dir,
+            db_path=runtime.db_path,
+        )
+    )
+    if (
+        resolved.generation_id != generation.generation_id
+        or resolved.production_db_sha256.lower()
+        != expected_db_sha256.lower()
+    ):
+        raise DirectionBSelectedBookImportError(
+            code="zotero_direction_b_production_final_verify_failed",
+            message="Production active generation verification failed.",
+            status_code=500,
+            details={"publish_substage": "post_switch_verify"},
+        )
     if int(
         note_vector_impact.get(
             "document_entry_count"

@@ -12,12 +12,14 @@ from app.schemas.retrieval_selection import (
 from app.services.retrieval.evidence_errors import EvidenceWorkflowError
 from app.services.retrieval.evidence_export_service import export_evidence
 from app.services.retrieval.evidence_selection_service import resolve_selection
+from app.services.retrieval_generation_service import product_read_generation_guard
 
 
 router = APIRouter(prefix="/api/v1/retrieval", tags=["local-retrieval-evidence"])
 
 
 @router.post("/selection/resolve", response_model=RetrievalSelectionResponse)
+@product_read_generation_guard
 def resolve_retrieval_selection(
     selector: RetrievalSelectionSelector,
 ) -> dict[str, Any]:
@@ -28,6 +30,7 @@ def resolve_retrieval_selection(
 
 
 @router.post("/evidence/export", response_model=EvidenceExportResponse)
+@product_read_generation_guard
 def export_retrieval_evidence(
     request: EvidenceExportRequest,
 ) -> dict[str, Any]:

@@ -55,12 +55,17 @@ class IntegrityReportRuntime:
 
     @classmethod
     def production(cls) -> "IntegrityReportRuntime":
+        from app.services.retrieval_generation_service import (
+            current_retrieval_generation,
+        )
+
+        generation = current_retrieval_generation()
         return cls(
             db_path=DEFAULT_DB_PATH,
-            fts_index_path=FTS_DB_PATH,
-            fts_manifest_path=FTS_MANIFEST_PATH,
-            vector_store_path=LANCEDB_DIR,
-            vector_manifest_path=vector_store_service.MANIFEST_PATH,
+            fts_index_path=generation.fts_index_path,
+            fts_manifest_path=generation.fts_manifest_path,
+            vector_store_path=generation.vector_store_path,
+            vector_manifest_path=generation.vector_manifest_path,
             import_journal_dir=DATA_DIR / "import_operation_journal",
         )
 

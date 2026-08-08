@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 from dataclasses import replace
@@ -16,6 +17,7 @@ from app.domains.retrieval.result_contracts import (
 )
 from app.services import (
     chat_tool_service,
+    retrieval_generation_service,
     vector_store_service,
     zotero_direction_b_import_service,
     zotero_selected_book_preview_service,
@@ -36,6 +38,21 @@ def reset_chat_state():
     chat_tool_service.reset_chat_tool_state_for_tests()
     yield
     chat_tool_service.reset_chat_tool_state_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def isolate_production_generation_coordinator(monkeypatch):
+    coordinator = retrieval_generation_service.ProductionGenerationCoordinator()
+    monkeypatch.setattr(
+        retrieval_generation_service,
+        "PRODUCTION_GENERATION_COORDINATOR",
+        coordinator,
+    )
+    token = retrieval_generation_service._PINNED_GENERATION.set(None)
+    try:
+        yield coordinator
+    finally:
+        retrieval_generation_service._PINNED_GENERATION.reset(token)
 
 
 @pytest.fixture(autouse=True)
@@ -2279,6 +2296,8 @@ def _install_production_shaped_runtime(
         / "vector_store"
         / "vector_manifest.json"
     )
+    vector_store.mkdir(parents=True, exist_ok=True)
+    vector_manifest.write_text("{}\n", encoding="utf-8")
     note_vector_dir = (
         data_dir
         / "vector_store"
@@ -2419,6 +2438,11 @@ def _install_production_shaped_runtime(
     )
     def fts_status(**kwargs):
         target = Path(kwargs["index_path"]).resolve(strict=False)
+        if (
+            not fts_ready
+            and target.parent.joinpath("generation_manifest.json").is_file()
+        ):
+            return {"status": "source_drift", "ready": False}
         if target != fts_path.resolve(strict=False):
             return {"status": "ready", "ready": True}
         return {
@@ -2489,6 +2513,9 @@ def test_production_shaped_import_uses_post_write_snapshot(
         assert connection.execute(
             "SELECT COUNT(*) FROM documents"
         ).fetchone()[0] == 1
+    assert not retrieval_generation_service.activation_state_path(
+        fixture["data_dir"]
+    ).exists()
 
 
 def _native_annotation_fragment(
@@ -2599,17 +2626,23 @@ def test_production_import_attaches_only_native_note_vector_scope(
     assert native_sync["full_rebuild_performed"] is False
     assert native_sync["orphan_delete_performed"] is False
 
+    active_generation = (
+        retrieval_generation_service.resolve_active_retrieval_generation(
+            data_dir=fixture["data_dir"],
+            db_path=fixture["db_path"],
+        )
+    )
     impact = (
         note_vector_index
         .inspect_zotero_note_vector_document_impact(
             1,
-            index_dir=note_vector_dir,
+            index_dir=active_generation.native_note_vector_path,
         )
     )
     assert impact["document_entry_count"] == 1
     _manifest, after_entries = (
         note_vector_index._load_existing(
-            note_vector_dir,
+            active_generation.native_note_vector_path,
             required=True,
         )
     )
@@ -2625,6 +2658,7 @@ def test_production_import_attaches_only_native_note_vector_scope(
 def test_production_final_verify_failure_restores_db_and_derived_exactly(
     tmp_path,
     monkeypatch,
+    isolate_production_generation_coordinator,
 ):
     fixture = _install_production_shaped_runtime(
         tmp_path,
@@ -2660,6 +2694,174 @@ def test_production_final_verify_failure_restores_db_and_derived_exactly(
     assert db_path.read_bytes() == before_db
     assert fts_path.read_bytes() == before_fts
     assert manifest_path.read_bytes() == before_manifest
+    assert not (
+        fixture["data_dir"]
+        / retrieval_generation_service.ACTIVE_POINTER_NAME
+    ).exists()
+    assert not retrieval_generation_service.activation_state_path(
+        fixture["data_dir"]
+    ).exists()
+    assert isolate_production_generation_coordinator.degraded is False
+
+
+def test_activation_marker_is_durable_before_active_pointer_commit(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=True,
+    )
+    ordering = []
+    real_begin = retrieval_generation_service.begin_generation_activation
+    real_publish = retrieval_generation_service.publish_active_generation
+
+    def begin(*args, **kwargs):
+        result = real_begin(*args, **kwargs)
+        assert retrieval_generation_service.activation_state_path(
+            fixture["data_dir"]
+        ).is_file()
+        ordering.append("activation_durable")
+        return result
+
+    def publish(*args, **kwargs):
+        assert retrieval_generation_service.activation_state_path(
+            fixture["data_dir"]
+        ).is_file()
+        ordering.append("active_pointer_replace")
+        return real_publish(*args, **kwargs)
+
+    monkeypatch.setattr(
+        retrieval_generation_service,
+        "begin_generation_activation",
+        begin,
+    )
+    monkeypatch.setattr(
+        retrieval_generation_service,
+        "publish_active_generation",
+        publish,
+    )
+
+    result = (
+        zotero_direction_b_import_service
+        .commit_selected_book_import_to_production(
+            preview_token="p" * 40,
+            body_importer=body_importer,
+        )
+    )
+
+    assert result["status"] == "committed"
+    assert ordering == ["activation_durable", "active_pointer_replace"]
+    assert not retrieval_generation_service.activation_state_path(
+        fixture["data_dir"]
+    ).exists()
+
+
+def test_activation_marker_write_failure_rolls_back_before_pointer_commit(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=True,
+    )
+    before_db = fixture["db_path"].read_bytes()
+    publish_calls = 0
+
+    def fail_marker(*_args, **_kwargs):
+        raise retrieval_generation_service.ActivationStatePublishError(
+            "activation_state_write",
+            OSError("forced durable activation write failure"),
+        )
+
+    def count_publish(*_args, **_kwargs):
+        nonlocal publish_calls
+        publish_calls += 1
+
+    monkeypatch.setattr(
+        retrieval_generation_service,
+        "begin_generation_activation",
+        fail_marker,
+    )
+    monkeypatch.setattr(
+        retrieval_generation_service,
+        "publish_active_generation",
+        count_publish,
+    )
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        (
+            zotero_direction_b_import_service
+            .commit_selected_book_import_to_production(
+                preview_token="p" * 40,
+                body_importer=body_importer,
+            )
+        )
+
+    assert error.value.code == (
+        "zotero_direction_b_production_index_publish_failed"
+    )
+    assert error.value.details["publish_substage"] == "activation_state_write"
+    assert error.value.details["rollback_completed"] is True
+    assert fixture["db_path"].read_bytes() == before_db
+    assert publish_calls == 0
+    assert not (
+        fixture["data_dir"]
+        / retrieval_generation_service.ACTIVE_POINTER_NAME
+    ).exists()
+    assert not retrieval_generation_service.activation_state_path(
+        fixture["data_dir"]
+    ).exists()
+
+
+def test_activation_marker_clear_failure_never_returns_committed(
+    tmp_path,
+    monkeypatch,
+    isolate_production_generation_coordinator,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=True,
+    )
+    before_db = fixture["db_path"].read_bytes()
+
+    monkeypatch.setattr(
+        retrieval_generation_service,
+        "clear_activation_state",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            retrieval_generation_service.ActivationStatePublishError(
+                "activation_state_clear",
+                OSError("forced activation marker clear failure"),
+            )
+        ),
+    )
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        (
+            zotero_direction_b_import_service
+            .commit_selected_book_import_to_production(
+                preview_token="p" * 40,
+                body_importer=body_importer,
+            )
+        )
+
+    assert error.value.code == (
+        "zotero_direction_b_production_derived_rollback_failed"
+    )
+    assert error.value.details["rollback_completed"] is False
+    assert error.value.details["safe_to_retry"] is False
+    assert fixture["db_path"].read_bytes() == before_db
+    assert retrieval_generation_service.activation_state_path(
+        fixture["data_dir"]
+    ).is_file()
+    assert isolate_production_generation_coordinator.degraded is True
 
 
 def test_production_db_rollback_failure_has_priority_and_retains_backup(
@@ -3209,6 +3411,94 @@ def _fixture_derived_fingerprints(fixture):
     return result
 
 
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "candidate_fts_sync",
+        "candidate_passage_vector_sync",
+        "candidate_note_vector_sync",
+        "candidate_native_note_sync",
+        "candidate_validation",
+    ),
+)
+def test_production_candidate_failure_never_activates_generation(
+    tmp_path,
+    monkeypatch,
+    fault,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=True,
+    )
+    before_db = fixture["db_path"].read_bytes()
+    before_derived = _fixture_derived_fingerprints(fixture)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(f"forced {fault}")
+
+    if fault == "candidate_fts_sync":
+        monkeypatch.setattr(
+            fts_index_service,
+            "upsert_document_retrieval_fts",
+            fail,
+        )
+    elif fault == "candidate_passage_vector_sync":
+        monkeypatch.setattr(
+            vector_store_service,
+            "sync_affected_passage_embeddings",
+            fail,
+        )
+    elif fault == "candidate_note_vector_sync":
+        monkeypatch.setattr(
+            vector_store_service,
+            "sync_document_note_embeddings",
+            fail,
+        )
+    elif fault == "candidate_native_note_sync":
+        monkeypatch.setattr(
+            zotero_direction_b_import_service,
+            "_native_note_fragments_for_document",
+            lambda **_kwargs: [_native_annotation_fragment(1)],
+        )
+        monkeypatch.setattr(
+            note_vector_index,
+            "attach_zotero_note_vector_document_scope",
+            fail,
+        )
+    else:
+        monkeypatch.setattr(
+            zotero_direction_b_import_service,
+            "_verify_staging_final_state",
+            fail,
+        )
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ):
+        (
+            zotero_direction_b_import_service
+            .commit_selected_book_import_to_production(
+                preview_token="p" * 40,
+                body_importer=body_importer,
+            )
+        )
+
+    assert fixture["db_path"].read_bytes() == before_db
+    assert _fixture_derived_fingerprints(fixture) == before_derived
+    assert not (
+        fixture["data_dir"]
+        / retrieval_generation_service.ACTIVE_POINTER_NAME
+    ).exists()
+    versions = (
+        fixture["data_dir"]
+        / retrieval_generation_service.GENERATION_ROOT_NAME
+    )
+    assert not versions.exists() or not any(
+        child.name.startswith("g-") for child in versions.iterdir()
+    )
+
+
 def test_publish_started_callback_failure_does_not_restore_or_touch_derived(
     tmp_path,
     monkeypatch,
@@ -3518,9 +3808,10 @@ def test_direction_b_forward_stage_fault_injection(
     ):
         assert publish_calls == 0
 
-def test_production_derived_rollback_failure_restores_db_and_retains_backup(
+def test_production_pointer_rollback_failure_keeps_matching_new_db_and_generation(
     tmp_path,
     monkeypatch,
+    isolate_production_generation_coordinator,
 ):
     fixture = _install_production_shaped_runtime(
         tmp_path,
@@ -3531,8 +3822,8 @@ def test_production_derived_rollback_failure_restores_db_and_retains_backup(
     before_db = db_path.read_bytes()
 
     monkeypatch.setattr(
-        zotero_direction_b_import_service,
-        "_restore_derived_artifacts",
+        retrieval_generation_service,
+        "restore_active_pointer",
         lambda **_kwargs: (
             (_ for _ in ()).throw(
                 RuntimeError(
@@ -3558,18 +3849,42 @@ def test_production_derived_rollback_failure_restores_db_and_retains_backup(
         "zotero_direction_b_"
         "production_derived_rollback_failed"
     )
-    assert db_path.read_bytes() == before_db
-
-    rollback_root = (
-        fixture["data_dir"]
-        / ".direction_b_index_rollback"
+    assert error.value.details["rollback_attempted"] is True
+    assert error.value.details["rollback_completed"] is False
+    assert error.value.details["writes_performed"] is True
+    assert error.value.details["production_data_modified"] is True
+    assert error.value.details["safe_to_retry"] is False
+    assert db_path.read_bytes() != before_db
+    active = retrieval_generation_service.resolve_active_retrieval_generation(
+        data_dir=fixture["data_dir"], db_path=db_path
     )
-    assert rollback_root.is_dir()
-
-    for child in rollback_root.iterdir():
-        zotero_direction_b_import_service._remove_generated_tree(
-            child
-        )
+    assert active.production_db_sha256 == hashlib.sha256(
+        db_path.read_bytes()
+    ).hexdigest()
+    assert not (
+        fixture["data_dir"] / ".direction_b_index_rollback"
+    ).exists()
+    assert isolate_production_generation_coordinator.degraded is True
+    assert isolate_production_generation_coordinator.degraded_reason == (
+        "active_pointer_rollback_failed"
+    )
+    durable_state = json.loads(
+        retrieval_generation_service.activation_state_path(
+            fixture["data_dir"]
+        ).read_text(encoding="utf-8")
+    )
+    assert durable_state["status"] == "degraded"
+    assert durable_state["candidate_generation_id"] == active.generation_id
+    with pytest.raises(
+        retrieval_generation_service.RetrievalGenerationError
+    ) as blocked:
+        with retrieval_generation_service.production_read_generation(
+            data_dir=fixture["data_dir"],
+            db_path=db_path,
+        ):
+            pass
+    assert blocked.value.code == "retrieval_generation_degraded"
+    assert blocked.value.safe_to_retry is False
 
 def test_production_cleanup_failure_does_not_mask_success(
     tmp_path,

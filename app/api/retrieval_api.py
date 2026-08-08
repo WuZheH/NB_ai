@@ -27,6 +27,7 @@ from app.schemas.retrieval_search import (
     RetrievalSearchResponse,
 )
 from app.services import local_embedding_service, local_reranker_service
+from app.services.retrieval_generation_service import product_read_generation_guard
 from app.services.retrieval import fts_search_service, fts_status_service
 
 
@@ -34,6 +35,7 @@ router = APIRouter(prefix="/api/v1/retrieval", tags=["local-retrieval"])
 
 
 @router.post("/notebook-search", response_model=NotebookSearchResponse)
+@product_read_generation_guard
 def search_notebook_retrieval(
     request: NotebookSearchRequest,
 ) -> dict[str, Any]:
@@ -97,6 +99,7 @@ def search_notebook_retrieval(
 
 
 @router.get("/fragments/{fragment_id}", response_model=PublicEvidence)
+@product_read_generation_guard
 def fetch_notebook_fragment(fragment_id: str) -> dict[str, Any]:
     try:
         return serialize_public_evidence(
@@ -114,6 +117,7 @@ def fetch_notebook_fragment(fragment_id: str) -> dict[str, Any]:
 
 
 @router.get("/fragments/{fragment_id}/locator", response_model=FragmentLocator)
+@product_read_generation_guard
 def fetch_fragment_locator(fragment_id: str) -> dict[str, Any]:
     try:
         return get_fragment_locator(fragment_id).model_dump(mode="json")
@@ -129,6 +133,7 @@ def fetch_fragment_locator(fragment_id: str) -> dict[str, Any]:
 
 
 @router.post("/search", response_model=RetrievalSearchResponse)
+@product_read_generation_guard
 def search_retrieval(
     request: RetrievalSearchRequest,
 ) -> dict[str, Any]:
@@ -155,6 +160,7 @@ def search_retrieval(
 
 
 @router.get("/index/status", response_model=None)
+@product_read_generation_guard
 def retrieval_index_status() -> dict[str, Any]:
     return fts_status_service.get_index_status()
 

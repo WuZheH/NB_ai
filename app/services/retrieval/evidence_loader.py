@@ -73,8 +73,17 @@ def require_ready_index(
     index_path: str | Path | None = None,
     manifest_path: str | Path | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
-    index = Path(index_path) if index_path is not None else DEFAULT_INDEX_PATH
-    manifest = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
+    if index_path is None and manifest_path is None:
+        from app.services.retrieval_generation_service import (
+            current_retrieval_generation,
+        )
+
+        generation = current_retrieval_generation()
+        index = generation.fts_index_path
+        manifest = generation.fts_manifest_path
+    else:
+        index = Path(index_path) if index_path is not None else DEFAULT_INDEX_PATH
+        manifest = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
     status = _cached_index_status(
         _status_signature(index, manifest),
         str(index.resolve(strict=False)),
