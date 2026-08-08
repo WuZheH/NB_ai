@@ -1084,7 +1084,11 @@ def _resolve_import_journal(
             "chat_import_journal_conflict",
             "Multiple durable records exist for this confirmed import.",
             status_code=409,
-            details={"safe_to_retry": False},
+            details={
+                "safe_to_retry": False,
+                "token_consumed": True,
+                "writes_performed": None,
+            },
         ) from exc
 
 
@@ -1109,6 +1113,9 @@ def _resolve_import_journal_outcome(
                 "already_completed": True,
                 "replayed_receipt": True,
                 "operation_in_progress": False,
+                "token_consumed": True,
+                "writes_performed": True,
+                "safe_to_retry": False,
             }
         )
         return replay
@@ -1122,13 +1129,33 @@ def _resolve_import_journal_outcome(
                 status_code=500,
                 details={"safe_to_retry": False},
             )
-        details = dict(receipt.get("details") or {})
+        raw_details = receipt.get("details")
+        details = _safe_failure_details(
+            dict(raw_details) if isinstance(raw_details, Mapping) else {}
+        )
+        # Failure replay accepts only these two explicitly typed fields from
+        # public_response.  No other persisted public field may override the
+        # safe server-side error contract.
+        public_response = receipt.get("public_response")
+        if isinstance(public_response, Mapping):
+            public_writes = public_response.get("writes_performed")
+            if (
+                "writes_performed" not in details
+                and (
+                    public_writes is None
+                    or isinstance(public_writes, bool)
+                )
+            ):
+                details["writes_performed"] = public_writes
+        if "writes_performed" not in details:
+            details["writes_performed"] = journal.writes_performed
         details.update(
             {
                 "already_completed": True,
                 "replayed_receipt": True,
                 "operation_in_progress": False,
                 "safe_to_retry": False,
+                "token_consumed": True,
             }
         )
         raise ChatToolError(
@@ -1149,6 +1176,7 @@ def _resolve_import_journal_outcome(
             details={
                 "safe_to_retry": False,
                 "writes_performed": journal.writes_performed,
+                "token_consumed": True,
             },
         )
 
@@ -1331,6 +1359,14 @@ _SAFE_FAILURE_DETAIL_FIELDS = frozenset(
         "derived_index_publish_performed",
         "safe_to_retry",
         "warnings",
+        "token_consumed",
+        "publish_substage",
+        "cause_type",
+        "cause_message",
+        "cause_errno",
+        "cause_winerror",
+        "cause_filename",
+        "cause_filename2",
     }
 )
 
@@ -1359,6 +1395,7 @@ def _safe_failure_details(details: dict[str, Any]) -> dict[str, Any]:
             "production_data_modified",
             "derived_index_publish_performed",
             "safe_to_retry",
+            "token_consumed",
         } and isinstance(value, bool):
             safe[key] = value
         elif key == "document_id" and (
@@ -1373,10 +1410,30 @@ def _safe_failure_details(details: dict[str, Any]) -> dict[str, Any]:
             and value >= 0
         ):
             safe[key] = value
+        elif key in {"cause_errno", "cause_winerror"}:
+            if value is None:
+                safe[key] = None
+            elif isinstance(value, int) and not isinstance(value, bool):
+                safe[key] = value
         elif key == "error_stage" and isinstance(value, str):
             text = value.strip()
             if re.fullmatch(r"[A-Za-z0-9_.:]{1,128}", text):
                 safe[key] = text
+        elif key in {
+            "publish_substage",
+            "cause_type",
+            "cause_message",
+            "cause_filename",
+            "cause_filename2",
+        }:
+            if value is None:
+                safe[key] = None
+            elif isinstance(value, str):
+                text = value.strip()
+                if text and len(text) <= 512:
+                    safe[key] = text
+                else:
+                    safe[key] = None
     return safe
 
 
@@ -1468,6 +1525,16 @@ def _persist_failed_import_receipt(
         "token_consumed": True,
         "writes_performed": writes_performed,
         "safe_to_retry": False,
+        "error_stage": original_error_stage,
+        "publish_substage": details.get("publish_substage"),
+        "cause_type": details.get("cause_type"),
+        "cause_message": details.get("cause_message"),
+        "cause_errno": details.get("cause_errno"),
+        "cause_winerror": details.get("cause_winerror"),
+        "cause_filename": details.get("cause_filename"),
+        "cause_filename2": details.get("cause_filename2"),
+        "rollback_attempted": details.get("rollback_attempted"),
+        "rollback_completed": details.get("rollback_completed"),
     }
     receipt = {
         "kind": "failure",
@@ -1499,6 +1566,13 @@ def _persist_failed_import_receipt(
             "status_code": int(error.status_code),
             "error_stage": original_error_stage,
             "exception_type": exception_type or type(error).__name__,
+            "publish_substage": details.get("publish_substage"),
+            "cause_type": details.get("cause_type"),
+            "cause_message": details.get("cause_message"),
+            "cause_errno": details.get("cause_errno"),
+            "cause_winerror": details.get("cause_winerror"),
+            "cause_filename": details.get("cause_filename"),
+            "cause_filename2": details.get("cause_filename2"),
         },
         rollback=rollback,
         warnings=journal_warnings,
@@ -1749,6 +1823,29 @@ def import_document(
             except Exception:
                 pass
             raise
+    except ChatToolError as exc:
+        # Every error reaching this boundary happened after this request
+        # successfully became the sole import owner.  The finally block will
+        # therefore release ownership and physically remove the confirmation.
+        safe_details = dict(exc.details)
+        safe_details["token_consumed"] = True
+        safe_details.setdefault("safe_to_retry", False)
+        exc.details = safe_details
+        raise
+    except Exception as exc:
+        # This covers pre-journal failures such as audit construction and
+        # journal creation plumbing.  No durable receipt may exist, but the
+        # successfully claimed confirmation is still consumed on release.
+        raise ChatToolError(
+            "chat_import_post_claim_failed",
+            "The confirmed import failed before a durable receipt was created.",
+            status_code=500,
+            details={
+                "token_consumed": True,
+                "writes_performed": False,
+                "safe_to_retry": False,
+            },
+        ) from exc
     finally:
         _release_import_owner(
             token_digest,

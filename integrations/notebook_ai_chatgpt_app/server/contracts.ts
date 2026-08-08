@@ -284,14 +284,31 @@ export interface ImportDocumentInput {
 
 export interface ImportDocumentResponse {
   status: string;
-  document_id: number | null;
-  title: string;
-  document_type: string;
-  chunk_count: number;
-  duplicate_status: string;
-  error_code: string | null;
-  already_completed: boolean;
-  replayed_receipt: boolean;
+  tool?: string;
+  document_id?: number | null;
+  title?: string;
+  document_type?: string;
+  chunk_count?: number;
+  duplicate_status?: string;
+  error_code?: string | null;
+  message?: string;
+  retryable?: boolean | null;
+  already_completed?: boolean;
+  replayed_receipt?: boolean | null;
+  operation_in_progress?: boolean | null;
+  token_consumed?: boolean | null;
+  writes_performed: boolean | null;
+  safe_to_retry?: boolean | null;
+  publish_substage?: string | null;
+  cause_type?: string | null;
+  cause_message?: string | null;
+  cause_errno?: number | null;
+  cause_winerror?: number | null;
+  cause_filename?: string | null;
+  cause_filename2?: string | null;
+  rollback_attempted?: boolean | null;
+  rollback_completed?: boolean | null;
+  error_stage?: string | null;
 }
 
 export interface DeletePreviewResponse {

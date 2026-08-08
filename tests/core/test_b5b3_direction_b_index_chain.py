@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 from pathlib import Path
@@ -414,6 +415,136 @@ def test_partial_publish_failure_restores_all_derived_and_db(
     assert fts_index.read_bytes() == fts_before
     assert fts_manifest.read_bytes() == manifest_before
     assert _tree_bytes(data_dir / "vector_store") == vector_before
+    _assert_generated_roots_clean(data_dir)
+
+
+PUBLISH_SUBSTAGES = [
+    "fts_index_replace",
+    "fts_manifest_replace",
+    "vector_store_retire",
+    "vector_store_publish",
+    "vector_manifest_replace",
+    "native_note_vector_retire",
+    "native_note_vector_publish",
+    "native_note_vector_cache_invalidate",
+]
+
+
+_B5B3_ERROR_BEFORE: dict[str, set[str]] = {
+    "fts_index_replace": set(),
+    "fts_manifest_replace": {"fts_index_replace"},
+    "vector_store_retire": {"fts_index_replace", "fts_manifest_replace"},
+    "vector_store_publish": {"fts_index_replace", "fts_manifest_replace"},
+    "vector_manifest_replace": {
+        "fts_index_replace", "fts_manifest_replace", "vector_store_publish",
+    },
+    "native_note_vector_retire": {
+        "fts_index_replace", "fts_manifest_replace",
+        "vector_store_publish", "vector_manifest_replace",
+    },
+    "native_note_vector_publish": {
+        "fts_index_replace", "fts_manifest_replace",
+        "vector_store_publish", "vector_manifest_replace",
+    },
+    "native_note_vector_cache_invalidate": {
+        "fts_index_replace", "fts_manifest_replace",
+        "vector_store_publish", "vector_manifest_replace",
+        "native_note_vector_publish",
+    },
+}
+
+
+def _simulate_publish_failure_at(**kwargs):
+    """Run pre-steps then raise DirectionBDerivedPublishError at substage."""
+    from app.services.zotero_direction_b_import_service import (
+        DirectionBDerivedPublishError,
+    )
+
+    _fk = kwargs
+    substage = _simulate_publish_failure_at.substage
+    before = _B5B3_ERROR_BEFORE[substage]
+
+    if "fts_index_replace" in before:
+        os.replace(_fk["staging_fts_index"], _fk["fts_index_path"])
+    if "fts_manifest_replace" in before:
+        os.replace(_fk["staging_fts_manifest"], _fk["fts_manifest_path"])
+    if "vector_store_retire" in before:
+        _fk["vector_store_path"].parent.mkdir(parents=True, exist_ok=True)
+        if _fk["vector_store_path"].exists():
+            os.replace(_fk["vector_store_path"],
+                       _fk["staging_vector_store"].parent / ".retired-lancedb")
+    if "vector_store_publish" in before:
+        _fk["vector_store_path"].parent.mkdir(parents=True, exist_ok=True)
+        if _fk["vector_store_path"].exists():
+            os.replace(_fk["vector_store_path"],
+                       _fk["staging_vector_store"].parent / ".retired-lancedb")
+        os.replace(_fk["staging_vector_store"], _fk["vector_store_path"])
+    if "vector_manifest_replace" in before:
+        if _fk["staging_vector_manifest"].is_file():
+            os.replace(_fk["staging_vector_manifest"], _fk["vector_manifest_path"])
+    if "native_note_vector_retire" in before:
+        if _fk["staging_zotero_note_vector_path"].is_dir():
+            retired = _fk["staging_zotero_note_vector_path"].parent / ".retired-zotero-user-notes"
+            if _fk["zotero_note_vector_path"].exists():
+                os.replace(_fk["zotero_note_vector_path"], retired)
+    if "native_note_vector_publish" in before:
+        if _fk["staging_zotero_note_vector_path"].is_dir():
+            retired = _fk["staging_zotero_note_vector_path"].parent / ".retired-zotero-user-notes"
+            if _fk["zotero_note_vector_path"].exists():
+                os.replace(_fk["zotero_note_vector_path"], retired)
+            os.replace(_fk["staging_zotero_note_vector_path"],
+                       _fk["zotero_note_vector_path"])
+
+    raise DirectionBDerivedPublishError(
+        publish_substage=substage,
+        original_exception=PermissionError(f"fixture {substage} denied"),
+    )
+
+
+@pytest.mark.parametrize("substage", PUBLISH_SUBSTAGES)
+def test_publish_substage_failure_restores_all_derived_and_reports_substage(
+    chain,
+    monkeypatch: pytest.MonkeyPatch,
+    substage: str,
+) -> None:
+    database, data_dir, _loads, _texts = chain
+    db_before_sha = hashlib.sha256(database.read_bytes()).hexdigest()
+    fts_index = data_dir / "search_index" / "retrieval_fts_v1.db"
+    fts_manifest = data_dir / "search_index" / "retrieval_fts_v1_manifest.json"
+    fts_before_sha = hashlib.sha256(fts_index.read_bytes()).hexdigest()
+    manifest_before_sha = hashlib.sha256(fts_manifest.read_bytes()).hexdigest()
+    vector_before = _tree_bytes(data_dir / "vector_store")
+    note_vector_dir = data_dir / "vector_store" / "zotero_user_notes_v1"
+    note_vector_before = _tree_bytes(note_vector_dir)
+
+    _simulate_publish_failure_at.substage = substage
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        _simulate_publish_failure_at,
+    )
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as caught:
+        _commit(database, data_dir)
+
+    assert caught.value.code == "zotero_direction_b_temp_index_publish_failed"
+    assert caught.value.details["error_stage"] == "publish_started"
+    assert caught.value.details["publish_substage"] == substage
+    assert caught.value.details.get("cause_type") is not None
+    assert caught.value.details.get("cause_message") is not None
+    assert caught.value.details["rollback_attempted"] is True
+    assert caught.value.details["rollback_completed"] is True
+    assert caught.value.details["writes_performed"] is True
+    assert caught.value.details.get("safe_to_retry") is not True
+
+    # All derived indexes restored
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == db_before_sha
+    assert hashlib.sha256(fts_index.read_bytes()).hexdigest() == fts_before_sha
+    assert hashlib.sha256(fts_manifest.read_bytes()).hexdigest() == manifest_before_sha
+    assert _tree_bytes(data_dir / "vector_store") == vector_before
+    assert _tree_bytes(note_vector_dir) == note_vector_before
     _assert_generated_roots_clean(data_dir)
 
 

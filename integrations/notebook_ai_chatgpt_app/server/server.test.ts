@@ -207,6 +207,10 @@ class MockNotebookClient extends NotebookClient {
       error_code: null,
       already_completed: false,
       replayed_receipt: false,
+      operation_in_progress: false,
+      token_consumed: true,
+      writes_performed: true,
+      safe_to_retry: false,
     };
   }
 
@@ -799,7 +803,11 @@ test("all tool failures use isError content without output-schema mismatch", asy
       for (const call of toolCalls) {
         const response = await client.callTool(call);
         assert.equal(response.isError, true);
-        assert.equal(response.structuredContent, undefined);
+        if (call.name === "import_document") {
+          assert.ok(response.structuredContent);
+        } else {
+          assert.equal(response.structuredContent, undefined);
+        }
         const content = response.content as Array<{ type: string; text?: string }>;
         assert.equal(content[0]?.type, "text");
         const payload = JSON.parse(content[0]?.text ?? "{}");
@@ -812,4 +820,266 @@ test("all tool failures use isError content without output-schema mismatch", asy
       await server.close();
     }
   }
+});
+
+
+// ============================================================================
+// P0-FIX1-CLOSURE1: MCP final-response contract tests
+// ============================================================================
+
+const PUBLISH_FAILURE_DETAILS: Record<string, unknown> = {
+  status: "error",
+  error_code: "zotero_direction_b_production_index_publish_failed",
+  message: "Direction-B derived index publish failed.",
+  error_stage: "publish_started",
+  publish_substage: "vector_store_retire",
+  cause_type: "PermissionError",
+  cause_message: "[WinError 32] The process cannot access the file",
+  cause_errno: 13,
+  cause_winerror: 32,
+  cause_filename: "C:\\staging\\retrieval_fts_v1.db",
+  cause_filename2: "C:\\production\\retrieval_fts_v1.db",
+  rollback_attempted: true,
+  rollback_completed: true,
+  writes_performed: true,
+  token_consumed: true,
+  safe_to_retry: false,
+  replayed_receipt: false,
+  operation_in_progress: false,
+};
+
+test("errorToolResult propagates token_consumed from backend details", () => {
+  const err = new NotebookBackendError(
+    "import failed",
+    500,
+    "zotero_direction_b_production_index_publish_failed",
+    {
+      token_consumed: true,
+      writes_performed: true,
+      safe_to_retry: false,
+    },
+  );
+  const result = errorToolResult(err, {
+    tool: "import_document",
+    writeOperation: true,
+  });
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.token_consumed, true);
+  assert.equal(payload.writes_performed, true);
+  assert.equal(payload.safe_to_retry, false);
+});
+
+test("errorToolResult preserves publish_substage and cause fields", () => {
+  const err = new NotebookBackendError(
+    "import failed",
+    500,
+    "zotero_direction_b_production_index_publish_failed",
+    PUBLISH_FAILURE_DETAILS,
+  );
+  const result = errorToolResult(err, {
+    tool: "import_document",
+    writeOperation: true,
+  });
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.publish_substage, "vector_store_retire");
+  assert.equal(payload.cause_type, "PermissionError");
+  assert.equal(payload.cause_errno, 13);
+  assert.equal(payload.cause_winerror, 32);
+  assert.equal(payload.cause_filename, "C:\\staging\\retrieval_fts_v1.db");
+  assert.equal(payload.cause_filename2, "C:\\production\\retrieval_fts_v1.db");
+  assert.equal(payload.rollback_attempted, true);
+  assert.equal(payload.rollback_completed, true);
+  assert.equal(payload.error_stage, "publish_started");
+});
+
+test("errorToolResult backend null fields stay null, not coerced to true", () => {
+  const err = new NotebookBackendError(
+    "partial failure",
+    500,
+    "zotero_direction_b_production_index_publish_failed",
+    {
+      token_consumed: null,
+      writes_performed: true,
+      publish_substage: null,
+      cause_errno: null,
+    },
+  );
+  const result = errorToolResult(err, {
+    tool: "import_document",
+    writeOperation: true,
+  });
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.token_consumed, null);
+  assert.equal(payload.writes_performed, true);
+  assert.equal(payload.publish_substage, null);
+  assert.equal(payload.cause_errno, null);
+});
+
+test("errorToolResult defaults token_consumed to null without backend details", () => {
+  // Old-style NotebookBackendError without details (backward compat)
+  const err = new NotebookBackendError(
+    "generic backend error",
+    500,
+    "BACKEND_UNAVAILABLE",
+  );
+  const result = errorToolResult(err, {
+    tool: "import_document",
+    writeOperation: true,
+  });
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.token_consumed, null);
+  assert.equal(payload.writes_performed, null);
+  assert.equal(payload.publish_substage, null);
+});
+
+test("errorToolResult non-write operations omit token_consumed", () => {
+  const err = new NotebookBackendError("search error", 503, "index_unavailable");
+  const result = errorToolResult(err, { tool: "search" });
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.token_consumed, undefined);
+  assert.equal(payload.writes_performed, false);
+});
+
+test("errorToolResult replayed_receipt propagated from backend", () => {
+  const err = new NotebookBackendError(
+    "replay",
+    500,
+    "zotero_direction_b_production_index_publish_failed",
+    {
+      token_consumed: true,
+      writes_performed: true,
+      replayed_receipt: true,
+      rollback_attempted: true,
+      rollback_completed: true,
+    },
+  );
+  const result = errorToolResult(err, {
+    tool: "import_document",
+    writeOperation: true,
+  });
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.replayed_receipt, true);
+  assert.equal(payload.token_consumed, true);
+});
+
+test("errorToolResult non-NotebookBackendError uses safe defaults", () => {
+  const err = new TypeError("network error");
+  const result = errorToolResult(err, {
+    tool: "import_document",
+    writeOperation: true,
+  });
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.token_consumed, null);
+  assert.equal(payload.writes_performed, null);
+  assert.equal(payload.error_code, "BACKEND_RESPONSE_INVALID");
+  assert.equal(payload.publish_substage, null);
+});
+
+test("registered import_document returns the complete structured failure contract", async () => {
+  class FailingImportClient extends MockNotebookClient {
+    override async importDocument(
+      _input: Parameters<MockNotebookClient["importDocument"]>[0],
+    ): Promise<never> {
+      throw new NotebookBackendError(
+        "private backend failure",
+        500,
+        "zotero_direction_b_production_index_publish_failed",
+        PUBLISH_FAILURE_DETAILS,
+      );
+    }
+  }
+
+  const server = createNotebookMcpServer({
+    client: new FailingImportClient(),
+    widget: { html: "<html></html>" },
+  });
+  const client = new Client({ name: "import-contract-test", version: "0.1.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const response = await client.callTool({
+      name: "import_document",
+      arguments: { confirmation_token: "i".repeat(40), confirmed: true },
+    });
+    assert.equal(response.isError, true);
+    assert.ok(response.structuredContent);
+    const structured = response.structuredContent as Record<string, unknown>;
+    const content = response.content as Array<{ type: string; text?: string }>;
+    const parsed = JSON.parse(content[0]?.text ?? "{}");
+    assert.deepEqual(parsed, structured);
+    assert.equal(structured.token_consumed, true);
+    assert.equal(structured.writes_performed, true);
+    assert.equal(structured.safe_to_retry, false);
+    assert.equal(structured.publish_substage, "vector_store_retire");
+    assert.equal(structured.cause_type, "PermissionError");
+    assert.equal(structured.cause_errno, 13);
+    assert.equal(structured.cause_winerror, 32);
+    assert.equal(structured.cause_filename, "C:\\staging\\retrieval_fts_v1.db");
+    assert.equal(structured.cause_filename2, "C:\\production\\retrieval_fts_v1.db");
+    assert.equal(structured.rollback_attempted, true);
+    assert.equal(structured.rollback_completed, true);
+    assert.equal(structured.replayed_receipt, false);
+    assert.equal(structured.operation_in_progress, false);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("import_document error contract preserves explicit null fields", () => {
+  const result = errorToolResult(
+    new NotebookBackendError("failure", 500, "import_document_failed", {
+      token_consumed: null,
+      writes_performed: null,
+      safe_to_retry: null,
+      replayed_receipt: null,
+      operation_in_progress: null,
+      publish_substage: null,
+      cause_type: null,
+      cause_message: null,
+      cause_errno: null,
+      cause_winerror: null,
+      cause_filename: null,
+      cause_filename2: null,
+      rollback_attempted: null,
+      rollback_completed: null,
+      error_stage: null,
+    }),
+    { tool: "import_document", writeOperation: true },
+  );
+  const payload = JSON.parse(result.content[0].text);
+  for (const key of [
+    "token_consumed",
+    "writes_performed",
+    "safe_to_retry",
+    "replayed_receipt",
+    "operation_in_progress",
+    "publish_substage",
+    "cause_type",
+    "cause_message",
+    "cause_errno",
+    "cause_winerror",
+    "cause_filename",
+    "cause_filename2",
+    "rollback_attempted",
+    "rollback_completed",
+    "error_stage",
+  ]) {
+    assert.equal(payload[key], null, `${key} preserves backend null`);
+  }
+});
+
+test("import_document final cause_message redacts token and bearer secrets", () => {
+  const secret = "AbCdEf.gh_IJ~kl+MN/op=QR-stuvwxyz123456";
+  const result = errorToolResult(
+    new NotebookBackendError("failure", 500, "import_document_failed", {
+      cause_message: `confirmation_token=TOP_SECRET Bearer ${secret}`,
+    }),
+    { tool: "import_document", writeOperation: true },
+  );
+  const raw = result.content[0].text;
+  assert.doesNotMatch(raw, /TOP_SECRET/);
+  assert.equal(raw.includes(secret), false);
+  assert.match(raw, /\[REDACTED\]/);
 });

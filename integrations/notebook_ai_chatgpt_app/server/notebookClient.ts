@@ -34,12 +34,19 @@ export interface NotebookClientOptions {
 export class NotebookBackendError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly details: Record<string, unknown> | null;
 
-  constructor(message: string, status: number, code = "NOTEBOOK_BACKEND_ERROR") {
+  constructor(
+    message: string,
+    status: number,
+    code = "NOTEBOOK_BACKEND_ERROR",
+    details: Record<string, unknown> | null = null,
+  ) {
     super(message);
     this.name = "NotebookBackendError";
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -249,6 +256,7 @@ export class NotebookClient {
       if (!response.ok) {
         let detail = response.statusText || "Backend request failed";
         let code = "NOTEBOOK_BACKEND_ERROR";
+        let backendDetails: Record<string, unknown> | null = null;
         try {
           const parsed = JSON.parse(raw) as {
             detail?: unknown;
@@ -257,9 +265,14 @@ export class NotebookClient {
             error_code?: unknown;
           };
           if (parsed.detail && typeof parsed.detail === "object" && !Array.isArray(parsed.detail)) {
-            const structured = parsed.detail as { message?: unknown; code?: unknown; error_code?: unknown; error?: unknown };
+            const structured = parsed.detail as Record<string, unknown>;
             detail = typeof structured.message === "string" ? structured.message : detail;
             code = String(structured.error_code ?? structured.code ?? structured.error ?? code);
+            // Keep only the structured fields that the MCP import error
+            // contract is allowed to propagate.  Request headers, raw
+            // confirmation tokens, and arbitrary backend fields are never
+            // retained on the adapter error.
+            backendDetails = backendErrorDetails(structured);
           } else {
             detail = typeof parsed.detail === "string"
               ? parsed.detail
@@ -271,7 +284,7 @@ export class NotebookClient {
         } catch {
           // Non-JSON backend failures use the generic, privacy-safe contract.
         }
-        throw new NotebookBackendError(detail, response.status, code);
+        throw new NotebookBackendError(detail, response.status, code, backendDetails);
       }
 
       const contentType = response.headers.get("content-type") ?? "";
@@ -420,4 +433,35 @@ function invalidBackendResponse(): NotebookBackendError {
     502,
     "BACKEND_RESPONSE_INVALID",
   );
+}
+
+const BACKEND_ERROR_DETAIL_FIELDS = [
+  "operation_in_progress",
+  "token_consumed",
+  "writes_performed",
+  "safe_to_retry",
+  "replayed_receipt",
+  "publish_substage",
+  "cause_type",
+  "cause_message",
+  "cause_errno",
+  "cause_winerror",
+  "cause_filename",
+  "cause_filename2",
+  "rollback_attempted",
+  "rollback_completed",
+  "error_stage",
+  "retryable",
+] as const;
+
+function backendErrorDetails(
+  structured: Record<string, unknown>,
+): Record<string, unknown> {
+  const details: Record<string, unknown> = {};
+  for (const key of BACKEND_ERROR_DETAIL_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(structured, key)) {
+      details[key] = structured[key];
+    }
+  }
+  return details;
 }

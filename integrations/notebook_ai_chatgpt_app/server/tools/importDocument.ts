@@ -20,14 +20,31 @@ export const importDocumentInputShape = {
 export const importDocumentInputSchema = z.object(importDocumentInputShape);
 export const importDocumentOutputShape = {
   status: z.string(),
-  document_id: z.number().int().positive().nullable(),
-  title: z.string(),
-  document_type: z.string(),
-  chunk_count: z.number().int().nonnegative(),
-  duplicate_status: z.string(),
-  error_code: z.string().nullable(),
-  already_completed: z.boolean(),
-  replayed_receipt: z.boolean(),
+  tool: z.string().optional(),
+  document_id: z.number().int().positive().nullable().optional(),
+  title: z.string().optional(),
+  document_type: z.string().optional(),
+  chunk_count: z.number().int().nonnegative().optional(),
+  duplicate_status: z.string().optional(),
+  error_code: z.string().nullable().optional(),
+  message: z.string().optional(),
+  retryable: z.boolean().nullable().optional(),
+  already_completed: z.boolean().optional(),
+  replayed_receipt: z.boolean().nullable().optional(),
+  operation_in_progress: z.boolean().nullable().optional(),
+  token_consumed: z.boolean().nullable().optional(),
+  writes_performed: z.boolean().nullable(),
+  safe_to_retry: z.boolean().nullable().optional(),
+  publish_substage: z.string().nullable().optional(),
+  cause_type: z.string().nullable().optional(),
+  cause_message: z.string().nullable().optional(),
+  cause_errno: z.number().int().nullable().optional(),
+  cause_winerror: z.number().int().nullable().optional(),
+  cause_filename: z.string().nullable().optional(),
+  cause_filename2: z.string().nullable().optional(),
+  rollback_attempted: z.boolean().nullable().optional(),
+  rollback_completed: z.boolean().nullable().optional(),
+  error_stage: z.string().nullable().optional(),
 };
 
 export async function runImportDocumentTool(client: NotebookClient, rawInput: unknown) {
@@ -45,7 +62,11 @@ export async function runImportDocumentTool(client: NotebookClient, rawInput: un
       duration_ms: elapsedMilliseconds(startedAt),
       error_code: errorCode(error),
     });
-    return errorToolResult(error, { tool: "import_document", writeOperation: true });
+    return errorToolResult(error, {
+      tool: "import_document",
+      writeOperation: true,
+      includeStructuredContent: true,
+    });
   } finally {
     if (confirmationToken) {
       await releaseStagedImport(confirmationToken);

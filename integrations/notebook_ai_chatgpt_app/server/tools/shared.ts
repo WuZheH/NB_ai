@@ -92,10 +92,15 @@ const PUBLIC_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
 
 export function errorToolResult(
   error: unknown,
-  options: { tool?: string; writeOperation?: boolean } = {},
+  options: {
+    tool?: string;
+    writeOperation?: boolean;
+    includeStructuredContent?: boolean;
+  } = {},
 ): {
   isError: true;
   content: Array<{ type: "text"; text: string }>;
+  structuredContent?: Record<string, unknown>;
 } {
   const code = errorCode(error);
   const message =
@@ -128,21 +133,90 @@ export function errorToolResult(
         ? "Search high-quality retrieval model is unavailable."
       : "Search request failed.");
   const writeOperation = options.writeOperation === true;
+
+  // Preserve backend details when available (NotebookBackendError carries
+  // the full structured error dict from the Python API).
+  const backendDetails: Record<string, unknown> =
+    (error instanceof NotebookBackendError && error.details) ? error.details : {};
+
+  const nullableBoolean = (
+    key: string,
+    fallback: boolean | null,
+  ): boolean | null => {
+    if (!Object.prototype.hasOwnProperty.call(backendDetails, key)) {
+      return fallback;
+    }
+    const value = backendDetails[key];
+    return value === null || typeof value === "boolean" ? value : fallback;
+  };
+  const nullableInteger = (key: string): number | null => {
+    const value = backendDetails[key];
+    return value === null || (typeof value === "number" && Number.isInteger(value))
+      ? value
+      : null;
+  };
+  const nullableSafeString = (key: string): string | null => {
+    const value = backendDetails[key];
+    if (value === null) return null;
+    if (typeof value !== "string") return null;
+    return redactErrorSecrets(value).slice(0, 512);
+  };
+
   const structuredContent = {
     status: "error" as const,
     tool: options.tool ?? "unknown",
     error_code: code,
     message,
-    retryable: code === "BACKEND_TIMEOUT" || code === "BACKEND_UNAVAILABLE",
-    writes_performed: writeOperation ? null : false,
+    retryable: nullableBoolean(
+      "retryable",
+      code === "BACKEND_TIMEOUT" || code === "BACKEND_UNAVAILABLE",
+    ),
+    writes_performed: nullableBoolean(
+      "writes_performed",
+      writeOperation ? null : false,
+    ),
     ...(writeOperation
       ? {
-          token_consumed: null,
-          safe_to_retry: false,
+          token_consumed: nullableBoolean("token_consumed", null),
+          safe_to_retry: nullableBoolean("safe_to_retry", false),
+          replayed_receipt: nullableBoolean("replayed_receipt", false),
+          operation_in_progress: nullableBoolean("operation_in_progress", false),
+          publish_substage: nullableSafeString("publish_substage"),
+          cause_type: nullableSafeString("cause_type"),
+          cause_message: nullableSafeString("cause_message"),
+          cause_errno: nullableInteger("cause_errno"),
+          cause_winerror: nullableInteger("cause_winerror"),
+          cause_filename: nullableSafeString("cause_filename"),
+          cause_filename2: nullableSafeString("cause_filename2"),
+          rollback_attempted: nullableBoolean("rollback_attempted", null),
+          rollback_completed: nullableBoolean("rollback_completed", null),
+          error_stage: nullableSafeString("error_stage"),
         }
       : {}),
   };
-  return { isError: true, content: jsonContent(structuredContent) };
+  return {
+    isError: true,
+    content: jsonContent(structuredContent),
+    ...(options.includeStructuredContent === true
+      ? { structuredContent }
+      : {}),
+  };
+}
+
+function redactErrorSecrets(value: string): string {
+  return value
+    .replace(
+      /confirmation[_\-\s]?token(?![ _\-]?digest\b)[=:\s]+[^\s,;)\]}]+/gi,
+      "confirmation_token=[REDACTED]",
+    )
+    .replace(
+      /authorization:\s*bearer\s+[A-Za-z0-9._~+/=\-]+/gi,
+      "authorization: Bearer [REDACTED]",
+    )
+    .replace(
+      /bearer\s+[A-Za-z0-9._~+/=\-]{20,}/gi,
+      "bearer [REDACTED]",
+    );
 }
 
 export function errorCode(error: unknown): string {

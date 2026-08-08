@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,7 +20,10 @@ from app.services import (
     zotero_direction_b_import_service,
     zotero_selected_book_preview_service,
 )
-from app.services.import_operation_journal import ImportOperationJournalStore
+from app.services.import_operation_journal import (
+    ImportOperationJournalStore,
+    JournalConflictError,
+)
 from app.services.retrieval import fts_index_service
 from scripts.migrations import (
     migrate_zotero_personal_notes_schema
@@ -3249,8 +3254,14 @@ def test_publish_started_callback_failure_does_not_restore_or_touch_derived(
     assert fixture["db_path"].read_bytes() == before_db
     assert _fixture_derived_fingerprints(fixture) == before_derived
     assert error.value.details["publish_attempted"] is False
+    assert error.value.details["publish_substage"] is None
     assert error.value.details["rollback_attempted"] is True
     assert error.value.details["rollback_completed"] is True
+    # callback failure must not produce fake cause_filename / os.replace substage
+    assert error.value.details.get("cause_filename") is None
+    assert error.value.details.get("cause_filename2") is None
+    assert error.value.details.get("cause_winerror") is None
+    assert error.value.details.get("cause_errno") is None
 
 
 def _chat_direction_case(
@@ -3659,3 +3670,986 @@ def test_cleanup_failure_does_not_mask_production_db_rollback_failure(
         "zotero_direction_b_"
         "production_db_rollback_failed"
     )
+
+
+# ============================================================================
+# P0-FIX1: publish substage / cause metadata / fault injection tests
+# ============================================================================
+
+
+_PUBLISH_SUBSTAGES = [
+    "fts_index_replace",
+    "fts_manifest_replace",
+    "vector_store_retire",
+    "vector_store_publish",
+    "vector_manifest_replace",
+    "native_note_vector_retire",
+    "native_note_vector_publish",
+    "native_note_vector_cache_invalidate",
+]
+
+
+_ERROR_BEFORE_SUBSTAGE: dict[str, set[str]] = {
+    # substage -> set of substage names that must have run before it fails
+    "fts_index_replace": set(),
+    "fts_manifest_replace": {"fts_index_replace"},
+    "vector_store_retire": {"fts_index_replace", "fts_manifest_replace"},
+    "vector_store_publish": {"fts_index_replace", "fts_manifest_replace"},
+    "vector_manifest_replace": {
+        "fts_index_replace", "fts_manifest_replace", "vector_store_publish",
+    },
+    "native_note_vector_retire": {
+        "fts_index_replace", "fts_manifest_replace",
+        "vector_store_publish", "vector_manifest_replace",
+    },
+    "native_note_vector_publish": {
+        "fts_index_replace", "fts_manifest_replace",
+        "vector_store_publish", "vector_manifest_replace",
+    },
+    "native_note_vector_cache_invalidate": {
+        "fts_index_replace", "fts_manifest_replace",
+        "vector_store_publish", "vector_manifest_replace",
+        "native_note_vector_publish",
+    },
+}
+
+
+def _raise_at_substage(substage: str):
+    """Return a callable that simulates a publish failure at *substage*."""
+    from app.services.zotero_direction_b_import_service import (
+        DirectionBDerivedPublishError,
+    )
+
+    def fail(**kwargs):
+        _fk = kwargs
+        if "fts_index_replace" in _ERROR_BEFORE_SUBSTAGE[substage]:
+            os.replace(_fk["staging_fts_index"], _fk["fts_index_path"])
+        if "fts_manifest_replace" in _ERROR_BEFORE_SUBSTAGE[substage]:
+            os.replace(_fk["staging_fts_manifest"], _fk["fts_manifest_path"])
+        if "vector_store_retire" in _ERROR_BEFORE_SUBSTAGE[substage]:
+            _fk["vector_store_path"].parent.mkdir(parents=True, exist_ok=True)
+            if _fk["vector_store_path"].exists():
+                retired = _fk["staging_vector_store"].parent / ".retired-lancedb"
+                os.replace(_fk["vector_store_path"], retired)
+        if "vector_store_publish" in _ERROR_BEFORE_SUBSTAGE[substage]:
+            _fk["vector_store_path"].parent.mkdir(parents=True, exist_ok=True)
+            if _fk["vector_store_path"].exists():
+                retired = _fk["staging_vector_store"].parent / ".retired-lancedb"
+                os.replace(_fk["vector_store_path"], retired)
+            os.replace(_fk["staging_vector_store"], _fk["vector_store_path"])
+        if "vector_manifest_replace" in _ERROR_BEFORE_SUBSTAGE[substage]:
+            if _fk["staging_vector_manifest"].is_file():
+                os.replace(
+                    _fk["staging_vector_manifest"],
+                    _fk["vector_manifest_path"],
+                )
+        if "native_note_vector_retire" in _ERROR_BEFORE_SUBSTAGE[substage]:
+            if _fk["staging_zotero_note_vector_path"].is_dir():
+                retired_note = (
+                    _fk["staging_zotero_note_vector_path"].parent
+                    / ".retired-zotero-user-notes"
+                )
+                if _fk["zotero_note_vector_path"].exists():
+                    os.replace(_fk["zotero_note_vector_path"], retired_note)
+        if "native_note_vector_publish" in _ERROR_BEFORE_SUBSTAGE[substage]:
+            if _fk["staging_zotero_note_vector_path"].is_dir():
+                retired_note = (
+                    _fk["staging_zotero_note_vector_path"].parent
+                    / ".retired-zotero-user-notes"
+                )
+                if _fk["zotero_note_vector_path"].exists():
+                    os.replace(_fk["zotero_note_vector_path"], retired_note)
+                os.replace(
+                    _fk["staging_zotero_note_vector_path"],
+                    _fk["zotero_note_vector_path"],
+                )
+
+        raise DirectionBDerivedPublishError(
+            publish_substage=substage,
+            original_exception=PermissionError(f"fixture {substage} denied"),
+        )
+
+    return fail
+
+
+@pytest.mark.parametrize("substage", _PUBLISH_SUBSTAGES)
+def test_publish_substage_failure_persists_receipt_with_substage_and_cause(
+    tmp_path, monkeypatch, substage
+):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        _raise_at_substage(substage),
+    )
+    with pytest.raises(chat_tool_service.ChatToolError) as exc:
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+
+    journal = _chat_journal(runtime, token)
+    assert journal.status == "failed"
+    assert journal.completion_receipt["kind"] == "failure"
+
+    details = journal.completion_receipt["details"]
+    assert details["error_stage"] == "publish_started"
+    assert details["publish_substage"] == substage
+    assert details["cause_type"] is not None
+    assert details["cause_message"] is not None
+    assert details["rollback_attempted"] is True
+    assert details["rollback_completed"] is True
+    assert details["writes_performed"] is True
+    assert details["safe_to_retry"] is False
+
+    pr = journal.completion_receipt["public_response"]
+    assert pr["token_consumed"] is True
+    assert pr["writes_performed"] is True
+    assert pr["safe_to_retry"] is False
+    assert pr["error_stage"] == "publish_started"
+    assert pr["publish_substage"] == substage
+    assert pr.get("cause_type") is not None
+
+    assert journal.error["error_stage"] == "publish_started"
+    assert journal.error.get("publish_substage") == substage
+
+    assert exc.value.details["error_stage"] == "publish_started"
+    assert exc.value.details.get("publish_substage") == substage
+    assert exc.value.details["rollback_attempted"] is True
+    assert exc.value.details["rollback_completed"] is True
+    assert exc.value.details["writes_performed"] is True
+    # token_consumed is in public_response and receipt, not leaked to service-layer details
+    assert pr["token_consumed"] is True
+
+
+def test_publish_substage_failure_receipt_replay_preserves_fields(
+    tmp_path, monkeypatch
+):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        _raise_at_substage("fts_manifest_replace"),
+    )
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+
+    journal = _chat_journal(runtime, token)
+    assert journal.status == "failed"
+    details = journal.completion_receipt["details"]
+    assert details["publish_substage"] == "fts_manifest_replace"
+    assert details["cause_type"] == "PermissionError"
+
+    chat_tool_service.reset_chat_tool_state_for_tests()
+
+    with pytest.raises(chat_tool_service.ChatToolError) as replay:
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+
+    assert replay.value.details["replayed_receipt"] is True
+    assert replay.value.details["publish_substage"] == "fts_manifest_replace"
+    assert replay.value.details.get("cause_type") == "PermissionError"
+    assert replay.value.details["rollback_attempted"] is True
+    assert replay.value.details["rollback_completed"] is True
+    assert replay.value.details["writes_performed"] is True
+    # token_consumed verified via journal — not leaked to service-layer ChatToolError
+
+
+def test_publish_failure_windows_style_exception_preserved_in_journal(
+    tmp_path, monkeypatch
+):
+    """PermissionError with winerror=32 preserved in journal / receipt / replay."""
+    from app.services.zotero_direction_b_import_service import (
+        DirectionBDerivedPublishError,
+    )
+
+    exc = PermissionError("fixture win32 sharing violation")
+    exc.errno = 13
+    exc.winerror = 32
+    exc.filename = r"C:\staging\retrieval_fts_v1.db"
+    exc.filename2 = r"C:\production\retrieval_fts_v1.db"
+
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+
+    def windows_fail(**kwargs):
+        raise DirectionBDerivedPublishError(
+            publish_substage="fts_index_replace",
+            original_exception=exc,
+        )
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        windows_fail,
+    )
+
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+
+    journal = _chat_journal(runtime, token)
+    assert journal.status == "failed"
+
+    assert journal.error["publish_substage"] == "fts_index_replace"
+
+    details = journal.completion_receipt["details"]
+    assert details["publish_substage"] == "fts_index_replace"
+    assert details["cause_type"] == "PermissionError"
+    assert details["cause_errno"] == 13
+    assert details["cause_winerror"] == 32
+    assert details["cause_filename"] is not None
+    assert details["cause_filename2"] is not None
+
+    pr = journal.completion_receipt["public_response"]
+    assert pr["publish_substage"] == "fts_index_replace"
+    assert pr["cause_type"] == "PermissionError"
+    assert pr["cause_errno"] == 13
+    assert pr["cause_winerror"] == 32
+
+    journal_raw = (
+        runtime.resolved_import_journal_dir()
+        / f"{journal.operation_id}.json"
+    ).read_text(encoding="utf-8")
+    assert "Traceback" not in journal_raw
+
+    chat_tool_service.reset_chat_tool_state_for_tests()
+    with pytest.raises(chat_tool_service.ChatToolError) as replay:
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+
+    assert replay.value.details["publish_substage"] == "fts_index_replace"
+    assert replay.value.details["cause_type"] == "PermissionError"
+    assert replay.value.details["cause_winerror"] == 32
+    assert replay.value.details["replayed_receipt"] is True
+
+
+def test_publish_oserror_fields_extracted_correctly(tmp_path, monkeypatch):
+    """OSError with errno but no winerror — null fields stay null."""
+    from app.services.zotero_direction_b_import_service import (
+        DirectionBDerivedPublishError,
+    )
+
+    exc = OSError("fixture os error")
+    exc.errno = 5
+    exc.winerror = None
+    exc.filename = "/tmp/source.db"
+    exc.filename2 = None
+
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+
+    def oserror_fail(**kwargs):
+        raise DirectionBDerivedPublishError(
+            publish_substage="vector_manifest_replace",
+            original_exception=exc,
+        )
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        oserror_fail,
+    )
+
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+
+    journal = _chat_journal(runtime, token)
+    details = journal.completion_receipt["details"]
+    assert details["publish_substage"] == "vector_manifest_replace"
+    assert details["cause_type"] == "OSError"
+    assert details["cause_errno"] == 5
+    assert details["cause_winerror"] is None
+    assert details["cause_filename"] is not None
+    assert details["cause_filename2"] is None
+
+
+def test_non_oserror_exception_cause_metadata(tmp_path, monkeypatch):
+    """RuntimeError has cause_type/message but null OS fields."""
+    from app.services.zotero_direction_b_import_service import (
+        DirectionBDerivedPublishError,
+    )
+
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+
+    def runtime_fail(**kwargs):
+        raise DirectionBDerivedPublishError(
+            publish_substage="native_note_vector_cache_invalidate",
+            original_exception=RuntimeError("cache lock contention"),
+        )
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        runtime_fail,
+    )
+
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+
+    journal = _chat_journal(runtime, token)
+    details = journal.completion_receipt["details"]
+    assert details["publish_substage"] == "native_note_vector_cache_invalidate"
+    assert details["cause_type"] == "RuntimeError"
+    assert details["cause_message"] is not None
+    assert details["cause_errno"] is None
+    assert details["cause_winerror"] is None
+    assert details["cause_filename"] is None
+    assert details["cause_filename2"] is None
+
+
+def test_callback_failure_replay_does_not_reinvoke_importer(
+    tmp_path, monkeypatch
+):
+    """Callback failure at publish_started must not re-execute on retry."""
+    fixture = _install_production_shaped_runtime(
+        tmp_path, monkeypatch, fts_ready=True
+    )
+    importer_calls = []
+    callback_calls = []
+
+    def counting_importer(*, preview, db_path):
+        importer_calls.append(True)
+        return body_importer(preview=preview, db_path=db_path)
+
+    def counting_callback(stage, _metadata):
+        callback_calls.append(stage)
+        if stage == "publish_started":
+            raise RuntimeError("fixture callback failure")
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ):
+        zotero_direction_b_import_service.commit_selected_book_import_to_production(
+            preview_token="p" * 40,
+            body_importer=counting_importer,
+            stage_callback=counting_callback,
+        )
+
+    first_count = len(importer_calls)
+    assert first_count == 1
+    assert "publish_started" in callback_calls
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        zotero_direction_b_import_service.commit_selected_book_import_to_production(
+            preview_token="p" * 40,
+            body_importer=counting_importer,
+            stage_callback=counting_callback,
+        )
+
+    assert error.value.details["error_stage"] == "publish_started"
+    assert error.value.details["publish_attempted"] is False
+    assert error.value.details["publish_substage"] is None
+
+
+# ============================================================================
+# P0-FIX1-CLOSURE1: cause_message redaction tests
+# ============================================================================
+
+
+class TestCauseMessageRedaction:
+    def test_confirmation_token_redacted(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        exc = RuntimeError("import failed confirmation_token=abc123def456ghi789 secret message")
+        msg = _safe_exception_message(exc)
+        assert "abc123" not in msg
+        assert "[REDACTED]" in msg
+        assert "import failed" in msg
+
+    def test_authorization_bearer_redacted(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        exc = RuntimeError("request failed Authorization: Bearer sk-12345abcdef67890 endpoint")
+        msg = _safe_exception_message(exc)
+        assert "sk-12345" not in msg
+        assert "[REDACTED]" in msg
+        assert "request failed" in msg
+        assert "endpoint" in msg
+
+    def test_api_key_redacted(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        exc = RuntimeError("api_key=sk-proj-12345 call failed")
+        msg = _safe_exception_message(exc)
+        assert "sk-proj-12345" not in msg
+        assert "[REDACTED]" in msg
+
+    def test_access_token_redacted(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        exc = RuntimeError("auth error access_token=ya29.abcdef123456")
+        msg = _safe_exception_message(exc)
+        assert "ya29.abcdef123456" not in msg
+        assert "[REDACTED]" in msg
+
+    def test_secret_redacted(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        exc = RuntimeError("secret=my-super-secret-value-here")
+        msg = _safe_exception_message(exc)
+        assert "my-super-secret-value-here" not in msg
+        assert "[REDACTED]" in msg
+
+    def test_password_redacted(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        exc = RuntimeError("connection failed password=admin123 host=localhost")
+        msg = _safe_exception_message(exc)
+        assert "admin123" not in msg
+        assert "[REDACTED]" in msg
+        assert "host=localhost" in msg
+
+    def test_case_insensitive_match(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        exc = RuntimeError("CONFIRMATION_TOKEN=sEcReT123 AND Access_Token=XyZ789")
+        msg = _safe_exception_message(exc)
+        assert "sEcReT123" not in msg
+        assert "XyZ789" not in msg
+        assert "[REDACTED]" in msg
+
+    def test_token_followed_by_comma_semicolon_paren(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        exc = RuntimeError("api_key=abc123, next_field; api_key=def456) end")
+        msg = _safe_exception_message(exc)
+        assert "abc123" not in msg
+        assert "def456" not in msg
+        assert "[REDACTED]" in msg
+        assert "next_field" in msg
+
+    def test_normal_winerror_message_not_destroyed(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        exc = OSError("[WinError 32] The process cannot access the file because it is being used by another process")
+        msg = _safe_exception_message(exc)
+        assert "WinError 32" in msg
+        assert "process cannot access" in msg
+        assert "[REDACTED]" not in msg
+
+    def test_normal_path_in_message_preserved(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        exc = OSError("[Errno 13] Permission denied: '/tmp/staging/file.db'")
+        msg = _safe_exception_message(exc)
+        assert "/tmp/staging/file.db" in msg
+        assert "Permission denied" in msg
+        assert "[REDACTED]" not in msg
+
+    def test_long_message_redacted_then_truncated(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        long_secret = "confirmation_token=" + ("x" * 600)
+        exc = RuntimeError(long_secret)
+        msg = _safe_exception_message(exc)
+        assert msg is not None
+        assert len(msg) <= 512
+        assert "[REDACTED]" in msg
+
+    def test_secrets_not_in_journal_or_replay(self, tmp_path, monkeypatch):
+        """End-to-end: secret in cause_message must not reach journal."""
+        from app.services.zotero_direction_b_import_service import (
+            DirectionBDerivedPublishError,
+        )
+        bearer_secret = "AbCdEf.gh_IJ~kl+MN/op=QR-stuvwxyz123456"
+        exc_with_secret = PermissionError(
+            "os.replace failed confirmation_token=TOP_SECRET_12345 "
+            f"Bearer {bearer_secret} file in use"
+        )
+        exc_with_secret.errno = 13
+        exc_with_secret.winerror = 32
+
+        runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+
+        def secret_fail(**kwargs):
+            raise DirectionBDerivedPublishError(
+                publish_substage="fts_index_replace",
+                original_exception=exc_with_secret,
+            )
+
+        monkeypatch.setattr(
+            zotero_direction_b_import_service,
+            "_publish_staged_derived_indexes",
+            secret_fail,
+        )
+
+        with pytest.raises(chat_tool_service.ChatToolError):
+            chat_tool_service.import_document(
+                confirmation_token=token, confirmed=True, runtime=runtime
+            )
+
+        journal = _chat_journal(runtime, token)
+        details = journal.completion_receipt["details"]
+        cause_msg = details.get("cause_message") or ""
+
+        # Secret must not appear in journal
+        assert "TOP_SECRET_12345" not in cause_msg
+        assert bearer_secret not in cause_msg
+        assert "[REDACTED]" in cause_msg
+        # Diagnostic info must remain
+        assert "os.replace" in cause_msg or "in use" in cause_msg
+
+        # raw journal file must not contain the secret
+        journal_raw = (
+            runtime.resolved_import_journal_dir()
+            / f"{journal.operation_id}.json"
+        ).read_text(encoding="utf-8")
+        assert "TOP_SECRET_12345" not in journal_raw
+        assert bearer_secret not in journal_raw
+
+        # Replay must also not leak
+        chat_tool_service.reset_chat_tool_state_for_tests()
+        with pytest.raises(chat_tool_service.ChatToolError) as replay:
+            chat_tool_service.import_document(
+                confirmation_token=token, confirmed=True, runtime=runtime
+            )
+        replay_msg = replay.value.details.get("cause_message") or ""
+        assert "TOP_SECRET_12345" not in replay_msg
+        assert bearer_secret not in replay_msg
+
+    def test_confirmation_token_digest_not_redacted(self):
+        """SHA256 digests for auditing must not be redacted."""
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        digest = "a" * 64
+        for label in (
+            "confirmation_token_digest",
+            "confirmation-token-digest",
+            "confirmation token digest",
+        ):
+            msg = _safe_exception_message(
+                RuntimeError(f"digest verification failed {label}={digest}")
+            )
+            assert digest in msg
+            assert "[REDACTED]" not in msg
+
+    @pytest.mark.parametrize(
+        "label",
+        (
+            "confirmation_token",
+            "confirmation-token",
+            "confirmation token",
+        ),
+    )
+    def test_confirmation_token_spellings_redacted(self, label):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        secret = "token-value.A_B~C+D/E=F-123456789"
+        msg = _safe_exception_message(RuntimeError(f"{label}={secret}, failed"))
+        assert secret not in msg
+        assert "[REDACTED]" in msg
+        assert msg.endswith(", failed")
+
+    def test_digest_and_real_token_in_same_message(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        digest = "b" * 64
+        secret = "real-token.A_B~C+D/E=F-123456789"
+        msg = _safe_exception_message(
+            RuntimeError(
+                f"confirmation_token_digest={digest}; "
+                f"confirmation_token={secret})"
+            )
+        )
+        assert digest in msg
+        assert secret not in msg
+        assert "[REDACTED]" in msg
+
+    def test_plain_bearer_extended_jwt_charset_redacted(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        secret = "AbCdEf.gh_IJ~kl+MN/op=QR-stuvwxyz123456"
+        msg = _safe_exception_message(RuntimeError(f"proxy Bearer {secret}; denied"))
+        assert secret not in msg
+        assert "bearer [redacted]" in msg.casefold()
+        assert msg.endswith("; denied")
+
+    def test_mixed_case_authorization_bearer_redacted(self):
+        from app.services.zotero_direction_b_import_service import _safe_exception_message
+
+        secret = "AbCdEf.gh_IJ~kl+MN/op=QR-stuvwxyz123456"
+        msg = _safe_exception_message(
+            RuntimeError(f"AUTHORIZATION: bEaReR {secret}) request failed")
+        )
+        assert secret not in msg
+        assert "[REDACTED]" in msg
+        assert msg.endswith(") request failed")
+
+
+# ============================================================================
+# P0-FIX1-CLOSURE1: token_consumed semantic tests
+# ============================================================================
+
+
+def test_token_consumed_present_in_failed_receipt_details(
+    tmp_path, monkeypatch
+):
+    """token_consumed=True must be in receipt details and public_response."""
+    from app.services.zotero_direction_b_import_service import (
+        DirectionBDerivedPublishError,
+    )
+
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            DirectionBDerivedPublishError(
+                publish_substage="fts_index_replace",
+                original_exception=PermissionError("fixture"),
+            )
+        ),
+    )
+
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+
+    journal = _chat_journal(runtime, token)
+    assert journal.status == "failed"
+    pr = journal.completion_receipt["public_response"]
+    assert pr["token_consumed"] is True
+    assert pr["writes_performed"] is True
+
+
+def test_token_consumed_survives_replay_for_failed_receipt(
+    tmp_path, monkeypatch
+):
+    """Replayed failure receipt must report token_consumed=True."""
+    from app.services.zotero_direction_b_import_service import (
+        DirectionBDerivedPublishError,
+    )
+
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            DirectionBDerivedPublishError(
+                publish_substage="fts_index_replace",
+                original_exception=PermissionError("fixture"),
+            )
+        ),
+    )
+
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+
+    chat_tool_service.reset_chat_tool_state_for_tests()
+
+    with pytest.raises(chat_tool_service.ChatToolError) as replay:
+        chat_tool_service.import_document(
+            confirmation_token=token, confirmed=True, runtime=runtime
+        )
+
+    assert replay.value.details["replayed_receipt"] is True
+    assert replay.value.details["token_consumed"] is True
+    assert replay.value.details["writes_performed"] is True
+
+
+def test_invalid_token_does_not_set_token_consumed_true(tmp_path, monkeypatch):
+    """Invalid/expired token raises ChatToolError before token is consumed."""
+    chat_tool_service.reset_chat_tool_state_for_tests()
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=tmp_path / "nonexistent.db",
+        data_dir=tmp_path / "data",
+        import_journal_dir=tmp_path / "journals",
+    )
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(chat_tool_service.ChatToolError) as exc:
+        chat_tool_service.import_document(
+            confirmation_token="invalid_token_that_does_not_exist_12345678",
+            confirmed=True,
+            runtime=runtime,
+        )
+
+    # The error should be about invalid/expired confirmation, not about token_consumed
+    details = exc.value.details
+    assert details.get("token_consumed") is not True
+    # safe_to_retry indicates the token was NOT consumed
+    assert details.get("safe_to_retry") is not True
+
+
+def test_confirmed_false_does_not_consume_token(tmp_path, monkeypatch):
+    """confirmed=False raises before token consumption."""
+    chat_tool_service.reset_chat_tool_state_for_tests()
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=tmp_path / "nonexistent.db",
+        data_dir=tmp_path / "data",
+    )
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(chat_tool_service.ChatToolError) as exc:
+        chat_tool_service.import_document(
+            confirmation_token="any_token_value_12345678901234567890",
+            confirmed=False,
+            runtime=runtime,
+        )
+
+    # confirmed=False should raise before token is consumed
+    assert exc.value.error_code == "chat_import_confirmation_required"
+    assert exc.value.details.get("token_consumed") is not True
+
+
+def test_successful_owner_claim_reports_token_consumed(tmp_path, monkeypatch):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+
+    result = chat_tool_service.import_document(
+        confirmation_token=token,
+        confirmed=True,
+        runtime=runtime,
+    )
+
+    assert result["token_consumed"] is True
+    assert result["writes_performed"] is True
+    assert chat_tool_service._token_digest(token) not in (
+        chat_tool_service._IMPORT_CONFIRMATIONS
+    )
+
+
+def test_new_import_journal_failure_after_claim_consumes_token(
+    tmp_path, monkeypatch
+):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        chat_tool_service,
+        "_new_import_journal",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("fixture")),
+    )
+
+    with pytest.raises(chat_tool_service.ChatToolError) as exc:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+
+    assert exc.value.error_code == "chat_import_post_claim_failed"
+    assert exc.value.details["token_consumed"] is True
+    assert exc.value.details["writes_performed"] is False
+    assert chat_tool_service._token_digest(token) not in (
+        chat_tool_service._IMPORT_CONFIRMATIONS
+    )
+
+
+def test_journal_store_create_failure_after_claim_consumes_token(
+    tmp_path, monkeypatch
+):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        ImportOperationJournalStore,
+        "create",
+        lambda self, record: (_ for _ in ()).throw(OSError("fixture")),
+    )
+
+    with pytest.raises(chat_tool_service.ChatToolError) as exc:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+
+    assert exc.value.error_code == "chat_import_journal_create_failed"
+    assert exc.value.details["token_consumed"] is True
+    assert exc.value.details["writes_performed"] is False
+
+
+def test_journal_conflict_without_replay_after_claim_consumes_token(
+    tmp_path, monkeypatch
+):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        ImportOperationJournalStore,
+        "create",
+        lambda self, record: (_ for _ in ()).throw(
+            JournalConflictError("fixture conflict")
+        ),
+    )
+
+    with pytest.raises(chat_tool_service.ChatToolError) as exc:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+
+    assert exc.value.error_code == "chat_import_journal_conflict"
+    assert exc.value.details["token_consumed"] is True
+    assert exc.value.details.get("writes_performed") is not True
+
+
+def _create_nonterminal_chat_journal(runtime, token):
+    digest = chat_tool_service._token_digest(token)
+    record = chat_tool_service._IMPORT_CONFIRMATIONS[digest]
+    journal, _audit = chat_tool_service._new_import_journal(
+        record=record,
+        token_digest=digest,
+    )
+    store = ImportOperationJournalStore(runtime.resolved_import_journal_dir())
+    return store, store.create(journal)
+
+
+def test_running_journal_reports_token_consumed(tmp_path, monkeypatch):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    store, journal = _create_nonterminal_chat_journal(runtime, token)
+    store.update(
+        journal.operation_id,
+        expected_revision=journal.revision,
+        expected_status=journal.status,
+        status="running",
+        stage="body_import_started",
+    )
+
+    result = chat_tool_service.import_document(
+        confirmation_token=token,
+        confirmed=True,
+        runtime=runtime,
+    )
+
+    assert result["operation_in_progress"] is True
+    assert result["token_consumed"] is True
+
+
+def test_committed_receipt_replay_reports_token_consumed(
+    tmp_path, monkeypatch
+):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    first = chat_tool_service.import_document(
+        confirmation_token=token,
+        confirmed=True,
+        runtime=runtime,
+    )
+    assert first["token_consumed"] is True
+    chat_tool_service.reset_chat_tool_state_for_tests()
+
+    replay = chat_tool_service.import_document(
+        confirmation_token=token,
+        confirmed=True,
+        runtime=runtime,
+    )
+
+    assert replay["replayed_receipt"] is True
+    assert replay["token_consumed"] is True
+    assert replay["writes_performed"] is True
+
+
+def test_orphaned_journal_reports_token_consumed(tmp_path, monkeypatch):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    store, journal = _create_nonterminal_chat_journal(runtime, token)
+    store.update(
+        journal.operation_id,
+        expected_revision=journal.revision,
+        expected_status=journal.status,
+        status="orphaned",
+        stage="body_import_started",
+        writes_performed=None,
+        error={"error_code": "import_owner_aborted"},
+    )
+
+    with pytest.raises(chat_tool_service.ChatToolError) as exc:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+
+    assert exc.value.error_code == "chat_import_operation_orphaned"
+    assert exc.value.details["token_consumed"] is True
+
+
+def test_failed_receipt_replay_only_merges_whitelisted_contract_fields(
+    tmp_path, monkeypatch
+):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_publish_staged_derived_indexes",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("fixture")),
+    )
+    with pytest.raises(chat_tool_service.ChatToolError):
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+    store = ImportOperationJournalStore(runtime.resolved_import_journal_dir())
+    journal = store.resolve_by_token_digest(chat_tool_service._token_digest(token))
+    receipt = dict(journal.completion_receipt)
+    receipt["details"] = {}
+    receipt["public_response"] = {
+        "token_consumed": False,
+        "writes_performed": True,
+        "safe_to_retry": True,
+        "error_code": "attacker_override",
+        "cause_message": "attacker override",
+    }
+    tampered = replace(journal, completion_receipt=receipt)
+
+    with pytest.raises(chat_tool_service.ChatToolError) as replay:
+        chat_tool_service._resolve_import_journal_outcome(tampered)
+
+    assert replay.value.details["token_consumed"] is True
+    assert replay.value.details["writes_performed"] is True
+    assert replay.value.details["safe_to_retry"] is False
+    assert replay.value.error_code != "attacker_override"
+    assert replay.value.details.get("cause_message") != "attacker override"
+
+
+@pytest.mark.parametrize("exception_kind", ("chat_tool", "runtime"))
+def test_failed_receipt_persistence_call_sites_require_successful_owner_claim(
+    tmp_path, monkeypatch, exception_kind
+):
+    runtime, token = _chat_direction_case(tmp_path, monkeypatch)
+    digest = chat_tool_service._token_digest(token)
+
+    def fail_commit(**_kwargs):
+        if exception_kind == "chat_tool":
+            raise chat_tool_service.ChatToolError(
+                "fixture_failure",
+                "fixture failure",
+                status_code=500,
+                details={"writes_performed": False},
+            )
+        raise RuntimeError("fixture runtime failure")
+
+    runtime = replace(runtime, commit_zotero_import=fail_commit)
+    original = chat_tool_service._persist_failed_import_receipt
+    observations = []
+
+    def verify_claim_then_persist(**kwargs):
+        observations.append(
+            (
+                digest in chat_tool_service._IMPORT_IN_PROGRESS,
+                digest in chat_tool_service._IMPORT_CONFIRMATIONS,
+            )
+        )
+        return original(**kwargs)
+
+    monkeypatch.setattr(
+        chat_tool_service,
+        "_persist_failed_import_receipt",
+        verify_claim_then_persist,
+    )
+
+    with pytest.raises(chat_tool_service.ChatToolError) as exc:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+
+    assert observations == [(True, True)]
+    assert exc.value.details["token_consumed"] is True

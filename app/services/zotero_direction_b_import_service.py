@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import hashlib
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -54,6 +55,131 @@ class DirectionBSelectedBookImportError(RuntimeError):
         self.message = message
         self.status_code = int(status_code)
         self.details = details or {}
+
+
+class DirectionBDerivedPublishError(RuntimeError):
+    """Internal exception that records the exact os.replace substage.
+
+    This is NEVER exposed as a public error_code.  The public contract
+    continues to use the existing ``*_index_publish_failed`` codes.
+    """
+
+    def __init__(
+        self,
+        *,
+        publish_substage: str,
+        original_exception: BaseException,
+    ) -> None:
+        super().__init__(str(original_exception))
+        self.publish_substage = publish_substage
+        self.original_exception = original_exception
+
+
+def _extract_cause_metadata(exc: BaseException) -> dict[str, Any]:
+    """Safely extract os-level cause fields from an exception.
+
+    Returns a dict with keys that are always present (null when absent).
+    Never includes traceback strings, token values, or env vars.
+    """
+    cause: dict[str, Any] = {
+        "cause_type": type(exc).__name__,
+        "cause_message": _safe_exception_message(exc),
+        "cause_errno": None,
+        "cause_winerror": None,
+        "cause_filename": None,
+        "cause_filename2": None,
+    }
+    if isinstance(exc, OSError):
+        cause["cause_errno"] = getattr(exc, "errno", None)
+        cause["cause_winerror"] = getattr(exc, "winerror", None)
+        cause["cause_filename"] = _safe_path_str(getattr(exc, "filename", None))
+        cause["cause_filename2"] = _safe_path_str(getattr(exc, "filename2", None))
+    return cause
+
+
+_SECRET_PATTERNS: list[tuple[str, str]] = [
+    # Each tuple is (case-insensitive regex, replacement template).
+    # Order matters: longer / more-specific patterns first to avoid
+    # partial matches (e.g. access_token matched before token alone).
+    (
+        (
+            r"confirmation[_\-\s]?token"
+            r"(?![ _\-]?digest\b)[=:\s]+[^\s,;)\]}]+"
+        ),
+        "confirmation_token=[REDACTED]",
+    ),
+    (
+        r"authorization:\s*bearer\s+[A-Za-z0-9._~+/=\-]+",
+        "authorization: Bearer [REDACTED]",
+    ),
+    (
+        r"bearer\s+[A-Za-z0-9._~+/=\-]{20,}",
+        "bearer [REDACTED]",
+    ),
+    (
+        r"api[_\-\s]?key[=:\s]+[^\s,;)\]}]+",
+        "api_key=[REDACTED]",
+    ),
+    (
+        r"access[_\-\s]?token[=:\s]+[^\s,;)\]}]+",
+        "access_token=[REDACTED]",
+    ),
+    (
+        r"refresh[_\-\s]?token[=:\s]+[^\s,;)\]}]+",
+        "refresh_token=[REDACTED]",
+    ),
+    (
+        r"secret[=:\s]+[^\s,;)\]}]+",
+        "secret=[REDACTED]",
+    ),
+    (
+        r"password[=:\s]+[^\s,;)\]}]+",
+        "password=[REDACTED]",
+    ),
+]
+
+
+def _redact_secrets(text: str) -> str:
+    """Deterministic, minimal secret redaction.
+
+    Matches confirmation tokens, bearer tokens, API keys,
+    access/refresh tokens, secrets, and passwords — case-insensitive.
+    Does NOT redact hex strings that don't match known secret key
+    prefixes.  File paths and normal error messages are preserved.
+    """
+    result = text
+    for pattern, replacement in _SECRET_PATTERNS:
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+    return result
+
+
+def _safe_exception_message(exc: BaseException) -> str | None:
+    raw = str(exc) if exc is not None else None
+    if raw is None:
+        return None
+    cleaned = " ".join(str(raw).split()).strip()
+    if not cleaned:
+        return None
+    # Redact secrets BEFORE length truncation so that the truncation
+    # cannot accidentally expose a partial secret.
+    cleaned = _redact_secrets(cleaned)
+    if len(cleaned) > 512:
+        cleaned = cleaned[:509] + "..."
+    return cleaned
+
+
+def _safe_path_str(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, (str, bytes)):
+        return None
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+    cleaned = str(value).strip()
+    return cleaned if cleaned else None
 
 
 DirectionBStageCallback = Callable[
@@ -844,6 +970,13 @@ def _commit_selected_book_import_locked(
                 writes_performed=True,
             )
         except Exception as exc:
+            publish_substage: str | None = None
+            cause_meta: dict[str, Any] = {}
+            if isinstance(exc, DirectionBDerivedPublishError):
+                publish_substage = exc.publish_substage
+                cause_meta = _extract_cause_metadata(exc.original_exception)
+            else:
+                cause_meta = _extract_cause_metadata(exc)
             raise DirectionBSelectedBookImportError(
                 code=(
                     "zotero_direction_b_"
@@ -857,6 +990,10 @@ def _commit_selected_book_import_locked(
                     "Direction-B derived index publish failed."
                 ),
                 status_code=500,
+                details={
+                    "publish_substage": publish_substage,
+                    **cause_meta,
+                },
             ) from exc
 
         forward_stage(
@@ -1036,6 +1173,16 @@ def _commit_selected_book_import_locked(
         if document_id is not None:
             stable_details.setdefault("document_id", document_id)
         stable_details.setdefault("chunk_count", chunk_count)
+        stable_details.setdefault("publish_substage", None)
+        for cause_key in (
+            "cause_type",
+            "cause_message",
+            "cause_errno",
+            "cause_winerror",
+            "cause_filename",
+            "cause_filename2",
+        ):
+            stable_details.setdefault(cause_key, None)
         if callback_warning_codes:
             stable_details.setdefault(
                 "warnings",
@@ -1673,58 +1820,119 @@ def _publish_staged_derived_indexes(
     staging_zotero_note_vector_path: Path,
     zotero_note_vector_path: Path,
 ) -> None:
-    os.replace(staging_fts_index, fts_index_path)
-    os.replace(staging_fts_manifest, fts_manifest_path)
+    # Each os.replace / shutil operation is wrapped in a try/except that
+    # raises DirectionBDerivedPublishError so the caller can record the
+    # exact substage without exposing a new public error_code.
+
+    # -- FTS index -----------------------------------------------------------
+    try:
+        os.replace(staging_fts_index, fts_index_path)
+    except Exception as exc:
+        raise DirectionBDerivedPublishError(
+            publish_substage="fts_index_replace",
+            original_exception=exc,
+        ) from exc
+
+    # -- FTS manifest --------------------------------------------------------
+    try:
+        os.replace(staging_fts_manifest, fts_manifest_path)
+    except Exception as exc:
+        raise DirectionBDerivedPublishError(
+            publish_substage="fts_manifest_replace",
+            original_exception=exc,
+        ) from exc
+
+    # -- vector store (retire + publish) -------------------------------------
     if staging_vector_store.is_dir():
         vector_store_path.parent.mkdir(parents=True, exist_ok=True)
         retired_store = staging_vector_store.parent / ".retired-lancedb"
         if vector_store_path.exists():
-            os.replace(vector_store_path, retired_store)
+            try:
+                os.replace(vector_store_path, retired_store)
+            except Exception as exc:
+                raise DirectionBDerivedPublishError(
+                    publish_substage="vector_store_retire",
+                    original_exception=exc,
+                ) from exc
         try:
             os.replace(staging_vector_store, vector_store_path)
-        except Exception:
+        except Exception as exc:
             if retired_store.exists() and not vector_store_path.exists():
-                os.replace(retired_store, vector_store_path)
-            raise
+                try:
+                    os.replace(retired_store, vector_store_path)
+                except Exception:
+                    pass
+            raise DirectionBDerivedPublishError(
+                publish_substage="vector_store_publish",
+                original_exception=exc,
+            ) from exc
         _best_effort_remove_generated_tree(retired_store)
+
+    # -- vector manifest -----------------------------------------------------
     if staging_vector_manifest.is_file():
         vector_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(staging_vector_manifest, vector_manifest_path)
+        try:
+            os.replace(staging_vector_manifest, vector_manifest_path)
+        except Exception as exc:
+            raise DirectionBDerivedPublishError(
+                publish_substage="vector_manifest_replace",
+                original_exception=exc,
+            ) from exc
+
+    # -- native note-vector (retire + publish + cache invalidate) ------------
     if staging_zotero_note_vector_path.is_dir():
         retired_note_vectors = (
             staging_zotero_note_vector_path.parent
             / ".retired-zotero-user-notes"
         )
         if zotero_note_vector_path.exists():
-            os.replace(
-                zotero_note_vector_path,
-                retired_note_vectors,
-            )
+            try:
+                os.replace(
+                    zotero_note_vector_path,
+                    retired_note_vectors,
+                )
+            except Exception as exc:
+                raise DirectionBDerivedPublishError(
+                    publish_substage="native_note_vector_retire",
+                    original_exception=exc,
+                ) from exc
         try:
             os.replace(
                 staging_zotero_note_vector_path,
                 zotero_note_vector_path,
             )
-        except Exception:
+        except Exception as exc:
             if (
                 retired_note_vectors.exists()
                 and not zotero_note_vector_path.exists()
             ):
-                os.replace(
-                    retired_note_vectors,
-                    zotero_note_vector_path,
-                )
-            raise
+                try:
+                    os.replace(
+                        retired_note_vectors,
+                        zotero_note_vector_path,
+                    )
+                except Exception:
+                    pass
+            raise DirectionBDerivedPublishError(
+                publish_substage="native_note_vector_publish",
+                original_exception=exc,
+            ) from exc
         _best_effort_remove_generated_tree(
             retired_note_vectors
         )
-        with note_vector_index._INDEX_CACHE_LOCK:
-            note_vector_index._INDEX_CACHE.pop(
-                str(
-                    zotero_note_vector_path.resolve()
-                ),
-                None,
-            )
+        try:
+            with note_vector_index._INDEX_CACHE_LOCK:
+                note_vector_index._INDEX_CACHE.pop(
+                    str(
+                        zotero_note_vector_path.resolve()
+                    ),
+                    None,
+                )
+        except Exception as exc:
+            raise DirectionBDerivedPublishError(
+                publish_substage="native_note_vector_cache_invalidate",
+                original_exception=exc,
+            ) from exc
 
 
 def _restore_derived_artifacts(

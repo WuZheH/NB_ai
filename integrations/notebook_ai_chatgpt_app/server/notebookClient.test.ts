@@ -217,6 +217,47 @@ test("NotebookClient preserves structured machine config errors without exposing
   );
 });
 
+test("NotebookClient retains only whitelisted import failure details", async () => {
+  const rawToken = "RAW_CONFIRMATION_TOKEN_MUST_NOT_SURVIVE";
+  const client = new NotebookClient({
+    baseUrl: "http://127.0.0.1:8123",
+    bearerToken: "request-authorization-secret",
+    fetchImpl: async () => Response.json(
+      {
+        detail: {
+          error_code: "import_document_failed",
+          message: "The confirmed import failed.",
+          token_consumed: true,
+          writes_performed: true,
+          safe_to_retry: false,
+          confirmation_token: rawToken,
+          authorization: "Bearer request-authorization-secret",
+          private_backend_field: "must not survive",
+        },
+      },
+      { status: 500 },
+    ),
+  });
+
+  await assert.rejects(
+    client.importDocument({
+      confirmation_token: "i".repeat(40),
+      confirmed: true,
+    }),
+    (error: unknown) => {
+      if (!(error instanceof NotebookBackendError)) return false;
+      assert.deepEqual(error.details, {
+        token_consumed: true,
+        writes_performed: true,
+        safe_to_retry: false,
+      });
+      assert.equal(JSON.stringify(error.details).includes(rawToken), false);
+      assert.equal(JSON.stringify(error.details).includes("request-authorization-secret"), false);
+      return true;
+    },
+  );
+});
+
 test("NotebookClient classifies malformed success responses without leaking content", async () => {
   const client = new NotebookClient({
     baseUrl: "http://127.0.0.1:8123",
