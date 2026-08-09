@@ -472,8 +472,28 @@ def _apply_terminal_journal_projection(
 
     if not matches:
         return [], []
+
     if len(matches) != 1:
-        return [], ["import_journal_multiple_matches"]
+        current_transaction_fingerprint = _recorded_value(
+            history.get("transaction_fingerprint")
+        )
+        if (
+            current_transaction_fingerprint is None
+            or not _SHA256_RE.fullmatch(current_transaction_fingerprint)
+        ):
+            return [], ["import_journal_multiple_matches"]
+        matches = [
+            record
+            for record in matches
+            if record.transaction_fingerprint
+            == current_transaction_fingerprint
+        ]
+        if not matches:
+            return [], [
+                "import_journal_transaction_fingerprint_mismatch"
+            ]
+        if len(matches) != 1:
+            return [], ["import_journal_multiple_matches"]
 
     record = matches[0]
     failures: list[str] = []
