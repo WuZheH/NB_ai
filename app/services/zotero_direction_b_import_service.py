@@ -787,6 +787,12 @@ def _commit_selected_book_import_locked(
                     document_id,
                 )
             )
+            note_sources = (
+                vector_store_service.collect_personal_note_sources(
+                    document_id=document_id,
+                    source_db_path=post_write_snapshot,
+                )
+            )
 
             forward_stage(
                 "staging_vector_started",
@@ -837,7 +843,7 @@ def _commit_selected_book_import_locked(
                 "reason": "no_personal_notes",
             }
 
-            if int(note_result.get("source_count") or 0) > 0:
+            if note_sources:
                 note_vector_sync = (
                     vector_store_service
                     .sync_document_note_embeddings(
@@ -930,7 +936,7 @@ def _commit_selected_book_import_locked(
                 writes_performed=True,
                 source_count=(
                     len(passage_source_ids)
-                    + int(note_result.get("source_count") or 0)
+                    + len(note_sources)
                 ),
             )
 
@@ -958,6 +964,7 @@ def _commit_selected_book_import_locked(
             expected_db_sha256=after_db_sha256,
             document_id=document_id,
             passage_source_ids=passage_source_ids,
+            expected_note_sources=note_sources,
             expected_native_note_vector_count=int(
                 native_note_vector_sync.get(
                     "scoped_entry_count_after"
@@ -1334,11 +1341,29 @@ def _commit_selected_book_import_locked(
             # Keep its matching DB revision rather than exposing DB-old/index-new.
             retain_db_rollback = True
 
+        if (
+            production
+            and db_rollback_exc is None
+            and derived_rollback_exc is None
+            and active_generation_before is not None
+            and active_generation_before.mode == "legacy"
+            and generation_candidate is not None
+        ):
+            try:
+                _remove_current_generation_after_legacy_rollback(
+                    candidate=generation_candidate,
+                    activated_generation=activated_generation,
+                    previous_pointer_bytes=previous_pointer_bytes,
+                    data_root=data_root,
+                )
+            except Exception as rollback_exc:
+                derived_rollback_exc = rollback_exc
+
         rollback_completed = (
             db_rollback_exc is None
             and derived_rollback_exc is None
         )
-        if production and activation_state_written:
+        if production and active_generation_before is not None:
             if rollback_completed:
                 try:
                     restored_generation = (
@@ -1362,10 +1387,11 @@ def _commit_selected_book_import_locked(
                         restored_generation,
                         path,
                     )
-                    retrieval_generation_service.clear_activation_state(
-                        data_dir=data_root
-                    )
-                    activation_state_written = False
+                    if activation_state_written:
+                        retrieval_generation_service.clear_activation_state(
+                            data_dir=data_root
+                        )
+                        activation_state_written = False
                 except Exception as activation_rollback_exc:
                     derived_rollback_exc = activation_rollback_exc
                     rollback_completed = False
@@ -1376,6 +1402,14 @@ def _commit_selected_book_import_locked(
                 retrieval_generation_service.PRODUCTION_GENERATION_COORDINATOR.mark_degraded(
                     "activation_rollback_incomplete"
                 )
+            else:
+                if not (
+                    retrieval_generation_service
+                    .PRODUCTION_GENERATION_COORDINATOR.degraded
+                ):
+                    retrieval_generation_service.PRODUCTION_GENERATION_COORDINATOR.mark_degraded(
+                        "generation_rollback_cleanup_failed"
+                    )
         current_stage = "rollback_completed"
         try:
             _emit_stage(
@@ -1713,28 +1747,12 @@ def _passage_source_ids_for_document(
     db_path: Path,
     document_id: int,
 ) -> list[str]:
-    with closing(connect_readonly_sqlite(
-        db_path,
-        resolve_strict=True,
-        row_factory=sqlite3.Row,
-        query_only=True,
-        temp_store="MEMORY",
-    )) as connection:
-        rows = connection.execute(
-            """
-            SELECT id
-            FROM knowledge_chunks
-            WHERE document_id = ?
-            ORDER BY chunk_index, id
-            """,
-            (document_id,),
-        ).fetchall()
     return [
-        vector_store_service.make_passage_source_id(
-            document_id,
-            int(row["id"]),
+        str(source["source_id"])
+        for source in vector_store_service.collect_passage_sources(
+            document_id=document_id,
+            source_db_path=db_path,
         )
-        for row in rows
     ]
 
 
@@ -1769,6 +1787,7 @@ def _verify_staging_final_state(
     expected_db_sha256: str,
     document_id: int,
     passage_source_ids: list[str],
+    expected_note_sources: list[dict[str, Any]],
     expected_native_note_vector_count: int,
     staging_fts_index: Path,
     staging_fts_manifest: Path,
@@ -1870,6 +1889,24 @@ def _verify_staging_final_state(
                 missing_components.append("staging_passage_vectors")
         except Exception:
             missing_components.append("staging_vector_store_unreadable")
+        try:
+            note_state = (
+                vector_store_service.inspect_document_note_vector_state(
+                    document_id=document_id,
+                    expected_sources=expected_note_sources,
+                    store_path=staging_vector_store,
+                )
+            )
+            if (
+                note_state.get("status") != "ok"
+                or int(note_state.get("missing_count") or 0) != 0
+                or int(note_state.get("orphan_count") or 0) != 0
+                or int(note_state.get("duplicate_count") or 0) != 0
+                or int(note_state.get("stale_count") or 0) != 0
+            ):
+                missing_components.append("staging_lancedb_note_vectors")
+        except Exception:
+            missing_components.append("staging_lancedb_note_vectors")
 
     note_vectors_required = (
         runtime.persistence_scope == "production"
@@ -2317,6 +2354,57 @@ def _restore_file(path: Path, backup: Path, *, existed: bool) -> None:
         shutil.copy2(backup, path)
     else:
         path.unlink(missing_ok=True)
+
+
+def _remove_current_generation_after_legacy_rollback(
+    *,
+    candidate: retrieval_generation_service.CandidateGeneration,
+    activated_generation: (
+        retrieval_generation_service.RetrievalGenerationSnapshot | None
+    ),
+    previous_pointer_bytes: bytes | None,
+    data_root: Path,
+) -> None:
+    """Remove only this transaction's inactive generation after exact rollback."""
+
+    if previous_pointer_bytes is not None:
+        raise RuntimeError("legacy rollback unexpectedly had an active pointer")
+    if (
+        retrieval_generation_service.read_active_pointer_bytes(
+            data_dir=data_root
+        )
+        is not None
+    ):
+        raise RuntimeError("rolled-back generation is still active")
+
+    candidate_dir = candidate.candidate_dir
+    final_dir = candidate.final_dir
+    for path in (candidate_dir, final_dir):
+        if path.is_symlink():
+            raise RuntimeError("rolled-back generation path is a symlink")
+
+    if final_dir.exists():
+        if (
+            activated_generation is None
+            or activated_generation.mode != "versioned"
+            or activated_generation.generation_id != candidate.generation_id
+            or activated_generation.generation_dir != final_dir
+        ):
+            raise RuntimeError(
+                "finalized generation cannot be attributed to this transaction"
+            )
+        _remove_generated_tree(final_dir)
+    if candidate_dir.exists():
+        _remove_generated_tree(candidate_dir)
+
+    if (
+        final_dir.exists()
+        or final_dir.is_symlink()
+        or candidate_dir.exists()
+        or candidate_dir.is_symlink()
+    ):
+        raise RuntimeError("rolled-back generation cleanup was incomplete")
+
 
 def _best_effort_remove_generated_tree(
     path: Path,

@@ -223,6 +223,75 @@ def _legacy_snapshot(*, data_dir: Path, db_path: Path) -> RetrievalGenerationSna
     )
 
 
+def _fail_invalid_legacy_state(message: str) -> RetrievalGenerationError:
+    return RetrievalGenerationError(
+        "active_index_invalid",
+        message,
+        safe_to_retry=False,
+    )
+
+
+def _resolve_proven_legacy_snapshot(
+    *,
+    data_dir: Path,
+    db_path: Path,
+) -> RetrievalGenerationSnapshot:
+    """Return legacy paths only after proving the legacy revision is coherent.
+
+    Pointer absence alone is ambiguous once generation publishing is supported:
+    it may mean a clean pre-generation installation, an interrupted first
+    activation, or a deleted versioned pointer.  Generation residue and the
+    legacy FTS manifest therefore form part of the proof, rather than being
+    treated as optional status metadata.
+    """
+
+    root = data_dir / GENERATION_ROOT_NAME
+    if _path_entry_exists(root):
+        if root.is_symlink() or not root.is_dir():
+            raise _fail_invalid_legacy_state(
+                "Retrieval generation root is invalid while the active pointer is absent."
+            )
+        try:
+            has_generation_entries = next(root.iterdir(), None) is not None
+        except OSError as exc:
+            raise _fail_invalid_legacy_state(
+                "Retrieval generation root is unreadable while the active pointer is absent."
+            ) from exc
+        if has_generation_entries:
+            raise _fail_invalid_legacy_state(
+                "Retrieval generation state exists while the active pointer is absent."
+            )
+
+    manifest_path = data_dir / "search_index" / FTS_MANIFEST_NAME
+    if (
+        not _path_entry_exists(manifest_path)
+        or manifest_path.is_symlink()
+        or not manifest_path.is_file()
+    ):
+        raise _fail_invalid_legacy_state(
+            "Legacy retrieval manifest is missing or invalid."
+        )
+    manifest = _read_json_object(manifest_path)
+    manifest_db_sha = str(manifest.get("production_db_sha256") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", manifest_db_sha):
+        raise _fail_invalid_legacy_state(
+            "Legacy retrieval database revision is invalid."
+        )
+    try:
+        database_sha = cached_sha256_file(db_path).lower()
+    except (OSError, RuntimeError) as exc:
+        raise _fail_invalid_legacy_state(
+            "Production database revision cannot be verified for legacy retrieval."
+        ) from exc
+    if database_sha != manifest_db_sha:
+        raise RetrievalGenerationError(
+            "active_index_database_revision_mismatch",
+            "Legacy retrieval generation does not match the production database.",
+            safe_to_retry=False,
+        )
+    return _legacy_snapshot(data_dir=data_dir, db_path=db_path)
+
+
 def resolve_active_retrieval_generation(
     *,
     data_dir: str | Path = DATA_DIR,
@@ -232,8 +301,11 @@ def resolve_active_retrieval_generation(
     data_root = Path(data_dir).resolve(strict=False)
     database = Path(db_path).resolve(strict=False)
     pointer_path = data_root / ACTIVE_POINTER_NAME
-    if not pointer_path.exists():
-        return _legacy_snapshot(data_dir=data_root, db_path=database)
+    if not _path_entry_exists(pointer_path):
+        return _resolve_proven_legacy_snapshot(
+            data_dir=data_root,
+            db_path=database,
+        )
     if not pointer_path.is_file() or pointer_path.is_symlink():
         raise RetrievalGenerationError(
             "active_index_invalid", "Active retrieval generation pointer is invalid."
@@ -975,11 +1047,18 @@ def revalidate_active_generation(
     with PRODUCTION_GENERATION_COORDINATOR.write(allow_degraded=True):
         invalidate_generation_validation_cache()
         activation = _read_activation_state(data_dir=data_dir)
-        snapshot = resolve_active_retrieval_generation(
-            data_dir=data_dir,
-            db_path=db_path,
-            verify_fingerprints=True,
-        )
+        try:
+            snapshot = resolve_active_retrieval_generation(
+                data_dir=data_dir,
+                db_path=db_path,
+                verify_fingerprints=True,
+            )
+        except RetrievalGenerationError as exc:
+            raise RetrievalGenerationError(
+                "retrieval_generation_revalidation_failed",
+                "Active retrieval generation could not be revalidated.",
+                safe_to_retry=False,
+            ) from exc
         if activation is None and snapshot.mode != "versioned":
             raise RetrievalGenerationError(
                 "retrieval_generation_revalidation_failed",

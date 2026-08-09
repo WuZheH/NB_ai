@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { resolve } from "node:path";
 import test from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { actionsOpenApiDocument, authenticateActions, dispatchAction } from "./actions";
+import {
+  actionsOpenApiDocument,
+  authenticateActions,
+  dispatchAction,
+  handleActionsHttpRequest,
+} from "./actions";
 import { stageChatPdf } from "./fileTransfer";
 import { createNotebookMcpServer } from "./app";
 import type { NotebookFragment, NotebookResult, NotebookSearchInput } from "./contracts";
@@ -531,7 +537,15 @@ test("Actions OpenAPI exposes the same nine operations with bearer authenticatio
   }) as {
     openapi: string;
     servers?: Array<{ url: string }>;
-    paths: Record<string, { post?: { security?: unknown[]; description?: string } }>;
+    paths: Record<string, {
+      post?: {
+        security?: unknown[];
+        description?: string;
+        responses?: Record<string, {
+          content?: Record<string, { schema?: { properties?: Record<string, unknown> } }>;
+        }>;
+      };
+    }>;
     components?: { securitySchemes?: Record<string, unknown> };
   };
   assert.equal(document.openapi, "3.1.0");
@@ -545,6 +559,14 @@ test("Actions OpenAPI exposes the same nine operations with bearer authenticatio
     assert.deepEqual(path.post?.security, [{ bearerAuth: [] }]);
   }
   assert.match(document.paths["/actions/v1/delete_document"].post?.description ?? "", /explicit user confirmation/);
+  const writeErrorProperties = document.paths["/actions/v1/import_document"]
+    .post?.responses?.["5XX"]
+    ?.content?.["application/json"]
+    ?.schema?.properties;
+  assert.ok(writeErrorProperties?.safe_to_retry);
+  assert.ok(writeErrorProperties?.operation_in_progress);
+  assert.ok(writeErrorProperties?.token_consumed);
+  assert.ok(writeErrorProperties?.writes_performed);
 });
 
 test("ChatGPT PDF file params stream to isolated staging and are removed after confirmed import", async () => {
@@ -822,6 +844,121 @@ test("all tool failures use isError content without output-schema mismatch", asy
   }
 });
 
+test("write transport uncertainty is non-retryable and does not invent operation state", () => {
+  for (const [code, status] of [
+    ["BACKEND_TIMEOUT", 504],
+    ["BACKEND_UNAVAILABLE", 503],
+  ] as const) {
+    const result = errorToolResult(
+      new NotebookBackendError("private transport detail", status, code, {
+        retryable: true,
+        safe_to_retry: true,
+        operation_in_progress: false,
+        token_consumed: true,
+        writes_performed: true,
+        replayed_receipt: true,
+      }),
+      {
+        tool: "import_document",
+        writeOperation: true,
+        includeStructuredContent: true,
+      },
+    );
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.error_code, code);
+    assert.equal(payload.retryable, false);
+    assert.equal(payload.safe_to_retry, false);
+    assert.equal(payload.operation_in_progress, null);
+    assert.equal(payload.token_consumed, null);
+    assert.equal(payload.writes_performed, null);
+    assert.equal(payload.replayed_receipt, null);
+    assert.match(payload.message, /final state was known/);
+    assert.match(payload.message, /Do not retry automatically/);
+    assert.doesNotMatch(JSON.stringify(result), /private transport detail/);
+  }
+});
+
+test("read-only backend timeouts remain retryable", () => {
+  const result = errorToolResult(
+    new NotebookBackendError("private transport detail", 504, "BACKEND_TIMEOUT"),
+    { tool: "search" },
+  );
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.retryable, true);
+  assert.equal(payload.writes_performed, false);
+  assert.equal(payload.message, "Search backend request timed out.");
+});
+
+async function callImportDocumentAction(
+  client: NotebookClient,
+): Promise<{ status: number; payload: Record<string, unknown> }> {
+  const secret = "a".repeat(40);
+  const server = createServer((request, response) => {
+    void handleActionsHttpRequest(request, response, {
+      env: { SEARCH_ACTIONS_BEARER_TOKEN: secret },
+      client,
+    });
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", rejectListen);
+      resolveListen();
+    });
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/actions/v1/import_document`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          confirmation_token: "i".repeat(40),
+          confirmed: true,
+        }),
+      },
+    );
+    return {
+      status: response.status,
+      payload: await response.json() as Record<string, unknown>,
+    };
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+  }
+}
+
+test("Actions import timeout preserves the write uncertainty whitelist", async () => {
+  class TimeoutImportClient extends MockNotebookClient {
+    override async importDocument(
+      _input: Parameters<MockNotebookClient["importDocument"]>[0],
+    ): Promise<never> {
+      throw new NotebookBackendError(
+        "private transport detail",
+        504,
+        "BACKEND_TIMEOUT",
+      );
+    }
+  }
+
+  const { status, payload } = await callImportDocumentAction(new TimeoutImportClient());
+  assert.equal(status, 504);
+  assert.equal(payload.status, "error");
+  assert.equal(payload.error_code, "BACKEND_TIMEOUT");
+  assert.equal(payload.retryable, false);
+  assert.equal(payload.safe_to_retry, false);
+  assert.equal(payload.operation_in_progress, null);
+  assert.equal(payload.token_consumed, null);
+  assert.equal(payload.writes_performed, null);
+  assert.equal(payload.replayed_receipt, null);
+  assert.match(String(payload.message), /Do not retry automatically/);
+  assert.doesNotMatch(JSON.stringify(payload), /private transport detail/);
+});
+
 
 // ============================================================================
 // P0-FIX1-CLOSURE1: MCP final-response contract tests
@@ -847,6 +984,45 @@ const PUBLISH_FAILURE_DETAILS: Record<string, unknown> = {
   replayed_receipt: false,
   operation_in_progress: false,
 };
+
+test("Actions import errors propagate only the registered write-safety whitelist", async () => {
+  class FailedImportClient extends MockNotebookClient {
+    override async importDocument(
+      _input: Parameters<MockNotebookClient["importDocument"]>[0],
+    ): Promise<never> {
+      throw new NotebookBackendError(
+        "private backend exception",
+        500,
+        "zotero_direction_b_production_index_publish_failed",
+        { ...PUBLISH_FAILURE_DETAILS, private_internal_field: "must-not-escape" },
+      );
+    }
+  }
+
+  const { status, payload } = await callImportDocumentAction(new FailedImportClient());
+  assert.equal(status, 500);
+  for (const key of [
+    "token_consumed",
+    "writes_performed",
+    "safe_to_retry",
+    "replayed_receipt",
+    "operation_in_progress",
+    "publish_substage",
+    "cause_type",
+    "cause_message",
+    "cause_errno",
+    "cause_winerror",
+    "cause_filename",
+    "cause_filename2",
+    "rollback_attempted",
+    "rollback_completed",
+    "error_stage",
+  ]) {
+    assert.deepEqual(payload[key], PUBLISH_FAILURE_DETAILS[key], key);
+  }
+  assert.equal(payload.private_internal_field, undefined);
+  assert.doesNotMatch(JSON.stringify(payload), /private backend exception|must-not-escape/);
+});
 
 test("errorToolResult propagates token_consumed from backend details", () => {
   const err = new NotebookBackendError(

@@ -8,6 +8,7 @@ import pytest
 
 from app.core.paths import DEFAULT_DB_PATH, LANCEDB_DIR
 from app.services import vector_store_service
+from app.services import zotero_direction_b_import_service
 
 
 def _temp_research_db(root: Path) -> Path:
@@ -102,6 +103,33 @@ def test_temp_passage_source_is_readonly_exact_and_avoids_sessionlocal(
         "chunk:2:21",
     ]
     assert all(item["source_type"] == "passage" for item in sources)
+
+
+def test_direction_b_passage_expectations_reuse_authoritative_vector_sources(
+    tmp_path: Path,
+) -> None:
+    database = _temp_research_db(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO knowledge_chunks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (13, 1, 2, "Empty", "   ", "empty-hash", None, None, None, "2026-07-26"),
+        )
+        connection.commit()
+
+    sources = vector_store_service.collect_passage_sources(
+        document_id=1,
+        source_db_path=database,
+    )
+    expected = [source["source_id"] for source in sources]
+    direction_expected = (
+        zotero_direction_b_import_service._passage_source_ids_for_document(
+            database,
+            1,
+        )
+    )
+
+    assert expected == ["chunk:1:11"]
+    assert direction_expected == expected
 
 
 def test_temp_passage_source_batches_more_than_sqlite_expression_depth(

@@ -248,12 +248,15 @@ def _write_terminal_journal(
     runtime: service.IntegrityReportRuntime,
     *,
     operation_id: str = "d" * 32,
+    document_id: int = 1,
     transaction_fingerprint: str = "e" * 64,
     source_revision_fingerprint: str = "b" * 64,
     source_pdf_sha256: str = "a" * 64,
     status: str = "committed",
     stage: str = "receipt_persisted",
     chunk_count: int = 2,
+    revision: int = 7,
+    updated_at: str = "2026-08-02T01:01:00+00:00",
     completion_receipt: dict[str, object] | None = None,
 ) -> ImportOperationJournal:
     assert runtime.import_journal_dir is not None
@@ -262,7 +265,10 @@ def _write_terminal_journal(
     receipt = (
         {
             "kind": "success",
-            "response": {"document_id": 1, "chunk_count": chunk_count},
+            "response": {
+                "document_id": document_id,
+                "chunk_count": chunk_count,
+            },
         }
         if completion_receipt is None
         else completion_receipt
@@ -280,13 +286,13 @@ def _write_terminal_journal(
         owner_process_started_at="2026-08-02T01:00:00+00:00",
         owner_thread_id=1,
         started_at="2026-08-02T01:00:00+00:00",
-        updated_at="2026-08-02T01:01:00+00:00",
-        heartbeat_at="2026-08-02T01:01:00+00:00",
-        revision=7,
+        updated_at=updated_at,
+        heartbeat_at=updated_at,
+        revision=revision,
         status=status,
         stage=stage,
         writes_performed=status == "committed",
-        document_id=1,
+        document_id=document_id,
         chunk_count=chunk_count,
         error=(
             {"error_code": "fixture_failure"}
@@ -297,6 +303,73 @@ def _write_terminal_journal(
     )
     store._write_atomic(record.to_dict(), store._journal_path(operation_id))
     return record
+
+
+def _set_source_transaction_fingerprint(
+    runtime: service.IntegrityReportRuntime,
+    transaction_fingerprint: str | None,
+    *,
+    document_id: int = 1,
+) -> None:
+    with sqlite3.connect(runtime.db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT source_trace_json
+            FROM document_sources
+            WHERE document_id = ?
+            """,
+            (document_id,),
+        ).fetchone()
+        assert row is not None
+        trace = json.loads(str(row[0]))
+        history = dict(trace.get("import_history") or {})
+        if transaction_fingerprint is None:
+            history.pop("transaction_fingerprint", None)
+        else:
+            history["transaction_fingerprint"] = transaction_fingerprint
+        if history:
+            trace["import_history"] = history
+        else:
+            trace.pop("import_history", None)
+        connection.execute(
+            """
+            UPDATE document_sources
+            SET source_trace_json = ?
+            WHERE document_id = ?
+            """,
+            (json.dumps(trace), document_id),
+        )
+
+
+def _reassign_fixture_document_id(
+    runtime: service.IntegrityReportRuntime,
+    document_id: int,
+) -> None:
+    with sqlite3.connect(runtime.db_path) as connection:
+        for table in (
+            "knowledge_chunks",
+            "chapters",
+            "personal_notes",
+            "note_evidence_links",
+            "document_sources",
+        ):
+            connection.execute(
+                f"UPDATE {table} SET document_id = ? WHERE document_id = 1",
+                (document_id,),
+            )
+        connection.execute(
+            "UPDATE documents SET id = ? WHERE id = 1",
+            (document_id,),
+        )
+    with sqlite3.connect(runtime.fts_index_path) as connection:
+        connection.execute(
+            """
+            UPDATE retrieval_fragments
+            SET document_id = ?
+            WHERE document_id = 1
+            """,
+            (document_id,),
+        )
 
 
 def test_integrity_report_explains_note_eligibility_and_is_read_only(
@@ -739,6 +812,29 @@ def test_integrity_report_projects_matching_committed_journal_read_only(
     } == before_journal
 
 
+@pytest.mark.parametrize("transaction_fingerprint", (None, "not-a-sha256"))
+def test_single_journal_requires_current_document_transaction_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transaction_fingerprint: str | None,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    _set_source_transaction_fingerprint(runtime, transaction_fingerprint)
+    _write_terminal_journal(runtime)
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["history"]["terminal_status"] == "not_recorded"
+    assert (
+        "import_journal_transaction_fingerprint_mismatch"
+        in result["warnings"]
+    )
+
+
 def test_integrity_report_warns_for_multiple_matching_journals(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -756,6 +852,267 @@ def test_integrity_report_warns_for_multiple_matching_journals(
     assert result["verdict"] == "fail"
     assert "import_journal_multiple_matches" in result["warnings"]
     assert result["history"]["terminal_status"] == "not_recorded"
+
+
+@pytest.mark.parametrize(
+    ("old_operation_id", "new_operation_id"),
+    (
+        ("1" * 32, "2" * 32),
+        ("f" * 32, "0" * 32),
+    ),
+)
+def test_integrity_report_disambiguates_reused_document_id_by_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    old_operation_id: str,
+    new_operation_id: str,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    current_transaction = "2" * 64
+    _set_source_transaction_fingerprint(runtime, current_transaction)
+    _write_terminal_journal(
+        runtime,
+        operation_id=old_operation_id,
+        transaction_fingerprint="1" * 64,
+        status="failed",
+        completion_receipt={"kind": "failure"},
+    )
+    selected = _write_terminal_journal(
+        runtime,
+        operation_id=new_operation_id,
+        transaction_fingerprint=current_transaction,
+    )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["history"]["terminal_status"] == "committed"
+    assert result["history"]["journal_operation_id"] == selected.operation_id
+    assert "import_journal_multiple_matches" not in result["warnings"]
+
+
+def test_integrity_report_fails_closed_when_no_journal_transaction_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    _set_source_transaction_fingerprint(runtime, "3" * 64)
+    _write_terminal_journal(
+        runtime,
+        operation_id="1" * 32,
+        transaction_fingerprint="1" * 64,
+        status="failed",
+        completion_receipt={"kind": "failure"},
+    )
+    _write_terminal_journal(
+        runtime,
+        operation_id="2" * 32,
+        transaction_fingerprint="2" * 64,
+    )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["history"]["terminal_status"] == "not_recorded"
+    assert "import_journal_transaction_fingerprint_mismatch" in result["warnings"]
+    assert "import_journal_multiple_matches" not in result["warnings"]
+
+
+def test_integrity_report_keeps_multiple_matches_without_current_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    _set_source_transaction_fingerprint(runtime, None)
+    _write_terminal_journal(
+        runtime,
+        operation_id="1" * 32,
+        transaction_fingerprint="1" * 64,
+    )
+    _write_terminal_journal(
+        runtime,
+        operation_id="2" * 32,
+        transaction_fingerprint="2" * 64,
+    )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["history"]["terminal_status"] == "not_recorded"
+    assert "import_journal_multiple_matches" in result["warnings"]
+
+
+def test_integrity_report_rejects_duplicate_exact_transaction_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    current_transaction = "2" * 64
+    _set_source_transaction_fingerprint(runtime, current_transaction)
+    _write_terminal_journal(
+        runtime,
+        operation_id="1" * 32,
+        transaction_fingerprint=current_transaction,
+    )
+    _write_terminal_journal(
+        runtime,
+        operation_id="2" * 32,
+        transaction_fingerprint=current_transaction,
+    )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["history"]["terminal_status"] == "not_recorded"
+    assert "import_journal_multiple_matches" in result["warnings"]
+
+
+def test_integrity_report_validates_pdf_after_transaction_disambiguation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    current_transaction = "2" * 64
+    _set_source_transaction_fingerprint(runtime, current_transaction)
+    _write_terminal_journal(
+        runtime,
+        operation_id="1" * 32,
+        transaction_fingerprint="1" * 64,
+        status="failed",
+        completion_receipt={"kind": "failure"},
+    )
+    _write_terminal_journal(
+        runtime,
+        operation_id="2" * 32,
+        transaction_fingerprint=current_transaction,
+        source_pdf_sha256="3" * 64,
+    )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["history"]["terminal_status"] == "not_recorded"
+    assert "import_journal_pdf_sha256_mismatch" in result["warnings"]
+
+
+def test_integrity_report_validates_receipt_after_transaction_disambiguation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    current_transaction = "2" * 64
+    _set_source_transaction_fingerprint(runtime, current_transaction)
+    _write_terminal_journal(
+        runtime,
+        operation_id="1" * 32,
+        transaction_fingerprint="1" * 64,
+        status="failed",
+        completion_receipt={"kind": "failure"},
+    )
+    _write_terminal_journal(
+        runtime,
+        operation_id="2" * 32,
+        transaction_fingerprint=current_transaction,
+        completion_receipt={"kind": "success"},
+    )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["history"]["terminal_status"] == "not_recorded"
+    assert "import_journal_receipt_response_invalid" in result["warnings"]
+
+
+def test_integrity_report_projects_production_shaped_reused_document_four(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    _reassign_fixture_document_id(runtime, 4)
+    current_transaction = "2" * 64
+    _set_source_transaction_fingerprint(
+        runtime,
+        current_transaction,
+        document_id=4,
+    )
+    _write_terminal_journal(
+        runtime,
+        operation_id="1" * 32,
+        document_id=4,
+        transaction_fingerprint="1" * 64,
+        status="failed",
+        completion_receipt={"kind": "failure"},
+    )
+    selected = _write_terminal_journal(
+        runtime,
+        operation_id="2" * 32,
+        document_id=4,
+        transaction_fingerprint=current_transaction,
+    )
+
+    result = service.build_integrity_report(document_id=4, runtime=runtime)
+
+    assert result["history"]["terminal_status"] == "committed"
+    assert result["history"]["journal_operation_id"] == selected.operation_id
+    assert "import_journal_multiple_matches" not in result["warnings"]
+
+
+def test_integrity_report_does_not_prefer_committed_or_latest_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    current_transaction = "1" * 64
+    _set_source_transaction_fingerprint(runtime, current_transaction)
+    selected = _write_terminal_journal(
+        runtime,
+        operation_id="1" * 32,
+        transaction_fingerprint=current_transaction,
+        status="failed",
+        revision=1,
+        updated_at="2026-08-02T01:00:00+00:00",
+        completion_receipt={"kind": "failure"},
+    )
+    _write_terminal_journal(
+        runtime,
+        operation_id="2" * 32,
+        transaction_fingerprint="2" * 64,
+        revision=999,
+        updated_at="2026-08-03T00:00:00+00:00",
+    )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert selected.status == "failed"
+    assert result["history"]["terminal_status"] == "not_recorded"
+    assert "import_journal_terminal_not_committed" in result["warnings"]
+    assert "import_journal_multiple_matches" not in result["warnings"]
 
 
 @pytest.mark.parametrize(
@@ -838,6 +1195,7 @@ def test_integrity_report_rejects_failed_or_invalid_committed_journal(
         import_journal_dir=tmp_path / "operation_journal",
     )
     _patch_ready_dependencies(monkeypatch)
+    _set_source_transaction_fingerprint(runtime, "e" * 64)
     _write_terminal_journal(
         runtime,
         status="failed",
@@ -948,6 +1306,7 @@ def test_terminal_journal_cross_checks_database_chunk_count(
         import_journal_dir=tmp_path / "operation_journal",
     )
     _patch_ready_dependencies(monkeypatch)
+    _set_source_transaction_fingerprint(runtime, "e" * 64)
     _write_terminal_journal(
         runtime,
         chunk_count=journal_chunks,

@@ -327,3 +327,27 @@ test("NotebookClient gives confirmed imports a bounded long-running window", asy
   assert.equal(result.document_id, 8);
   assert.equal(result.chunk_count, 3_899);
 });
+
+test("NotebookClient reports its confirmed-import deadline as a backend timeout", async () => {
+  const client = new NotebookClient({
+    baseUrl: "http://127.0.0.1:8123",
+    timeoutMs: 1,
+    importTimeoutMs: 5,
+    fetchImpl: async (_input, init = {}) => await new Promise<Response>((_resolve, reject) => {
+      const signal = init.signal;
+      assert.ok(signal);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  });
+
+  await assert.rejects(
+    client.importDocument({
+      confirmation_token: "i".repeat(40),
+      confirmed: true,
+    }),
+    (error: unknown) => error instanceof NotebookBackendError
+      && error.status === 504
+      && error.code === "BACKEND_TIMEOUT"
+      && error.details === null,
+  );
+});

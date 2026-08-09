@@ -33,6 +33,11 @@ from scripts.migrations import (
 )
 
 
+_REAL_INSPECT_DOCUMENT_NOTE_VECTOR_STATE = (
+    vector_store_service.inspect_document_note_vector_state
+)
+
+
 @pytest.fixture(autouse=True)
 def reset_chat_state():
     chat_tool_service.reset_chat_tool_state_for_tests()
@@ -111,6 +116,20 @@ def isolate_b4_derived_primitives(monkeypatch):
             "lancedb_writes_performed": False,
         },
     )
+    monkeypatch.setattr(
+        vector_store_service,
+        "inspect_document_note_vector_state",
+        lambda *, expected_sources, **_kwargs: {
+            "status": "ok",
+            "missing_count": 0,
+            "orphan_count": 0,
+            "duplicate_count": 0,
+            "stale_count": 0,
+            "expected_source_ids": [
+                source["source_id"] for source in expected_sources
+            ],
+        },
+    )
 
 
 def make_temp_data_dir(root: Path) -> Path:
@@ -167,6 +186,7 @@ def make_temp_db(
                 title TEXT,
                 document_type TEXT,
                 content_layer TEXT,
+                object_import_mode TEXT,
                 source_path TEXT,
                 pdf_path TEXT,
                 zotero_key TEXT,
@@ -183,6 +203,16 @@ def make_temp_db(
                 content_hash TEXT NOT NULL,
                 pdf_page_start INTEGER,
                 pdf_page_end INTEGER,
+                chapter_id INTEGER,
+                updated_at TEXT,
+                FOREIGN KEY(document_id)
+                    REFERENCES documents(id)
+            );
+
+            CREATE TABLE book_chapters (
+                id INTEGER PRIMARY KEY,
+                document_id INTEGER NOT NULL,
+                title TEXT,
                 FOREIGN KEY(document_id)
                     REFERENCES documents(id)
             );
@@ -395,7 +425,7 @@ def body_importer(
                 'book',
                 'body',
                 '2026-07-26',
-                'unread',
+                'read',
                 'BOOKKEY1'
             )
             """,
@@ -2296,6 +2326,17 @@ def _install_production_shaped_runtime(
         / "vector_store"
         / "vector_manifest.json"
     )
+    fts_manifest.write_text(
+        json.dumps(
+            {
+                "production_db_sha256": hashlib.sha256(
+                    db_path.read_bytes()
+                ).hexdigest()
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     vector_store.mkdir(parents=True, exist_ok=True)
     vector_manifest.write_text("{}\n", encoding="utf-8")
     note_vector_dir = (
@@ -2701,6 +2742,11 @@ def test_production_final_verify_failure_restores_db_and_derived_exactly(
     assert not retrieval_generation_service.activation_state_path(
         fixture["data_dir"]
     ).exists()
+    generation_root = (
+        fixture["data_dir"]
+        / retrieval_generation_service.GENERATION_ROOT_NAME
+    )
+    assert not generation_root.exists() or not any(generation_root.iterdir())
     assert isolate_production_generation_coordinator.degraded is False
 
 
@@ -2816,6 +2862,68 @@ def test_activation_marker_write_failure_rolls_back_before_pointer_commit(
     assert not retrieval_generation_service.activation_state_path(
         fixture["data_dir"]
     ).exists()
+    generation_root = (
+        fixture["data_dir"]
+        / retrieval_generation_service.GENERATION_ROOT_NAME
+    )
+    assert not generation_root.exists() or not any(generation_root.iterdir())
+
+
+def test_legacy_generation_cleanup_failure_is_rollback_incomplete_and_closed(
+    tmp_path,
+    monkeypatch,
+    isolate_production_generation_coordinator,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=True,
+    )
+    before_db = fixture["db_path"].read_bytes()
+    real_remove = zotero_direction_b_import_service._remove_generated_tree
+
+    monkeypatch.setattr(
+        retrieval_generation_service,
+        "begin_generation_activation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            retrieval_generation_service.ActivationStatePublishError(
+                "activation_state_write",
+                OSError("forced durable activation write failure"),
+            )
+        ),
+    )
+
+    def fail_final_generation_cleanup(path):
+        if Path(path).name.startswith("g-"):
+            raise PermissionError("forced finalized generation cleanup failure")
+        return real_remove(path)
+
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_remove_generated_tree",
+        fail_final_generation_cleanup,
+    )
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        zotero_direction_b_import_service.commit_selected_book_import_to_production(
+            preview_token="p" * 40,
+            body_importer=body_importer,
+        )
+
+    assert error.value.code == (
+        "zotero_direction_b_production_derived_rollback_failed"
+    )
+    assert error.value.details["rollback_completed"] is False
+    assert error.value.details["safe_to_retry"] is False
+    assert fixture["db_path"].read_bytes() == before_db
+    assert isolate_production_generation_coordinator.degraded is True
+    with pytest.raises(retrieval_generation_service.RetrievalGenerationError):
+        retrieval_generation_service.resolve_active_retrieval_generation(
+            data_dir=fixture["data_dir"],
+            db_path=fixture["db_path"],
+        )
 
 
 def test_activation_marker_clear_failure_never_returns_committed(
@@ -3206,6 +3314,86 @@ def test_missing_staging_vector_manifest_blocks_publish(
         _direction_commit(db_path, data_dir)
     assert (
         "staging_vector_manifest"
+        in error.value.details["missing_components"]
+    )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing", "wrong_document", "wrong_note", "orphan", "duplicate"],
+)
+def test_staging_lancedb_note_identity_must_match_affected_document(
+    tmp_path,
+    monkeypatch,
+    corruption,
+):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    original = vector_store_service.sync_document_note_embeddings
+
+    def corrupt_after_sync(*args, **kwargs):
+        result = original(*args, **kwargs)
+        document_id = int(args[0])
+        sources = vector_store_service.collect_personal_note_sources(
+            document_id=document_id,
+            source_db_path=kwargs["source_db_path"],
+        )
+        records = [
+            vector_store_service.build_note_schema_record(source)
+            for source in sources
+        ]
+        db = vector_store_service.open_vector_store(kwargs["store_path"])
+        if vector_store_service.NOTE_TABLE in vector_store_service._table_names(db):
+            db.drop_table(vector_store_service.NOTE_TABLE)
+        db.create_table(
+            vector_store_service.NOTE_TABLE,
+            data=records,
+            mode="create",
+        )
+        rows = vector_store_service._existing_records(
+            db,
+            vector_store_service.NOTE_TABLE,
+        )
+        assert rows
+        row = dict(rows[0])
+        table = db.open_table(vector_store_service.NOTE_TABLE)
+        if corruption != "duplicate":
+            table.delete(f"source_id = '{row['source_id']}'")
+        if corruption == "wrong_document":
+            row["document_id"] = 8
+            table.add([row])
+        elif corruption == "wrong_note":
+            row["note_id"] = 999
+            table.add([row])
+        elif corruption == "orphan":
+            table.add([row])
+            orphan = dict(row)
+            orphan["source_id"] = "note:999"
+            orphan["vector_id"] = "note:999"
+            orphan["note_id"] = 999
+            table.add([orphan])
+        elif corruption == "duplicate":
+            table.add([row])
+        return result
+
+    monkeypatch.setattr(
+        vector_store_service,
+        "sync_document_note_embeddings",
+        corrupt_after_sync,
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "inspect_document_note_vector_state",
+        _REAL_INSPECT_DOCUMENT_NOTE_VECTOR_STATE,
+    )
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        _direction_commit(db_path, data_dir)
+
+    assert error.value.code == "zotero_direction_b_staging_validation_failed"
+    assert (
+        "staging_lancedb_note_vectors"
         in error.value.details["missing_components"]
     )
 

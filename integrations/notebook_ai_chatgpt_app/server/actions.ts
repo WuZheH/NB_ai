@@ -9,6 +9,7 @@ import {
   type NotebookSearchInput,
 } from "./contracts.js";
 import { NotebookBackendError, NotebookClient } from "./notebookClient.js";
+import { errorPayload } from "./tools/shared.js";
 
 const ACTIONS_PREFIX = "/actions/v1/";
 const MAX_ACTION_BODY_BYTES = 64 * 1024;
@@ -120,8 +121,12 @@ export async function handleActionsHttpRequest(
     const result = await dispatchAction(action, body, client);
     sendJson(response, 200, result);
   } catch (error) {
-    const mapped = mapActionError(error);
-    sendJson(response, mapped.status, actionError(mapped.errorCode, mapped.message));
+    const mapped = mapActionError(error, action);
+    sendJson(
+      response,
+      mapped.status,
+      actionError(mapped.errorCode, mapped.message, mapped.details),
+    );
   }
   return true;
 }
@@ -275,11 +280,38 @@ class ActionRequestError extends Error {
   }
 }
 
-function mapActionError(error: unknown): { status: number; errorCode: string; message: string } {
+function mapActionError(
+  error: unknown,
+  action?: string,
+): {
+  status: number;
+  errorCode: string;
+  message: string;
+  details?: Record<string, unknown>;
+} {
   if (error instanceof ActionRequestError) {
     return { status: error.status, errorCode: error.errorCode, message: error.message };
   }
   if (error instanceof NotebookBackendError) {
+    if (action === "import_document" || action === "delete_document") {
+      const payload = errorPayload(error, {
+        tool: action,
+        writeOperation: true,
+      });
+      const errorCode = payload.error_code;
+      const message = payload.message;
+      const details = { ...payload };
+      delete details.status;
+      delete details.tool;
+      delete details.error_code;
+      delete details.message;
+      return {
+        status: error.status >= 400 && error.status <= 599 ? error.status : 502,
+        errorCode: typeof errorCode === "string" ? errorCode : "ACTIONS_BACKEND_ERROR",
+        message: typeof message === "string" ? message : "Search backend request failed.",
+        details,
+      };
+    }
     return {
       status: error.status >= 400 && error.status <= 599 ? error.status : 502,
       errorCode: /^[A-Za-z0-9_.-]{1,96}$/.test(error.code) ? error.code : "ACTIONS_BACKEND_ERROR",
@@ -379,8 +411,12 @@ function safeEqual(left: string, right: string): boolean {
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
-function actionError(errorCode: string, message: string): Record<string, unknown> {
-  return { status: "error", error_code: errorCode, message };
+function actionError(
+  errorCode: string,
+  message: string,
+  details: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return { ...details, status: "error", error_code: errorCode, message };
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -482,6 +518,22 @@ function errorSchema(): Record<string, unknown> {
       status: { type: "string", const: "error" },
       error_code: { type: "string" },
       message: { type: "string" },
+      retryable: { type: ["boolean", "null"] },
+      writes_performed: { type: ["boolean", "null"] },
+      token_consumed: { type: ["boolean", "null"] },
+      safe_to_retry: { type: ["boolean", "null"] },
+      replayed_receipt: { type: ["boolean", "null"] },
+      operation_in_progress: { type: ["boolean", "null"] },
+      publish_substage: { type: ["string", "null"] },
+      cause_type: { type: ["string", "null"] },
+      cause_message: { type: ["string", "null"] },
+      cause_errno: { type: ["integer", "null"] },
+      cause_winerror: { type: ["integer", "null"] },
+      cause_filename: { type: ["string", "null"] },
+      cause_filename2: { type: ["string", "null"] },
+      rollback_attempted: { type: ["boolean", "null"] },
+      rollback_completed: { type: ["boolean", "null"] },
+      error_stage: { type: ["string", "null"] },
     },
   };
 }

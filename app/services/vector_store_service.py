@@ -687,16 +687,29 @@ def collect_passage_sources(
     limit: int | None = None,
     source_ids: list[str] | None = None,
     source_db_path: str | Path | None = None,
+    *,
+    document_id: int | None = None,
 ) -> list[dict[str, Any]]:
+    if document_id is not None and (
+        isinstance(document_id, bool)
+        or not isinstance(document_id, int)
+        or document_id <= 0
+    ):
+        raise ValueError("document_id must be a positive integer")
     sources = []
     rows = (
         _passage_source_rows_from_sqlite(
             source_db_path,
             source_ids=source_ids,
             limit=limit,
+            document_id=document_id,
         )
         if source_db_path is not None
-        else _passage_source_rows(limit=limit, source_ids=source_ids)
+        else _passage_source_rows(
+            limit=limit,
+            source_ids=source_ids,
+            document_id=document_id,
+        )
     )
     for document, chunk in rows:
         passage_text = _compact_text(chunk.chunk_text)
@@ -768,7 +781,7 @@ def sync_document_note_embeddings(
         current = existing_by_id.get(str(source["source_id"]))
         if current is None:
             inserted_sources.append(source)
-        elif _record_stale(current, source):
+        elif _note_record_stale(current, source):
             updated_sources.append(source)
         else:
             skipped_sources.append(source)
@@ -1097,6 +1110,201 @@ def inspect_note_vector_impact(
         "read_only": True,
         "note_vector_count": len(records),
         "note_source_ids": sorted(records),
+    }
+
+
+def inspect_document_note_vector_state(
+    *,
+    document_id: int,
+    expected_sources: list[dict[str, Any]],
+    store_path: Path | None = None,
+) -> dict[str, Any]:
+    """Strictly validate one document's authoritative note-vector rows."""
+
+    if (
+        isinstance(document_id, bool)
+        or not isinstance(document_id, int)
+        or document_id <= 0
+    ):
+        raise ValueError("document_id must be a positive integer")
+    if not isinstance(expected_sources, list):
+        raise ValueError("expected_sources must be a list")
+
+    expected_by_id: dict[str, dict[str, Any]] = {}
+    for source in expected_sources:
+        if not isinstance(source, dict):
+            raise ValueError("expected note source must be a mapping")
+        source_id = source.get("source_id")
+        note = source.get("note")
+        if not isinstance(source_id, str) or not isinstance(note, Mapping):
+            raise ValueError("expected note source identity is invalid")
+        source_id = source_id.strip()
+        if source_id in expected_by_id:
+            raise ValueError("expected note source IDs must be unique")
+        try:
+            note_id = int(note["id"])
+            note_document_id = int(note["document_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("expected note source identity is invalid") from exc
+        if (
+            note_id <= 0
+            or note_document_id != document_id
+            or source_id != make_note_source_id(note_id)
+        ):
+            raise ValueError("expected note source identity is invalid")
+        expected_by_id[source_id] = source
+
+    expected_ids = sorted(expected_by_id)
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    if not actual_store_path.exists():
+        return _unavailable_strict_note_state(
+            expected_ids,
+            "vector_store_unavailable",
+        )
+    try:
+        db = _connect_existing_vector_store(actual_store_path)
+        if NOTE_TABLE not in _table_names(db):
+            return _complete_strict_note_state(
+                expected_ids=expected_ids,
+                actual_ids=[],
+                duplicate_ids=[],
+                stale_ids=[],
+            )
+        table = db.open_table(NOTE_TABLE)
+        fields = _scoped_table_schema_fields(table)
+        required_fields = {
+            "source_id",
+            "note_id",
+            "document_id",
+            "source_hash",
+            "profile_version",
+            "embedding_model",
+            "embedding_model_path",
+        }
+        if fields is None or not required_fields.issubset(fields):
+            return _unavailable_strict_note_state(
+                expected_ids,
+                "note_identity_schema_unavailable",
+            )
+
+        target_where = f"document_id = {document_id}"
+        target_count = int(table.count_rows(target_where))
+        target_rows = (
+            table.search()
+            .where(target_where)
+            .limit(max(target_count, 1))
+            .to_list()
+            if target_count
+            else []
+        )
+        expected_rows: list[dict[str, Any]] = []
+        if expected_ids:
+            expected_where = "source_id IN (" + ", ".join(
+                _sql_quote(value) for value in expected_ids
+            ) + ")"
+            expected_count = int(table.count_rows(expected_where))
+            expected_rows = (
+                table.search()
+                .where(expected_where)
+                .limit(max(expected_count, 1))
+                .to_list()
+                if expected_count
+                else []
+            )
+    except Exception:
+        return _unavailable_strict_note_state(
+            expected_ids,
+            "note_identity_query_failed",
+        )
+
+    actual_ids: list[str] = []
+    for record in target_rows:
+        source_id = record.get("source_id") if isinstance(record, Mapping) else None
+        if not isinstance(source_id, str) or not source_id.strip():
+            return _unavailable_strict_note_state(
+                expected_ids,
+                "note_identity_row_parse_failed",
+            )
+        actual_ids.append(source_id.strip())
+
+    rows_by_id: dict[str, list[dict[str, Any]]] = {
+        source_id: [] for source_id in expected_ids
+    }
+    for record in expected_rows:
+        if not isinstance(record, dict):
+            return _unavailable_strict_note_state(
+                expected_ids,
+                "note_identity_row_parse_failed",
+            )
+        source_id = record.get("source_id")
+        if not isinstance(source_id, str) or source_id not in rows_by_id:
+            return _unavailable_strict_note_state(
+                expected_ids,
+                "note_identity_row_parse_failed",
+            )
+        rows_by_id[source_id].append(record)
+
+    duplicate_ids = sorted(
+        source_id
+        for source_id, rows in rows_by_id.items()
+        if len(rows) != 1 and len(rows) > 1
+    )
+    stale_ids = sorted(
+        source_id
+        for source_id, rows in rows_by_id.items()
+        if len(rows) == 1
+        and _note_record_stale(rows[0], expected_by_id[source_id])
+    )
+    return _complete_strict_note_state(
+        expected_ids=expected_ids,
+        actual_ids=actual_ids,
+        duplicate_ids=duplicate_ids,
+        stale_ids=stale_ids,
+    )
+
+
+def _complete_strict_note_state(
+    *,
+    expected_ids: list[str],
+    actual_ids: list[str],
+    duplicate_ids: list[str],
+    stale_ids: list[str],
+) -> dict[str, Any]:
+    expected = set(expected_ids)
+    actual = set(actual_ids)
+    return {
+        "status": "ok",
+        "reason": None,
+        "expected_source_ids": sorted(expected),
+        "actual_source_ids": sorted(actual),
+        "missing_source_ids": sorted(expected - actual),
+        "orphan_source_ids": sorted(actual - expected),
+        "duplicate_source_ids": sorted(duplicate_ids),
+        "stale_source_ids": sorted(stale_ids),
+        "missing_count": len(expected - actual),
+        "orphan_count": len(actual - expected),
+        "duplicate_count": len(duplicate_ids),
+        "stale_count": len(stale_ids),
+    }
+
+
+def _unavailable_strict_note_state(
+    expected_ids: list[str],
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "expected_source_ids": list(expected_ids),
+        "actual_source_ids": [],
+        "missing_source_ids": list(expected_ids),
+        "orphan_source_ids": "not_available",
+        "duplicate_source_ids": "not_available",
+        "stale_source_ids": "not_available",
+        "missing_count": len(expected_ids),
+        "orphan_count": "not_available",
+        "duplicate_count": "not_available",
+        "stale_count": "not_available",
     }
 
 
@@ -1665,6 +1873,8 @@ def _search_table(
 def _passage_source_rows(
     limit: int | None = None,
     source_ids: list[str] | None = None,
+    *,
+    document_id: int | None = None,
 ) -> list[tuple[Document, KnowledgeChunk]]:
     requested = set(source_ids or [])
     scoped_ids = [_parse_passage_source_id(source_id) for source_id in requested]
@@ -1675,6 +1885,8 @@ def _passage_source_rows(
             .join(KnowledgeChunk, KnowledgeChunk.document_id == Document.id)
             .where(Document.read_status.in_(READ_LIBRARY_STATUSES))
         )
+        if document_id is not None:
+            statement = statement.where(Document.id == document_id)
         if scoped_ids:
             statement = statement.where(KnowledgeChunk.id.in_([chunk_id for _document_id, chunk_id in scoped_ids]))
             statement = statement.where(Document.id.in_([document_id for document_id, _chunk_id in scoped_ids]))
@@ -1713,6 +1925,7 @@ def _passage_source_rows_from_sqlite(
     *,
     source_ids: list[str] | None = None,
     limit: int | None = None,
+    document_id: int | None = None,
 ) -> list[tuple[SimpleNamespace, SimpleNamespace]]:
     database = Path(db_path).resolve(strict=False)
     if not database.is_file():
@@ -1741,6 +1954,10 @@ def _passage_source_rows_from_sqlite(
         for scoped_batch in scoped_batches:
             scope_clause = ""
             params: list[Any] = [*READ_LIBRARY_STATUSES]
+            document_scope_clause = ""
+            if document_id is not None:
+                document_scope_clause = " AND documents.id = ?"
+                params.append(document_id)
             if scoped_batch:
                 scope_clause = " AND (" + " OR ".join(
                     "(documents.id = ? AND chunks.id = ?)"
@@ -1772,6 +1989,7 @@ def _passage_source_rows_from_sqlite(
                 LEFT JOIN book_chapters AS chapters
                   ON chapters.id = chunks.chapter_id
                 WHERE documents.read_status IN ({status_placeholders})
+                {document_scope_clause}
                 {scope_clause}
                 ORDER BY documents.id, chunks.chunk_index, chunks.id
             """
@@ -2065,6 +2283,38 @@ def _record_stale(record: dict[str, Any], source: dict[str, Any]) -> bool:
             _active_embedding_model_path(),
         )
     )
+
+
+def _note_record_stale(
+    record: dict[str, Any],
+    source: dict[str, Any],
+) -> bool:
+    note = source.get("note")
+    if not isinstance(note, Mapping):
+        return True
+    if str(record.get("source_id") or "") != str(
+        source.get("source_id") or ""
+    ):
+        return True
+    try:
+        expected_note_id = int(note["id"])
+        expected_document_id = int(note["document_id"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    for field, expected in (
+        ("note_id", expected_note_id),
+        ("document_id", expected_document_id),
+    ):
+        value = record.get(field)
+        if isinstance(value, bool):
+            return True
+        try:
+            current = int(value)
+        except (TypeError, ValueError):
+            return True
+        if current != expected:
+            return True
+    return _record_stale(record, source)
 
 
 def _schema_sample_record(sources: list[dict[str, Any]], schema_record_builder: Any) -> dict[str, Any] | None:

@@ -694,7 +694,7 @@ class ImportOperationJournal:
             self.confirmation_token_digest, "confirmation_token_digest"
         )
         _validate_sha256(self.source_pdf_sha256, "source_pdf_sha256")
-        _validate_nonempty_str(
+        _validate_sha256(
             self.transaction_fingerprint, "transaction_fingerprint"
         )
         _validate_nonempty_str(

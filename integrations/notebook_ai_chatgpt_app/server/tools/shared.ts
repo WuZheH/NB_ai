@@ -90,21 +90,26 @@ const PUBLIC_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
   preview_token_unknown: "The import preview is no longer available. Run import_preview again.",
 });
 
-export function errorToolResult(
+type ErrorPayloadOptions = {
+  tool?: string;
+  writeOperation?: boolean;
+  includeStructuredContent?: boolean;
+};
+
+export function errorPayload(
   error: unknown,
-  options: {
-    tool?: string;
-    writeOperation?: boolean;
-    includeStructuredContent?: boolean;
-  } = {},
-): {
-  isError: true;
-  content: Array<{ type: "text"; text: string }>;
-  structuredContent?: Record<string, unknown>;
-} {
+  options: ErrorPayloadOptions = {},
+): Record<string, unknown> {
   const code = errorCode(error);
+  const writeOperation = options.writeOperation === true;
+  const writeStateUncertain = writeOperation
+    && (code === "BACKEND_TIMEOUT" || code === "BACKEND_UNAVAILABLE");
   const message =
-    PUBLIC_ERROR_MESSAGES[code]
+    writeStateUncertain
+      ? code === "BACKEND_TIMEOUT"
+        ? "The write request timed out before its final state was known. Do not retry automatically; verify the durable operation state first."
+        : "The connection to Search was lost before the write's final state was known. Do not retry automatically; verify the durable operation state first."
+    : PUBLIC_ERROR_MESSAGES[code]
     ?? (code === "BACKEND_TIMEOUT"
       ? "Search backend request timed out."
       : code === "zotero_direction_b_body_import_failed"
@@ -132,7 +137,6 @@ export function errorToolResult(
         ].includes(code)
         ? "Search high-quality retrieval model is unavailable."
       : "Search request failed.");
-  const writeOperation = options.writeOperation === true;
 
   // Preserve backend details when available (NotebookBackendError carries
   // the full structured error dict from the Python API).
@@ -162,25 +166,34 @@ export function errorToolResult(
     return redactErrorSecrets(value).slice(0, 512);
   };
 
-  const structuredContent = {
+  return {
     status: "error" as const,
     tool: options.tool ?? "unknown",
     error_code: code,
     message,
-    retryable: nullableBoolean(
-      "retryable",
-      code === "BACKEND_TIMEOUT" || code === "BACKEND_UNAVAILABLE",
-    ),
-    writes_performed: nullableBoolean(
-      "writes_performed",
-      writeOperation ? null : false,
-    ),
+    retryable: writeStateUncertain
+      ? false
+      : nullableBoolean(
+          "retryable",
+          code === "BACKEND_TIMEOUT" || code === "BACKEND_UNAVAILABLE",
+        ),
+    writes_performed: writeStateUncertain
+      ? null
+      : nullableBoolean("writes_performed", writeOperation ? null : false),
     ...(writeOperation
       ? {
-          token_consumed: nullableBoolean("token_consumed", null),
-          safe_to_retry: nullableBoolean("safe_to_retry", false),
-          replayed_receipt: nullableBoolean("replayed_receipt", false),
-          operation_in_progress: nullableBoolean("operation_in_progress", false),
+          token_consumed: writeStateUncertain
+            ? null
+            : nullableBoolean("token_consumed", null),
+          safe_to_retry: writeStateUncertain
+            ? false
+            : nullableBoolean("safe_to_retry", false),
+          replayed_receipt: writeStateUncertain
+            ? null
+            : nullableBoolean("replayed_receipt", false),
+          operation_in_progress: writeStateUncertain
+            ? null
+            : nullableBoolean("operation_in_progress", false),
           publish_substage: nullableSafeString("publish_substage"),
           cause_type: nullableSafeString("cause_type"),
           cause_message: nullableSafeString("cause_message"),
@@ -194,6 +207,17 @@ export function errorToolResult(
         }
       : {}),
   };
+}
+
+export function errorToolResult(
+  error: unknown,
+  options: ErrorPayloadOptions = {},
+): {
+  isError: true;
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent?: Record<string, unknown>;
+} {
+  const structuredContent = errorPayload(error, options);
   return {
     isError: true,
     content: jsonContent(structuredContent),

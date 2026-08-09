@@ -334,6 +334,136 @@ def test_note_first_apply_noop_stale_and_orphan_preservation(
     assert payload["object_count"] == 5
 
 
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    [("document_id", 8), ("note_id", 999)],
+)
+def test_note_sync_repairs_identity_metadata_drift(
+    tmp_path: Path,
+    fake_embedding,
+    field: str,
+    wrong_value: int,
+) -> None:
+    loads, texts = fake_embedding
+    database = _note_database(tmp_path)
+    store = tmp_path / "lancedb"
+    manifest = tmp_path / "vector-manifest.json"
+    vector_store_service.sync_document_note_embeddings(
+        1,
+        dry_run=False,
+        apply=True,
+        source_db_path=database,
+        store_path=store,
+        manifest_path=manifest,
+    )
+    db = vector_store_service.open_vector_store(store)
+    table = db.open_table(vector_store_service.NOTE_TABLE)
+    row = next(
+        record
+        for record in vector_store_service._existing_records(
+            db,
+            vector_store_service.NOTE_TABLE,
+        )
+        if record["source_id"] == "note:1"
+    )
+    table.delete("source_id = 'note:1'")
+    row[field] = wrong_value
+    table.add([row])
+
+    result = vector_store_service.sync_document_note_embeddings(
+        1,
+        dry_run=False,
+        apply=True,
+        source_db_path=database,
+        store_path=store,
+        manifest_path=manifest,
+    )
+
+    repaired = next(
+        record
+        for record in vector_store_service._existing_records(
+            db,
+            vector_store_service.NOTE_TABLE,
+        )
+        if record["source_id"] == "note:1"
+    )
+    assert result["updated_count"] == 1
+    assert result["skipped_count"] == 2
+    assert repaired["document_id"] == 1
+    assert repaired["note_id"] == 1
+    assert len(loads) == 2
+    assert len(texts) == 4
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("missing", "wrong_document", "wrong_note", "orphan", "duplicate"),
+)
+def test_strict_document_note_state_detects_candidate_corruption(
+    tmp_path: Path,
+    fake_embedding,
+    corruption: str,
+) -> None:
+    database = _note_database(tmp_path)
+    store = tmp_path / "lancedb"
+    manifest = tmp_path / "vector-manifest.json"
+    sources = vector_store_service.collect_personal_note_sources(
+        document_id=1,
+        source_db_path=database,
+    )
+    vector_store_service.sync_document_note_embeddings(
+        1,
+        dry_run=False,
+        apply=True,
+        source_db_path=database,
+        store_path=store,
+        manifest_path=manifest,
+    )
+    db = vector_store_service.open_vector_store(store)
+    table = db.open_table(vector_store_service.NOTE_TABLE)
+    row = next(
+        dict(record)
+        for record in vector_store_service._existing_records(
+            db,
+            vector_store_service.NOTE_TABLE,
+        )
+        if record["source_id"] == "note:1"
+    )
+    if corruption != "duplicate":
+        table.delete("source_id = 'note:1'")
+    if corruption == "wrong_document":
+        row["document_id"] = 8
+        table.add([row])
+    elif corruption == "wrong_note":
+        row["note_id"] = 999
+        table.add([row])
+    elif corruption == "orphan":
+        table.add([row])
+        orphan = dict(row)
+        orphan["source_id"] = "note:999"
+        orphan["vector_id"] = "note:999"
+        orphan["note_id"] = 999
+        table.add([orphan])
+    elif corruption == "duplicate":
+        table.add([row])
+
+    state = vector_store_service.inspect_document_note_vector_state(
+        document_id=1,
+        expected_sources=sources,
+        store_path=store,
+    )
+
+    assert state["status"] == "ok"
+    if corruption in {"missing", "wrong_document"}:
+        assert state["missing_source_ids"] == ["note:1"]
+    if corruption in {"wrong_document", "wrong_note"}:
+        assert state["stale_source_ids"] == ["note:1"]
+    if corruption == "orphan":
+        assert state["orphan_source_ids"] == ["note:999"]
+    if corruption == "duplicate":
+        assert state["duplicate_source_ids"] == ["note:1"]
+
+
 def test_note_schema_mismatch_never_rebuilds_or_loads_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

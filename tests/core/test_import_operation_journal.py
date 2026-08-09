@@ -55,7 +55,7 @@ def _make_record(**overrides: object) -> ImportOperationJournal:
         "operation_id": uuid.uuid4().hex,
         "operation_type": "import_document",
         "confirmation_token_digest": _VALID_SHA,
-        "transaction_fingerprint": "x" * 32,
+        "transaction_fingerprint": "d" * 64,
         "source_revision_fingerprint": "y" * 32,
         "title": "Test Book",
         "zotero_item_key": "AFMVJLNL",
@@ -286,7 +286,7 @@ def test_timestamp_rejects_naive() -> None:
             operation_id=_VALID_OP_ID,
             confirmation_token_digest=_VALID_SHA,
             source_pdf_sha256=_VALID_SHA,
-            transaction_fingerprint="x",
+            transaction_fingerprint="d" * 64,
             source_revision_fingerprint="y",
             started_at="2026-07-31T10:00:00",
             updated_at="2026-07-31T11:00:00+00:00",
@@ -334,7 +334,7 @@ def test_started_at_empty_rejected() -> None:
             operation_id=_VALID_OP_ID,
             confirmation_token_digest=_VALID_SHA,
             source_pdf_sha256=_VALID_SHA,
-            transaction_fingerprint="x",
+            transaction_fingerprint="d" * 64,
             source_revision_fingerprint="y",
             started_at="",
             updated_at=_ts(10),
@@ -359,6 +359,17 @@ def test_empty_transaction_fingerprint_rejected() -> None:
 def test_whitespace_transaction_fingerprint_rejected() -> None:
     with pytest.raises(JournalValidationError, match="transaction_fingerprint"):
         _make_record(transaction_fingerprint="   ")
+
+
+@pytest.mark.parametrize(
+    "transaction_fingerprint",
+    ("a" * 32, "g" * 64, "A" * 64),
+)
+def test_transaction_fingerprint_requires_lowercase_sha256(
+    transaction_fingerprint: str,
+) -> None:
+    with pytest.raises(JournalValidationError, match="transaction_fingerprint"):
+        _make_record(transaction_fingerprint=transaction_fingerprint)
 
 
 def test_whitespace_source_revision_fingerprint_rejected() -> None:
