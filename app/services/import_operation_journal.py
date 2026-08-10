@@ -681,6 +681,12 @@ class ImportOperationJournal:
     rollback: Mapping[str, Any] | None = None
     warnings: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     completion_receipt: Mapping[str, Any] | None = None
+    _allow_legacy_transaction_fingerprint: bool = field(
+        default=False,
+        repr=False,
+        compare=False,
+        kw_only=True,
+    )
 
     def __post_init__(self) -> None:
         if self.schema_version != SCHEMA_VERSION:
@@ -694,9 +700,15 @@ class ImportOperationJournal:
             self.confirmation_token_digest, "confirmation_token_digest"
         )
         _validate_sha256(self.source_pdf_sha256, "source_pdf_sha256")
-        _validate_sha256(
-            self.transaction_fingerprint, "transaction_fingerprint"
-        )
+        if self._allow_legacy_transaction_fingerprint:
+            _validate_nonempty_str(
+                self.transaction_fingerprint,
+                "transaction_fingerprint",
+            )
+        else:
+            _validate_sha256(
+                self.transaction_fingerprint, "transaction_fingerprint"
+            )
         _validate_nonempty_str(
             self.source_revision_fingerprint, "source_revision_fingerprint"
         )
@@ -830,6 +842,10 @@ class ImportOperationJournal:
                 d[field_name] = value
         return d
 
+    @property
+    def canonical_transaction_fingerprint(self) -> bool:
+        return bool(_SHA256_RE.fullmatch(self.transaction_fingerprint))
+
     @classmethod
     def from_dict(
         cls, data: dict[str, Any]
@@ -852,7 +868,10 @@ class ImportOperationJournal:
                 f"Unknown fields in journal data: {sorted(unknown)}"
             )
         safe = deepcopy({k: data.get(k) for k in allowed if k in data})
-        return cls(**safe)  # type: ignore[arg-type]
+        return cls(  # type: ignore[arg-type]
+            **safe,
+            _allow_legacy_transaction_fingerprint=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +912,10 @@ class ImportOperationJournalStore:
             raise TypeError(
                 "record must be an ImportOperationJournal instance"
             )
+        _validate_sha256(
+            record.transaction_fingerprint,
+            "transaction_fingerprint",
+        )
 
         with self._lock:
             # Initial state constraints — create must start from a

@@ -36,6 +36,9 @@ from scripts.migrations import (
 _REAL_INSPECT_DOCUMENT_NOTE_VECTOR_STATE = (
     vector_store_service.inspect_document_note_vector_state
 )
+_REAL_INSPECT_DOCUMENT_PASSAGE_VECTOR_STATE = (
+    vector_store_service.inspect_document_passage_vector_state
+)
 
 
 @pytest.fixture(autouse=True)
@@ -114,6 +117,20 @@ def isolate_b4_derived_primitives(monkeypatch):
             "full_rebuild_performed": False,
             "orphan_delete_performed": False,
             "lancedb_writes_performed": False,
+        },
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "inspect_document_passage_vector_state",
+        lambda *, expected_sources, **_kwargs: {
+            "status": "ok",
+            "missing_count": 0,
+            "orphan_count": 0,
+            "duplicate_count": 0,
+            "stale_count": 0,
+            "expected_source_ids": [
+                source["source_id"] for source in expected_sources
+            ],
         },
     )
     monkeypatch.setattr(
@@ -563,6 +580,7 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
 
     assert result == {
         "status": "committed",
+        "operation_id": bridge["operation_id"],
         "document_id": 1,
         "title": "Selected Book",
         "document_type": "book",
@@ -574,6 +592,7 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
         "already_completed": False,
         "replayed_receipt": False,
         "operation_in_progress": False,
+        "terminal": True,
         "token_consumed": True,
         "writes_performed": True,
         "safe_to_retry": False,
@@ -696,6 +715,7 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
 
     assert replay == {
         "status": "committed",
+        "operation_id": bridge["operation_id"],
         "document_id": 1,
         "title": "Selected Book",
         "document_type": "book",
@@ -707,6 +727,7 @@ def test_chat_import_document_runs_full_direction_b_temp_chain(
         "already_completed": True,
         "replayed_receipt": True,
         "operation_in_progress": False,
+        "terminal": True,
         "token_consumed": True,
             "writes_performed": True,
         "safe_to_retry": False,
@@ -1566,6 +1587,7 @@ def test_public_chat_zotero_preview_forwards_keys_and_sanitizes_choices(
     assert result["status"] == "ok"
     assert result["duplicate_status"] == "not_evaluated"
     assert result["confirmation_token"] is None
+    assert result["operation_id"] is None
     assert result["attachment_choices"][0] == {
         "zotero_attachment_key": "ATTACH01",
         "file_name": "choice.pdf",
@@ -1598,6 +1620,7 @@ def test_public_chat_zotero_temp_preview_registers_chat_confirmation(
             "source_type": "zotero_selected_book",
             "duplicate_status": "not_detected",
             "confirmation_token": "chat-confirmation-token",
+            "operation_id": "a" * 32,
             "confirmation_expires_in_seconds": 600,
         }
 
@@ -1765,10 +1788,11 @@ def test_public_chat_zotero_production_registers_and_duplicate_does_not(
             "estimated_pages": 12,
             "annotation_count": 4,
             "child_note_count": 2,
-            "duplicate_status": "not_detected",
-            "confirmation_token": "chat-confirmation-token",
-            "confirmation_expires_in_seconds": 600,
-        }
+                "duplicate_status": "not_detected",
+                "confirmation_token": "chat-confirmation-token",
+                "operation_id": "a" * 32,
+                "confirmation_expires_in_seconds": 600,
+            }
 
     monkeypatch.setattr(
         chat_tool_service,
@@ -1792,6 +1816,7 @@ def test_public_chat_zotero_production_registers_and_duplicate_does_not(
     assert production["confirmation_token"] == (
         "chat-confirmation-token"
     )
+    assert production["operation_id"] == "a" * 32
     assert len(registrations) == 1
 
     database = tmp_path / "research.db"
@@ -2972,6 +2997,43 @@ def test_activation_marker_clear_failure_never_returns_committed(
     assert isolate_production_generation_coordinator.degraded is True
 
 
+def test_candidate_is_owned_before_database_rollback_snapshot_creation(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _install_production_shaped_runtime(
+        tmp_path,
+        monkeypatch,
+        fts_ready=True,
+    )
+    before_db = fixture["db_path"].read_bytes()
+    monkeypatch.setattr(
+        zotero_direction_b_import_service,
+        "_create_rollback_copy",
+        lambda _path: (_ for _ in ()).throw(OSError("forced snapshot failure")),
+    )
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ):
+        zotero_direction_b_import_service.commit_selected_book_import_to_production(
+            preview_token="p" * 40,
+            body_importer=body_importer,
+        )
+
+    assert fixture["db_path"].read_bytes() == before_db
+    root = retrieval_generation_service.generation_root(fixture["data_dir"])
+    assert not root.exists() or list(root.iterdir()) == []
+    assert not retrieval_generation_service.active_pointer_path(
+        fixture["data_dir"]
+    ).exists()
+    restored = retrieval_generation_service.resolve_active_retrieval_generation(
+        data_dir=fixture["data_dir"],
+        db_path=fixture["db_path"],
+    )
+    assert restored.mode == "legacy"
+
+
 def test_production_db_rollback_failure_has_priority_and_retains_backup(
     tmp_path,
     monkeypatch,
@@ -3396,6 +3458,83 @@ def test_staging_lancedb_note_identity_must_match_affected_document(
         "staging_lancedb_note_vectors"
         in error.value.details["missing_components"]
     )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing", "wrong_document", "wrong_chunk", "wrong_vector", "orphan", "duplicate"],
+)
+def test_staging_lancedb_passage_identity_must_match_affected_document(
+    tmp_path,
+    monkeypatch,
+    corruption,
+):
+    db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
+    original = vector_store_service.sync_affected_passage_embeddings
+
+    def corrupt_after_sync(*args, **kwargs):
+        result = original(*args, **kwargs)
+        sources = vector_store_service.collect_passage_sources(
+            document_id=1,
+            source_db_path=kwargs["source_db_path"],
+        )
+        records = [
+            vector_store_service.build_passage_schema_record(
+                source["document"],
+                source["chunk"],
+            )
+            for source in sources
+        ]
+        assert records
+        db = vector_store_service.open_vector_store(kwargs["store_path"])
+        if vector_store_service.PASSAGE_TABLE in vector_store_service._table_names(db):
+            db.drop_table(vector_store_service.PASSAGE_TABLE)
+        row = dict(records[0])
+        if corruption == "missing":
+            rows = []
+        elif corruption == "wrong_document":
+            row["document_id"] = 8
+            rows = [row]
+        elif corruption == "wrong_chunk":
+            row["chunk_id"] = 999
+            rows = [row]
+        elif corruption == "wrong_vector":
+            row["vector_id"] = "chunk:1:999"
+            rows = [row]
+        elif corruption == "orphan":
+            orphan = dict(row)
+            orphan["source_id"] = "chunk:1:999"
+            orphan["vector_id"] = "chunk:1:999"
+            orphan["chunk_id"] = 999
+            rows = [row, orphan]
+        else:
+            rows = [row, dict(row)]
+        if rows:
+            db.create_table(
+                vector_store_service.PASSAGE_TABLE,
+                data=rows,
+                mode="create",
+            )
+        return result
+
+    monkeypatch.setattr(
+        vector_store_service,
+        "sync_affected_passage_embeddings",
+        corrupt_after_sync,
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "inspect_document_passage_vector_state",
+        _REAL_INSPECT_DOCUMENT_PASSAGE_VECTOR_STATE,
+    )
+
+    with pytest.raises(
+        zotero_direction_b_import_service.DirectionBSelectedBookImportError
+    ) as error:
+        _direction_commit(db_path, data_dir)
+
+    assert error.value.code == "zotero_direction_b_staging_validation_failed"
+    assert "staging_passage_vectors" in error.value.details["missing_components"]
 
 
 def test_missing_required_staging_zotero_note_vector_directory_blocks_publish(

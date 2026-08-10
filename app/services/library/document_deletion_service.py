@@ -5,10 +5,13 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
+import tempfile
 import threading
 import time
 import unicodedata
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +33,12 @@ from app.schemas.library_deletion import (
     DeletionOptions,
     ManualPreservationAcknowledgment,
 )
-from app.services import vector_store_service
+from app.services import (
+    retrieval_generation_mutation_service,
+    retrieval_generation_service,
+    vector_store_service,
+)
+from app.services.retrieval import fts_status_service
 from app.services.retrieval.fts_index_service import cleanup_document_retrieval_fts
 from app.services.retrieval.source_registry import RetrievalSourceRegistry
 
@@ -140,6 +148,7 @@ class DeletionRuntime:
     cleanup_fts: Callable[..., dict[str, Any]] | None = None
     inspect_vectors: Callable[..., dict[str, Any]] | None = None
     cleanup_vectors: Callable[..., dict[str, Any]] | None = None
+    persistence_scope: str = ""
 
     def resolved_archive_root(self) -> Path:
         if self.archive_root is not None:
@@ -150,6 +159,34 @@ class DeletionRuntime:
         project_root = Path(self.data_dir).resolve().parent
         learning_root = project_root.parents[1] if len(project_root.parents) > 1 else project_root.parent
         return learning_root / "Archives" / "SearchBookDeletion"
+
+
+def _uses_production_generation(runtime: DeletionRuntime) -> bool:
+    """Return whether this delete runtime mutates production retrieval state.
+
+    An explicit ``persistence_scope`` wins; the default decision mirrors the
+    path-based production detection used by the chat import pipeline so that
+    temp runtimes never enter the generation transaction.
+    """
+    scope = str(runtime.persistence_scope or "").strip()
+    if scope == "production":
+        return True
+    if scope == "temp":
+        return False
+    if scope:
+        raise DeletionError(
+            "deletion_persistence_scope_invalid",
+            "删除运行时的持久化范围无效。",
+        )
+    pairs = (
+        (runtime.db_path, DEFAULT_DB_PATH),
+        (runtime.data_dir, DATA_DIR),
+    )
+    return all(
+        Path(first).resolve(strict=False)
+        == Path(second).resolve(strict=False)
+        for first, second in pairs
+    )
 
 
 @dataclass(frozen=True)
@@ -310,6 +347,13 @@ def delete_document(
             runtime=actual_runtime,
             preview=prepared.public,
         )
+        if _uses_production_generation(actual_runtime):
+            return _delete_document_with_generation(
+                plan=plan,
+                runtime=actual_runtime,
+                audit_id=audit_id,
+                archive_dir=archive_dir,
+            )
         try:
             db_result = _execute_database_transaction(plan, runtime=actual_runtime)
         except Exception as exc:
@@ -358,6 +402,577 @@ def delete_document(
             "remediation": _remediation(cleanup.errors, audit_id=audit_id),
             "recovery_package": _archive_summary(archive_dir),
         }
+
+
+def _verified_post_delete_snapshot(db_path: Path) -> Path:
+    """Copy the post-delete production DB and prove byte equality."""
+    target = Path(db_path).resolve(strict=True)
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{target.name}.delete-post-write-",
+        suffix=".sqlite",
+        dir=str(target.parent),
+    )
+    os.close(descriptor)
+    snapshot = Path(raw_path)
+    expected_sha = _sha256_file(target)
+    expected_size = target.stat().st_size
+    try:
+        shutil.copy2(target, snapshot)
+        if (
+            snapshot.stat().st_size != expected_size
+            or _sha256_file(snapshot) != expected_sha
+        ):
+            raise RuntimeError("deletion_post_write_snapshot_invalid")
+    except BaseException:
+        snapshot.unlink(missing_ok=True)
+        raise
+    return snapshot
+
+
+def _generation_fts_status(
+    *,
+    index_path: Path,
+    manifest_path: Path,
+    db_path: Path,
+    data_dir: Path,
+) -> dict[str, Any]:
+    return fts_status_service.get_index_status(
+        index_path=index_path,
+        manifest_path=manifest_path,
+        production_db_path=db_path,
+        zotero_snapshot_path=(
+            data_dir / "zotero" / "snapshot" / "zotero.sqlite"
+        ),
+        notes_root=data_dir / "notes",
+    )
+
+
+def _require_strict_delete_vector_state(
+    state: dict[str, Any],
+    *,
+    code: str,
+) -> None:
+    if (
+        state.get("status") != "ok"
+        or int(state.get("missing_count") or 0) != 0
+        or int(state.get("orphan_count") or 0) != 0
+        or int(state.get("duplicate_count") or 0) != 0
+        or int(state.get("stale_count") or 0) != 0
+    ):
+        raise RuntimeError(code)
+
+
+def _strict_delete_scope_validation(
+    *,
+    document_id: int,
+    db_path: Path,
+    data_dir: Path,
+    expected_db_sha256: str,
+    fts_path: Path,
+    fts_manifest_path: Path,
+    vector_store_path: Path,
+    native_note_vector_path: Path,
+    expected_passage_sources: list[dict[str, Any]],
+    expected_note_sources: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Strictly validate one document's absence across a generation copy."""
+    if _sha256_file(db_path).lower() != expected_db_sha256.lower():
+        raise RuntimeError("deletion_generation_database_revision_invalid")
+
+    fts_remaining = 0
+    if fts_path.is_file():
+        # sqlite3.Connection's context manager does not close; the candidate
+        # directory must be renameable immediately afterwards on Windows.
+        with closing(_readonly_connection(fts_path)) as connection:
+            fts_remaining = _count(
+                connection,
+                "retrieval_fragments",
+                "document_id = ?",
+                (document_id,),
+            )
+    if fts_remaining:
+        raise RuntimeError("deletion_generation_fts_rows_remain")
+
+    passage_state = (
+        vector_store_service.inspect_document_passage_vector_state(
+            document_id=document_id,
+            expected_sources=expected_passage_sources,
+            store_path=vector_store_path,
+        )
+    )
+    _require_strict_delete_vector_state(
+        passage_state,
+        code="deletion_generation_passage_vectors_remain",
+    )
+    note_state = vector_store_service.inspect_document_note_vector_state(
+        document_id=document_id,
+        expected_sources=expected_note_sources,
+        store_path=vector_store_path,
+    )
+    _require_strict_delete_vector_state(
+        note_state,
+        code="deletion_generation_note_vectors_remain",
+    )
+
+    native_state = note_vector_index.inspect_zotero_note_vector_document_impact(
+        document_id,
+        index_dir=native_note_vector_path,
+    )
+    if (
+        native_state.get("status") not in {"ready", "not_present"}
+        or int(native_state.get("document_entry_count") or 0) != 0
+    ):
+        raise RuntimeError("deletion_generation_native_notes_remain")
+
+    with closing(_readonly_connection(db_path)) as connection:
+        checks = {
+            "document_rows": _count(
+                connection,
+                "documents",
+                "id = ?",
+                (document_id,),
+            ),
+            "dangling_personal_notes": (
+                _count(
+                    connection,
+                    "personal_notes",
+                    "document_id = ?",
+                    (document_id,),
+                )
+                if _table_exists(connection, "personal_notes")
+                else 0
+            ),
+        }
+        if _table_exists(connection, "zotero_inspiration_notes"):
+            checks["dangling_zotero_notes"] = sum(
+                1
+                for row in connection.execute(
+                    "SELECT matched_document_id, matched_chunk_id, "
+                    "matched_chunk_ids_json, matched_object_ids_json "
+                    "FROM zotero_inspiration_notes"
+                )
+                if _zotero_row_matches_scope(
+                    row,
+                    document_id=document_id,
+                    chunk_ids=tuple(),
+                    object_ids=tuple(),
+                )
+            )
+        if checks["document_rows"] or checks["dangling_personal_notes"]:
+            raise RuntimeError("deletion_generation_database_rows_remain")
+
+    fts_status = _generation_fts_status(
+        index_path=fts_path,
+        manifest_path=fts_manifest_path,
+        db_path=db_path,
+        data_dir=data_dir,
+    )
+    if fts_status.get("status") != "ready" or fts_status.get("ready") is not True:
+        raise RuntimeError("deletion_generation_fts_invalid")
+
+    return {
+        "fts_rows": fts_remaining,
+        "passage_state": passage_state,
+        "note_state": note_state,
+        "native_state": native_state,
+    }
+
+
+def _sync_note_vectors_after_document_delete_generation(
+    plan: InternalDeletionPlan,
+    *,
+    index_dir: Path,
+    snapshot_db_path: Path,
+    data_dir: Path,
+) -> dict[str, Any]:
+    manifest_path = index_dir / note_vector_index.MANIFEST_NAME
+    if not manifest_path.is_file():
+        return {
+            "status": "not_present",
+            "document_id": plan.document_id,
+            "removed_document_entries": 0,
+            "stale_document_entries": 0,
+            "vector_write_performed": False,
+        }
+
+    before = note_vector_index.inspect_zotero_note_vector_document_impact(
+        plan.document_id,
+        index_dir=index_dir,
+    )
+    affected_fragment_ids = {
+        str(value) for value in before.get("fragment_ids") or []
+    }
+
+    registry = RetrievalSourceRegistry(
+        research_db_path=snapshot_db_path,
+        zotero_snapshot_path=(
+            data_dir / "zotero" / "snapshot" / "zotero.sqlite"
+        ),
+        notes_root=data_dir / "notes",
+        project_root=data_dir.parent,
+    )
+    fragments = [
+        fragment
+        for fragment in fragment_repository.list_notebook_fragments(
+            source_types=NOTE_SOURCE_TYPES,
+            registry=registry,
+        )
+        if str(fragment.fragment_id) in affected_fragment_ids
+    ]
+    result = (
+        note_vector_index
+        .refresh_zotero_note_vector_document_scope(
+            plan.document_id,
+            index_dir=index_dir,
+            fragments=fragments,
+        )
+    )
+    after = note_vector_index.inspect_zotero_note_vector_document_impact(
+        plan.document_id,
+        index_dir=index_dir,
+    )
+    stale = int(after.get("document_entry_count") or 0)
+    if stale:
+        raise RuntimeError(
+            f"note vector index still contains {stale} entries for deleted document"
+        )
+    return {
+        **result,
+        "document_id": plan.document_id,
+        "removed_document_entries": max(
+            0,
+            int(before.get("document_entry_count") or 0) - stale,
+        ),
+        "stale_document_entries": stale,
+    }
+
+
+def _delete_document_with_generation(
+    *,
+    plan: InternalDeletionPlan,
+    runtime: DeletionRuntime,
+    audit_id: str,
+    archive_dir: Path,
+) -> dict[str, Any]:
+    post_delete_snapshot: Path | None = None
+    generation_id: str | None = None
+    db_result: dict[str, Any] = {}
+    fts_cleanup: dict[str, Any] = {}
+    passage_cleanup: dict[str, Any] = {}
+    note_cleanup: dict[str, Any] = {}
+    native_cleanup: dict[str, Any] = {}
+    verified_active: retrieval_generation_service.RetrievalGenerationSnapshot | None = None
+    expected_passage_sources: list[dict[str, Any]] = []
+    expected_note_sources: list[dict[str, Any]] = []
+
+    def audit(cleanup: CleanupState) -> None:
+        _write_audit_result(
+            archive_dir,
+            _audit_payload(
+                audit_id=audit_id,
+                plan=plan,
+                result="rolled_back",
+                error_code="deletion_generation_rollback_failed",
+                db_result=db_result,
+                cleanup=cleanup,
+            ),
+        )
+
+    try:
+        with retrieval_generation_mutation_service.ProductionGenerationMutationSession(
+            data_dir=runtime.data_dir,
+            db_path=runtime.db_path,
+        ) as mutation:
+            locked_preview = _prepare_preview(
+                plan.document_id,
+                options=plan.deletion_options,
+                manual_preservation_acknowledgment=(
+                    plan.manual_preservation_acknowledgment
+                ),
+                runtime=runtime,
+            )
+            if (
+                locked_preview.plan.document_revision != plan.document_revision
+                or locked_preview.plan.impact_hash != plan.impact_hash
+            ):
+                raise DeletionError(
+                    "deletion_preview_stale_after_write_lock",
+                    "取得数据库写锁后发现删除影响已变化，事务已回滚。",
+                )
+
+            db_result = _execute_database_transaction(
+                plan,
+                runtime=runtime,
+            )
+            mutation.mark_body_db_mutated()
+            after_db_sha256 = mutation.capture_post_write_database()
+            post_delete_snapshot = _verified_post_delete_snapshot(runtime.db_path)
+            if _sha256_file(post_delete_snapshot).lower() != after_db_sha256:
+                raise RuntimeError("deletion_post_write_snapshot_invalid")
+
+            candidate = mutation.candidate
+            if candidate is None:
+                raise RuntimeError("deletion_generation_candidate_missing")
+
+            fts_cleanup = (
+                runtime.cleanup_fts
+                or cleanup_document_retrieval_fts
+            )(
+                document_id=plan.document_id,
+                index_path=candidate.fts_index_path,
+                manifest_path=candidate.fts_manifest_path,
+                production_db_path=post_delete_snapshot,
+            )
+            passage_cleanup = (
+                runtime.cleanup_vectors
+                or vector_store_service.cleanup_document_vectors
+            )(
+                passage_source_ids=list(plan.passage_source_ids),
+                affected_object_keys=list(plan.object_keys),
+                store_path=candidate.vector_store_path,
+                manifest_path=candidate.vector_manifest_path,
+            )
+            if (
+                passage_cleanup.get("full_rebuild_performed") is not False
+            ):
+                raise RuntimeError("deletion_generation_passage_scope_invalid")
+
+            native_cleanup = _sync_note_vectors_after_document_delete_generation(
+                plan,
+                index_dir=candidate.native_note_vector_path,
+                snapshot_db_path=post_delete_snapshot,
+                data_dir=runtime.data_dir,
+            )
+            note_cleanup = vector_store_service.cleanup_document_note_vectors(
+                document_id=plan.document_id,
+                store_path=candidate.vector_store_path,
+                manifest_path=candidate.vector_manifest_path,
+            )
+
+            expected_passage_sources = (
+                vector_store_service.collect_passage_sources(
+                    document_id=plan.document_id,
+                    source_db_path=post_delete_snapshot,
+                )
+            )
+            expected_note_sources = (
+                vector_store_service.collect_personal_note_sources(
+                    document_id=plan.document_id,
+                    source_db_path=post_delete_snapshot,
+                )
+            )
+
+            mutation.mark_candidate_synced()
+
+            def validate_candidate(
+                candidate_value,
+                expected_sha: str,
+            ) -> None:
+                _strict_delete_scope_validation(
+                    document_id=plan.document_id,
+                    db_path=post_delete_snapshot,
+                    data_dir=runtime.data_dir,
+                    expected_db_sha256=expected_sha,
+                    fts_path=candidate_value.fts_index_path,
+                    fts_manifest_path=candidate_value.fts_manifest_path,
+                    vector_store_path=candidate_value.vector_store_path,
+                    native_note_vector_path=(
+                        candidate_value.native_note_vector_path
+                    ),
+                    expected_passage_sources=expected_passage_sources,
+                    expected_note_sources=expected_note_sources,
+                )
+
+            mutation.validate_candidate(validate_candidate)
+            finalized = mutation.finalize_candidate(
+                profile_versions={
+                    "fts_schema": fts_status_service.INDEX_SCHEMA_VERSION,
+                    "source_registry": fts_status_service.SOURCE_REGISTRY_VERSION,
+                }
+            )
+            mutation.begin_activation()
+            mutation.publish_active()
+
+            def validate_active(active_value) -> None:
+                nonlocal verified_active
+                if active_value.generation_id != finalized.generation_id:
+                    raise RuntimeError(
+                        "deletion_generation_active_mismatch"
+                    )
+                _strict_delete_scope_validation(
+                    document_id=plan.document_id,
+                    db_path=runtime.db_path,
+                    data_dir=runtime.data_dir,
+                    expected_db_sha256=after_db_sha256,
+                    fts_path=active_value.fts_index_path,
+                    fts_manifest_path=active_value.fts_manifest_path,
+                    vector_store_path=active_value.vector_store_path,
+                    native_note_vector_path=(
+                        active_value.native_note_vector_path
+                    ),
+                    expected_passage_sources=expected_passage_sources,
+                    expected_note_sources=expected_note_sources,
+                )
+                verified_active = active_value
+
+            mutation.verify_active(validate_active)
+            post_delete_snapshot.unlink()
+            post_delete_snapshot = None
+            mutation.clear_activation()
+            generation_id = finalized.generation_id
+    except (
+        retrieval_generation_mutation_service
+        .ProductionGenerationRollbackError
+    ) as exc:
+        cleanup = CleanupState()
+        cleanup.errors.append(
+            {
+                "error_code": "deletion_generation_rollback_failed",
+                "exception_type": type(exc).__name__,
+                "rollback_substage": str(exc.rollback_substage or ""),
+            }
+        )
+        audit(cleanup)
+        raise DeletionError(
+            "deletion_generation_rollback_failed",
+            "删除已进入 fail-closed 状态；生产数据与生成版本已保留为一致。",
+            details={
+                "safe_to_retry": False,
+                "production_data_modified": True,
+                "rollback_attempted": True,
+                "rollback_completed": False,
+                "error_stage": str(exc.stage.value if exc.stage else ""),
+                "publish_substage": str(exc.rollback_substage or ""),
+                "cause_type": type(exc.cause).__name__,
+            },
+        ) from exc
+    except (
+        retrieval_generation_mutation_service
+        .ProductionGenerationProtocolError
+    ) as exc:
+        cleanup = CleanupState()
+        cleanup.errors.append(
+            {
+                "error_code": "deletion_generation_protocol_failed",
+                "exception_type": type(exc).__name__,
+            }
+        )
+        audit(cleanup)
+        raise DeletionError(
+            "deletion_generation_protocol_failed",
+            "删除事务未完成，生产状态已回滚或 fail-closed。",
+            details={
+                "safe_to_retry": False,
+                "production_data_modified": False,
+                "rollback_attempted": True,
+                "rollback_completed": True,
+            },
+        ) from exc
+    except DeletionError:
+        if post_delete_snapshot is not None:
+            try:
+                post_delete_snapshot.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+    except BaseException as exc:
+        if post_delete_snapshot is not None:
+            try:
+                post_delete_snapshot.unlink(missing_ok=True)
+            except OSError:
+                pass
+        cleanup = CleanupState()
+        cleanup.errors.append(
+            {
+                "error_code": "deletion_transaction_rolled_back",
+                "exception_type": type(exc).__name__,
+            }
+        )
+        audit(cleanup)
+        raise DeletionError(
+            "deletion_transaction_rolled_back",
+            "删除事务失败，已完整回滚，未处理向量或文件。",
+            details={
+                "safe_to_retry": False,
+                "production_data_modified": False,
+                "rollback_attempted": True,
+                "rollback_completed": True,
+                "exception_type": type(exc).__name__,
+            },
+        ) from exc
+
+    cleanup = CleanupState(
+        fts=fts_cleanup,
+        vectors=passage_cleanup,
+        note_vectors=native_cleanup,
+    )
+    try:
+        cleanup.files = _cleanup_files(plan)
+    except Exception as exc:
+        cleanup.errors.append(
+            _cleanup_error("deletion_file_cleanup_failed", exc)
+        )
+        cleanup.files = {
+            "status": "failed",
+            "error_code": "deletion_file_cleanup_failed",
+        }
+    preserved_object_source_ids = (
+        passage_cleanup.get("preserved_object_source_ids")
+        if isinstance(passage_cleanup, dict)
+        else None
+    )
+    try:
+        cleanup.orphan_scan = _orphan_scan(
+            plan,
+            runtime=runtime,
+            preserved_object_source_ids=preserved_object_source_ids,
+            active_generation=verified_active,
+        )
+        if not cleanup.orphan_scan.get("ok"):
+            cleanup.errors.append(
+                {
+                    "error_code": "deletion_orphan_scan_failed",
+                    "exception_type": "ConsistencyError",
+                }
+            )
+    except Exception as exc:
+        cleanup.errors.append(
+            _cleanup_error("deletion_orphan_scan_failed", exc)
+        )
+        cleanup.orphan_scan = {
+            "ok": False,
+            "error_code": "deletion_orphan_scan_failed",
+        }
+
+    result = "cleanup_incomplete" if cleanup.errors else "completed"
+    error_code = "deletion_cleanup_incomplete" if cleanup.errors else ""
+    audit_result = _audit_payload(
+        audit_id=audit_id,
+        plan=plan,
+        result=result,
+        error_code=error_code,
+        db_result=db_result,
+        cleanup=cleanup,
+    )
+    audit_result["generation_id"] = generation_id
+    audit_result["derived_index_publish_performed"] = True
+    _write_audit_result(archive_dir, audit_result)
+    return {
+        "status": result,
+        "error_code": error_code or None,
+        "audit_id": audit_id,
+        "document_id": plan.document_id,
+        "generation_id": generation_id,
+        "derived_index_publish_performed": True,
+        "database": db_result,
+        "vectors": cleanup.vectors,
+        "note_vectors": cleanup.note_vectors,
+        "files": cleanup.files,
+        "fts": cleanup.fts,
+        "orphan_scan": cleanup.orphan_scan,
+        "remediation": _remediation(cleanup.errors, audit_id=audit_id),
+        "recovery_package": _archive_summary(archive_dir),
+    }
 
 
 def preflight_delete_document(
@@ -586,7 +1201,13 @@ def retry_incomplete_cleanup(
     }
     if not apply:
         return dry_run
-    cleanup = _run_post_commit_cleanup(plan, runtime=actual_runtime)
+    if _uses_production_generation(actual_runtime):
+        cleanup = _retry_incomplete_cleanup_generation(
+            plan,
+            runtime=actual_runtime,
+        )
+    else:
+        cleanup = _run_post_commit_cleanup(plan, runtime=actual_runtime)
     result = "cleanup_incomplete" if cleanup.errors else "completed"
     updated = {
         **previous_report,
@@ -1189,6 +1810,63 @@ def _execute_database_transaction(plan: InternalDeletionPlan, *, runtime: Deleti
     }
 
 
+def _retry_incomplete_cleanup_generation(
+    plan: InternalDeletionPlan,
+    *,
+    runtime: DeletionRuntime,
+) -> CleanupState:
+    """Re-run the idempotent post-commit cleanup against the active generation.
+
+    A committed generation delete leaves the active generation clean by
+    construction (index mutations only ever reach a candidate that is either
+    validated and published or rolled back).  The retry therefore reconciles
+    only the non-generation artifacts (files) and re-verifies the scoped
+    orphan invariants against the active generation paths.  The legacy fixed
+    artifacts are never touched.
+    """
+    active = retrieval_generation_service.resolve_active_retrieval_generation(
+        data_dir=runtime.data_dir,
+        db_path=runtime.db_path,
+        verify_fingerprints=True,
+    )
+    retrieval_generation_service.verify_generation_database_revision(
+        active,
+        runtime.db_path,
+    )
+    state = CleanupState(
+        fts={"status": "not_present", "fragment_count": 0},
+        vectors={"status": "ok", "deleted_passage_vectors": 0},
+        note_vectors={
+            "status": "not_present",
+            "removed_document_entries": 0,
+            "stale_document_entries": 0,
+        },
+    )
+    try:
+        state.files = _cleanup_files(plan)
+    except Exception as exc:
+        state.errors.append(_cleanup_error("file_cleanup_failed", exc))
+        state.files = {"status": "failed", "error_code": "file_cleanup_failed"}
+    try:
+        state.orphan_scan = _orphan_scan(
+            plan,
+            runtime=runtime,
+            preserved_object_source_ids=None,
+            active_generation=active,
+        )
+        if not state.orphan_scan.get("ok"):
+            state.errors.append(
+                {
+                    "error_code": "deletion_orphan_scan_failed",
+                    "exception_type": "ConsistencyError",
+                }
+            )
+    except Exception as exc:
+        state.errors.append(_cleanup_error("deletion_orphan_scan_failed", exc))
+        state.orphan_scan = {"ok": False, "error_code": "deletion_orphan_scan_failed"}
+    return state
+
+
 def _run_post_commit_cleanup(plan: InternalDeletionPlan, *, runtime: DeletionRuntime) -> CleanupState:
     state = CleanupState()
     try:
@@ -1354,6 +2032,9 @@ def _orphan_scan(
     *,
     runtime: DeletionRuntime,
     preserved_object_source_ids: list[str] | None = None,
+    active_generation: (
+        retrieval_generation_service.RetrievalGenerationSnapshot | None
+    ) = None,
 ) -> dict[str, Any]:
     with _readonly_connection(runtime.db_path) as connection:
         global_orphans = _global_orphan_counts(connection)
@@ -1369,9 +2050,21 @@ def _orphan_scan(
                 ).values()
             ),
         }
+    if active_generation is not None:
+        fts_target = active_generation.fts_index_path
+        vector_target = active_generation.vector_store_path
+        note_vector_target = active_generation.native_note_vector_path
+    else:
+        fts_target = Path(runtime.fts_path)
+        vector_target = Path(runtime.vector_store_path)
+        note_vector_target = (
+            Path(runtime.data_dir).resolve(strict=False)
+            / "vector_store"
+            / "zotero_user_notes_v1"
+        )
     fts_remaining = 0
-    if Path(runtime.fts_path).is_file():
-        with _readonly_connection(runtime.fts_path) as fts:
+    if fts_target.is_file():
+        with _readonly_connection(fts_target) as fts:
             fts_remaining = _count(fts, "retrieval_fragments", "document_id = ?", (plan.document_id,))
     vector_orphans = 0
     preserved_object_ids = {
@@ -1390,7 +2083,7 @@ def _orphan_scan(
         impact = inspector(
             passage_source_ids=list(plan.passage_source_ids),
             object_keys=orphan_check_object_keys,
-            store_path=runtime.vector_store_path,
+            store_path=vector_target,
         )
         vector_orphans = int(impact.get("passage_vector_count") or 0) + int(impact.get("object_vector_count") or 0)
     except Exception:
@@ -1401,11 +2094,7 @@ def _orphan_scan(
         note_vector_impact = (
             note_vector_index.inspect_zotero_note_vector_document_impact(
                 plan.document_id,
-                index_dir=(
-                    Path(runtime.data_dir).resolve(strict=False)
-                    / "vector_store"
-                    / "zotero_user_notes_v1"
-                ),
+                index_dir=note_vector_target,
             )
         )
         note_vector_orphans = int(

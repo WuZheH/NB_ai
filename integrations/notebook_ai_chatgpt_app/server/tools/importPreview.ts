@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { logToolInvocation } from "../logging.js";
 import {
+  bindStagedImportOperation,
   discardStagedPath,
   rememberStagedImport,
   stageChatPdf,
@@ -53,6 +54,7 @@ export const importPreviewInputSchema = z.object(importPreviewInputShape).superR
 );
 export const importPreviewOutputShape = {
   status: z.literal("ok"),
+  operation_id: z.string().regex(/^[0-9a-f]{32}$/).nullable(),
   source_type: z.enum(["local_pdf", "zotero_selected_book"]),
   filename: z.string().nullable(),
   title: z.string(),
@@ -127,6 +129,12 @@ export async function runImportPreviewTool(
     };
     if (stagedPath && response.confirmation_token) {
       rememberStagedImport(response.confirmation_token, stagedPath);
+      if (response.operation_id) {
+        bindStagedImportOperation(
+          response.confirmation_token,
+          response.operation_id,
+        );
+      }
       stagedPath = null;
     }
     logToolInvocation({ tool: "import_preview", duration_ms: elapsedMilliseconds(startedAt), result_count: 1 });

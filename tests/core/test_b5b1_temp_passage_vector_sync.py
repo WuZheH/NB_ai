@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -175,6 +176,115 @@ def test_temp_passage_source_batches_more_than_sqlite_expression_depth(
     assert sources[-1]["source_id"] == f"chunk:1:{999 + chunk_count}"
 
 
+def test_sqlite_passage_batches_preserve_document_filter(
+    tmp_path: Path,
+) -> None:
+    database = _temp_research_db(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.executemany(
+            "INSERT INTO knowledge_chunks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    1_000 + offset,
+                    1,
+                    10 + offset,
+                    "Other",
+                    f"other {offset}",
+                    f"other-hash-{offset}",
+                    None,
+                    None,
+                    None,
+                    "2026-08-09",
+                )
+                for offset in range(450)
+            ]
+            + [
+                (
+                    2_000 + offset,
+                    2,
+                    10 + offset,
+                    "Target",
+                    f"target {offset}",
+                    f"target-hash-{offset}",
+                    None,
+                    None,
+                    None,
+                    "2026-08-09",
+                )
+                for offset in range(10)
+            ],
+        )
+        connection.commit()
+
+    requested = [f"chunk:1:{1_000 + offset}" for offset in range(450)] + [
+        f"chunk:2:{2_000 + offset}" for offset in range(10)
+    ]
+    sources = vector_store_service.collect_passage_sources(
+        source_ids=requested,
+        source_db_path=database,
+        document_id=2,
+    )
+
+    assert [source["source_id"] for source in sources] == [
+        f"chunk:2:{2_000 + offset}" for offset in range(10)
+    ]
+
+
+def test_orm_passage_limit_is_applied_after_authoritative_filtering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = SimpleNamespace(id=1)
+    metadata = SimpleNamespace(
+        id=11,
+        document_id=1,
+        chunk_index=0,
+        chapter_id=None,
+        chunk_text="backend: metadata only",
+    )
+    empty = SimpleNamespace(
+        id=12,
+        document_id=1,
+        chunk_index=1,
+        chapter_id=None,
+        chunk_text="   ",
+    )
+    passage = SimpleNamespace(
+        id=13,
+        document_id=1,
+        chunk_index=2,
+        chapter_id=None,
+        chunk_text="real passage",
+    )
+    rows = [(document, metadata), (document, empty), (document, passage)]
+
+    class _Result:
+        def __init__(self, selected):
+            self._selected = selected
+
+        def all(self):
+            return list(self._selected)
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement):
+            limit_clause = getattr(statement, "_limit_clause", None)
+            selected = rows
+            if limit_clause is not None:
+                selected = rows[: int(limit_clause.value)]
+            return _Result(selected)
+
+    monkeypatch.setattr(vector_store_service, "SessionLocal", _Session)
+
+    selected = vector_store_service._passage_source_rows(limit=1)
+
+    assert [(doc.id, chunk.id) for doc, chunk in selected] == [(1, 13)]
+
+
 def test_temp_passage_apply_is_affected_only_and_second_sync_is_noop(
     tmp_path: Path,
     fake_embedding,
@@ -257,6 +367,99 @@ def test_temp_passage_apply_is_affected_only_and_second_sync_is_noop(
     assert payload["passage_count"] == 2
     assert payload["object_count"] == 1
     assert payload["embedding_dim"] == 3
+
+
+def test_affected_passage_sync_repairs_identity_metadata_drift(
+    tmp_path: Path,
+    fake_embedding,
+) -> None:
+    database = _temp_research_db(tmp_path)
+    store = tmp_path / "lancedb"
+    manifest = tmp_path / "vector-manifest.json"
+    vector_store_service.sync_affected_passage_embeddings(
+        ["chunk:1:11"],
+        dry_run=False,
+        apply=True,
+        store_path=store,
+        manifest_path=manifest,
+        source_db_path=database,
+    )
+    db = vector_store_service.open_vector_store(store)
+    table = db.open_table(vector_store_service.PASSAGE_TABLE)
+    row = dict(vector_store_service._existing_records(
+        db,
+        vector_store_service.PASSAGE_TABLE,
+    )[0])
+    table.delete("source_id = 'chunk:1:11'")
+    row.update(
+        {
+            "vector_id": "chunk:2:21",
+            "document_id": 2,
+            "chunk_id": 21,
+        }
+    )
+    table.add([row])
+
+    result = vector_store_service.sync_affected_passage_embeddings(
+        ["chunk:1:11"],
+        dry_run=False,
+        apply=True,
+        store_path=store,
+        manifest_path=manifest,
+        source_db_path=database,
+    )
+
+    assert result["upserted_count"] == 1
+    repaired = vector_store_service._existing_records(
+        db,
+        vector_store_service.PASSAGE_TABLE,
+    )
+    assert len(repaired) == 1
+    assert repaired[0]["source_id"] == "chunk:1:11"
+    assert repaired[0]["vector_id"] == "chunk:1:11"
+    assert repaired[0]["document_id"] == 1
+    assert repaired[0]["chunk_id"] == 11
+
+
+def test_strict_passage_state_exposes_duplicates_and_stale_identity(
+    tmp_path: Path,
+    fake_embedding,
+) -> None:
+    database = _temp_research_db(tmp_path)
+    store = tmp_path / "lancedb"
+    manifest = tmp_path / "vector-manifest.json"
+    expected = vector_store_service.collect_passage_sources(
+        source_db_path=database,
+        document_id=1,
+    )
+    vector_store_service.sync_affected_passage_embeddings(
+        ["chunk:1:11"],
+        dry_run=False,
+        apply=True,
+        store_path=store,
+        manifest_path=manifest,
+        source_db_path=database,
+    )
+    db = vector_store_service.open_vector_store(store)
+    table = db.open_table(vector_store_service.PASSAGE_TABLE)
+    row = dict(vector_store_service._existing_records(
+        db,
+        vector_store_service.PASSAGE_TABLE,
+    )[0])
+    duplicate = dict(row)
+    duplicate["document_id"] = 2
+    duplicate["chunk_id"] = 21
+    table.add([duplicate])
+
+    state = vector_store_service.inspect_document_passage_vector_state(
+        document_id=1,
+        expected_sources=expected,
+        store_path=store,
+    )
+
+    assert state["duplicate_source_ids"] == ["chunk:1:11"]
+    assert state["duplicate_count"] == 1
+    assert state["stale_source_ids"] == []
 
 
 def test_explicit_source_apply_rejects_production_targets_before_vector_open(

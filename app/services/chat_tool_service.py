@@ -9,7 +9,7 @@ import shutil
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -28,6 +28,7 @@ from app.services import (
     import_preview_service,
     local_pdf_source_binding_service,
     pdf_import_classifier_service,
+    retrieval_generation_mutation_service,
     zotero_direction_b_import_service,
     zotero_selected_book_preview_service,
 )
@@ -37,6 +38,7 @@ from app.services.import_operation_journal import (
     ImportOperationJournal,
     ImportOperationJournalStore,
     JournalConflictError,
+    JournalValidationError,
 )
 
 
@@ -57,6 +59,8 @@ _IMPORT_IN_PROGRESS: set[str] = set()
 _IMPORT_COMPLETIONS: dict[str, "ImportCompletion"] = {}
 _PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_OPERATION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_SAFE_STATUS_CODE_RE = re.compile(r"^[A-Za-z0-9_.:]{1,128}$")
 
 
 class ChatToolError(RuntimeError):
@@ -94,6 +98,7 @@ class ImportConfirmation:
     object_import_mode: str
     page_count: int
     expires_at: float
+    operation_id: str = field(default_factory=lambda: uuid4().hex)
     note_sources: tuple[dict[str, Any], ...] = ()
     inbox_root: Path | None = None
     source_identity: str = ""
@@ -120,6 +125,7 @@ class ZoteroImportConfirmation:
     child_note_count: int
     duplicate_status: str
     expires_at: float
+    operation_id: str = field(default_factory=lambda: uuid4().hex)
 
 
 @dataclass(frozen=True)
@@ -439,8 +445,10 @@ def import_preview(
     page_count = int(signals.get("page_count") or classification.get("page_count") or 0)
     duplicate = bool(classification.get("duplicate"))
     token: str | None = None
+    operation_id: str | None = None
     if not duplicate:
         token = secrets.token_urlsafe(32)
+        operation_id = uuid4().hex
         stat = source.stat()
         source_revision_fingerprint = _stable_sha256(
             {
@@ -458,6 +466,7 @@ def import_preview(
             document_type=str(classification.get("document_type") or "paper"),
             object_import_mode=str(classification.get("object_import_mode") or "full_document"),
             page_count=page_count,
+            operation_id=operation_id,
             note_sources=tuple(chat_import_catalog_service.note_sources(pdf=source, inbox_root=inbox_root)),
             inbox_root=inbox_root,
             expires_at=time.monotonic() + IMPORT_CONFIRMATION_TTL_SECONDS,
@@ -496,6 +505,7 @@ def import_preview(
             + ["chunk_count_not_precomputed_by_preview"]
         ),
         "confirmation_token": token,
+        "operation_id": operation_id,
         "confirmation_expires_in_seconds": IMPORT_CONFIRMATION_TTL_SECONDS if token else None,
         "attachment_choices": [],
         "annotation_count": None,
@@ -602,6 +612,7 @@ def _import_zotero_selected_book_preview(
         ][:7],
         "blockers": list(preview.get("blockers") or []),
         "confirmation_token": None,
+        "operation_id": None,
         "confirmation_expires_in_seconds": None,
         "attachment_choices": safe_choices,
         "annotation_count": preview.get("annotation_count"),
@@ -705,6 +716,7 @@ def _import_zotero_selected_book_preview(
         confirmation.get("duplicate_status") or "not_detected"
     )
     base["confirmation_token"] = confirmation.get("confirmation_token")
+    base["operation_id"] = confirmation.get("operation_id")
     base["confirmation_expires_in_seconds"] = confirmation.get(
         "confirmation_expires_in_seconds"
     )
@@ -884,6 +896,7 @@ def register_zotero_selected_book_import_preview(
 
     token = secrets.token_urlsafe(32)
     token_fingerprint = _token_digest(token)
+    operation_id = uuid4().hex
     preview_audit = (
         preview.get("_preview_audit")
         if isinstance(preview.get("_preview_audit"), dict)
@@ -911,6 +924,7 @@ def register_zotero_selected_book_import_preview(
             time.monotonic()
             + IMPORT_CONFIRMATION_TTL_SECONDS
         ),
+        operation_id=operation_id,
     )
 
     with _TOKEN_LOCK:
@@ -930,6 +944,7 @@ def register_zotero_selected_book_import_preview(
         "child_note_count": record.child_note_count,
         "duplicate_status": record.duplicate_status,
         "confirmation_token": token,
+        "operation_id": operation_id,
         "confirmation_expires_in_seconds": (
             IMPORT_CONFIRMATION_TTL_SECONDS
         ),
@@ -1000,6 +1015,13 @@ def _new_import_journal(
     record: ImportConfirmation | ZoteroImportConfirmation,
     token_digest: str,
 ) -> tuple[ImportOperationJournal, dict[str, Any] | None]:
+    if _OPERATION_ID_RE.fullmatch(record.operation_id) is None:
+        raise ChatToolError(
+            "chat_import_operation_id_invalid",
+            "The import operation identifier is invalid.",
+            status_code=500,
+            details={"safe_to_retry": False},
+        )
     now = _utc_now()
     import_audit: dict[str, Any] | None = None
     if isinstance(record, ZoteroImportConfirmation):
@@ -1043,7 +1065,7 @@ def _new_import_journal(
     return (
         ImportOperationJournal(
             schema_version=IMPORT_JOURNAL_SCHEMA_VERSION,
-            operation_id=uuid4().hex,
+            operation_id=record.operation_id,
             operation_type="import_document",
             confirmation_token_digest=token_digest,
             transaction_fingerprint=transaction_fingerprint,
@@ -1092,6 +1114,186 @@ def _resolve_import_journal(
         ) from exc
 
 
+def import_status(
+    operation_id: str,
+    *,
+    runtime: ChatToolRuntime | None = None,
+) -> dict[str, Any]:
+    """Return the durable import state without mutating journal or data."""
+
+    if (
+        not isinstance(operation_id, str)
+        or _OPERATION_ID_RE.fullmatch(operation_id) is None
+    ):
+        raise ChatToolError(
+            "chat_import_operation_id_invalid",
+            "The import operation identifier is invalid.",
+            status_code=422,
+            details={"safe_to_retry": False},
+        )
+    actual_runtime = runtime or ChatToolRuntime()
+    try:
+        journal = _import_journal_store(actual_runtime).read(operation_id)
+    except (JournalValidationError, OSError, ValueError) as exc:
+        raise ChatToolError(
+            "chat_import_status_unavailable",
+            "The durable import status could not be verified.",
+            status_code=503,
+            details={"safe_to_retry": False},
+        ) from exc
+    if journal is None:
+        raise ChatToolError(
+            "chat_import_operation_not_found",
+            "The durable import operation was not found.",
+            status_code=404,
+            details={"safe_to_retry": False},
+        )
+    return _import_status_response(journal)
+
+
+def _safe_import_status_code(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text if _SAFE_STATUS_CODE_RE.fullmatch(text) else None
+
+
+def _safe_import_status_title(value: Any) -> str | None:
+    text = " ".join(str(value or "").split()).strip()
+    if not text or len(text) > 512:
+        return None
+    if (
+        re.search(r"[A-Za-z]:[\\/]", text)
+        or text.startswith(("/", "\\\\"))
+        or re.search(
+            r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{20,}",
+            text,
+        )
+    ):
+        return None
+    return text
+
+
+def _status_optional_int(value: Any, *, minimum: int) -> int | None:
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= minimum
+    ):
+        return value
+    return None
+
+
+def _status_optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _import_status_response(
+    journal: ImportOperationJournal,
+) -> dict[str, Any]:
+    status = journal.status
+    owner_missing = False
+    if status in {"accepted", "running"}:
+        with _TOKEN_LOCK:
+            owner_missing = not (
+                journal.owner_process_id == os.getpid()
+                and journal.confirmation_token_digest in _IMPORT_IN_PROGRESS
+            )
+        if owner_missing:
+            status = "orphaned"
+    terminal = status in {"committed", "failed", "orphaned"}
+    operation_in_progress = status in {"accepted", "running"}
+    receipt = dict(journal.completion_receipt or {})
+    public: Mapping[str, Any] = {}
+
+    if status == "committed":
+        response = receipt.get("response")
+        if receipt.get("kind") != "success" or not isinstance(
+            response, Mapping
+        ):
+            raise ChatToolError(
+                "chat_import_journal_receipt_invalid",
+                "The durable import receipt is invalid.",
+                status_code=500,
+                details={"safe_to_retry": False},
+            )
+        public = response
+    elif status == "failed":
+        response = receipt.get("public_response")
+        if receipt.get("kind") != "failure" or not isinstance(
+            response, Mapping
+        ):
+            raise ChatToolError(
+                "chat_import_journal_receipt_invalid",
+                "The durable import failure receipt is invalid.",
+                status_code=500,
+                details={"safe_to_retry": False},
+            )
+        public = response
+
+    document_id = _status_optional_int(
+        public.get("document_id"),
+        minimum=1,
+    )
+    if document_id is None:
+        document_id = journal.document_id
+    chunk_count = _status_optional_int(
+        public.get("chunk_count"),
+        minimum=0,
+    )
+    if chunk_count is None and journal.chunk_count > 0:
+        chunk_count = journal.chunk_count
+
+    document_type_value = str(public.get("document_type") or "").strip()
+    document_type = (
+        document_type_value
+        if re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", document_type_value)
+        else None
+    )
+    error = dict(journal.error or {})
+    error_code = _safe_import_status_code(
+        public.get("error_code")
+        or receipt.get("error_code")
+        or error.get("error_code")
+        or ("import_owner_not_active" if owner_missing else None)
+    )
+    error_stage = _safe_import_status_code(
+        public.get("error_stage") or error.get("error_stage")
+    )
+    rollback = dict(journal.rollback or {})
+    rollback_attempted = _status_optional_bool(
+        public.get("rollback_attempted")
+    )
+    if rollback_attempted is None:
+        rollback_attempted = _status_optional_bool(rollback.get("attempted"))
+    rollback_completed = _status_optional_bool(
+        public.get("rollback_completed")
+    )
+    if rollback_completed is None:
+        rollback_completed = _status_optional_bool(rollback.get("completed"))
+
+    writes_performed = _status_optional_bool(public.get("writes_performed"))
+    if writes_performed is None:
+        writes_performed = journal.writes_performed
+
+    return {
+        "status": status,
+        "operation_id": journal.operation_id,
+        "document_id": document_id,
+        "title": _safe_import_status_title(journal.title),
+        "document_type": document_type,
+        "chunk_count": chunk_count,
+        "terminal": terminal,
+        "operation_in_progress": operation_in_progress,
+        "writes_performed": writes_performed,
+        "token_consumed": True,
+        "safe_to_retry": False,
+        "replayed_receipt": status in {"committed", "failed"},
+        "error_code": error_code,
+        "error_stage": error_stage,
+        "rollback_attempted": rollback_attempted,
+        "rollback_completed": rollback_completed,
+    }
+
+
 def _resolve_import_journal_outcome(
     journal: ImportOperationJournal,
 ) -> dict[str, Any]:
@@ -1113,6 +1315,8 @@ def _resolve_import_journal_outcome(
                 "already_completed": True,
                 "replayed_receipt": True,
                 "operation_in_progress": False,
+                "operation_id": journal.operation_id,
+                "terminal": True,
                 "token_consumed": True,
                 "writes_performed": True,
                 "safe_to_retry": False,
@@ -1151,9 +1355,12 @@ def _resolve_import_journal_outcome(
             details["writes_performed"] = journal.writes_performed
         details.update(
             {
+                "status": "failed",
                 "already_completed": True,
                 "replayed_receipt": True,
                 "operation_in_progress": False,
+                "operation_id": journal.operation_id,
+                "terminal": True,
                 "safe_to_retry": False,
                 "token_consumed": True,
             }
@@ -1174,9 +1381,12 @@ def _resolve_import_journal_outcome(
             "The confirmed import owner ended without a terminal receipt.",
             status_code=409,
             details={
+                "status": "orphaned",
                 "safe_to_retry": False,
                 "writes_performed": journal.writes_performed,
                 "token_consumed": True,
+                "operation_id": journal.operation_id,
+                "terminal": True,
             },
         )
 
@@ -1327,6 +1537,7 @@ def _success_import_response(
 ) -> dict[str, Any]:
     return {
         "status": "committed",
+        "operation_id": record.operation_id,
         "document_id": normalized["document_id"],
         "title": normalized["title"],
         "document_type": normalized["document_type"],
@@ -1340,6 +1551,7 @@ def _success_import_response(
         "already_completed": False,
         "replayed_receipt": False,
         "operation_in_progress": False,
+        "terminal": True,
         "token_consumed": True,
         "writes_performed": True,
         "safe_to_retry": False,
@@ -1509,6 +1721,7 @@ def _persist_failed_import_receipt(
     message = _safe_failure_message(error)
     public_response = {
         "status": "failed",
+        "operation_id": record.operation_id,
         "document_id": document_id,
         "title": record.title,
         "document_type": record.document_type,
@@ -1522,6 +1735,7 @@ def _persist_failed_import_receipt(
         "already_completed": False,
         "replayed_receipt": False,
         "operation_in_progress": False,
+        "terminal": True,
         "token_consumed": True,
         "writes_performed": writes_performed,
         "safe_to_retry": False,
@@ -1830,6 +2044,18 @@ def import_document(
         safe_details = dict(exc.details)
         safe_details["token_consumed"] = True
         safe_details.setdefault("safe_to_retry", False)
+        safe_details.setdefault("operation_id", record.operation_id)
+        safe_details.setdefault(
+            "terminal",
+            journal is not None
+            and journal.status in {"committed", "failed", "orphaned"},
+        )
+        if journal is not None and journal.status in {
+            "committed",
+            "failed",
+            "orphaned",
+        }:
+            safe_details.setdefault("status", journal.status)
         exc.details = safe_details
         raise
     except Exception as exc:
@@ -1844,6 +2070,8 @@ def import_document(
                 "token_consumed": True,
                 "writes_performed": False,
                 "safe_to_retry": False,
+                "operation_id": record.operation_id,
+                "terminal": False,
             },
         ) from exc
     finally:
@@ -1956,6 +2184,7 @@ def _commit_confirmed_import(
     destination = destination_dir / safe_name
     temporary = destination.with_suffix(".pdf.tmp")
     created_copy = not destination.exists()
+    preserve_managed_copy = False
     if destination.exists() and _sha256_file(destination) != record.source_sha256:
         raise ChatToolError("import_managed_pdf_collision", "Managed PDF name collision.", status_code=409)
     try:
@@ -2016,6 +2245,29 @@ def _commit_confirmed_import(
                     "writes_performed": True,
                 },
             ) from exc
+        except (
+            retrieval_generation_mutation_service
+            .ProductionGenerationRollbackError
+        ) as exc:
+            preserve_managed_copy = True
+            rollback_substage = str(exc.rollback_substage or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_.:]{1,128}", rollback_substage):
+                rollback_substage = "generation_rollback"
+            raise ChatToolError(
+                "chat_import_generation_rollback_failed",
+                "The confirmed local PDF import entered a fail-closed state.",
+                status_code=500,
+                details={
+                    "safe_to_retry": False,
+                    "writes_performed": True,
+                    "production_data_modified": True,
+                    "rollback_attempted": True,
+                    "rollback_completed": False,
+                    "error_stage": rollback_substage,
+                    "publish_substage": rollback_substage,
+                    "cause_type": type(exc.cause).__name__,
+                },
+            ) from exc
         except RuntimeError as exc:
             code = str(exc)
             safe_codes = {
@@ -2053,7 +2305,11 @@ def _commit_confirmed_import(
     except BaseException:
         if temporary.is_file():
             temporary.unlink()
-        if created_copy and destination.is_file():
+        if (
+            not preserve_managed_copy
+            and created_copy
+            and destination.is_file()
+        ):
             destination.unlink()
         raise
 
@@ -2197,6 +2453,8 @@ def _wait_for_import_resolution(
             "safe_to_retry": False,
             "token_consumed": True,
             "writes_performed": None,
+            "operation_id": getattr(record, "operation_id", None),
+            "terminal": False,
         },
     )
 
@@ -2221,6 +2479,11 @@ def _import_in_progress_response(
     )
     return {
         "status": "in_progress",
+        "operation_id": (
+            persisted_journal.operation_id
+            if persisted_journal is not None
+            else getattr(record, "operation_id", None)
+        ),
         "document_id": (
             persisted_journal.document_id
             if persisted_journal is not None
@@ -2242,6 +2505,7 @@ def _import_in_progress_response(
         "already_completed": False,
         "replayed_receipt": False,
         "operation_in_progress": True,
+        "terminal": False,
         "token_consumed": True,
         "writes_performed": (
             persisted_journal.writes_performed

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timezone
 from functools import lru_cache
 import hashlib
@@ -523,12 +524,14 @@ def collect_personal_note_sources(
     database = Path(source_db_path).resolve(strict=False)
     if not database.is_file():
         raise ValueError("source_db_path must identify an existing SQLite database")
-    with connect_readonly_sqlite(
-        database,
-        resolve_strict=True,
-        row_factory=sqlite3.Row,
-        query_only=True,
-        temp_store="MEMORY",
+    with closing(
+        connect_readonly_sqlite(
+            database,
+            resolve_strict=True,
+            row_factory=sqlite3.Row,
+            query_only=True,
+            temp_store="MEMORY",
+        )
     ) as connection:
         rows = connection.execute(
             """
@@ -956,7 +959,7 @@ def sync_affected_passage_embeddings(
         source = source_by_id.get(source_id)
         indexed = existing_by_id.get(source_id)
         if source and indexed:
-            stale = _record_stale(indexed, source)
+            stale = _passage_record_stale(indexed, source)
             status = "stale" if stale else "up_to_date"
             planned_action = "upsert" if stale else "skip"
         elif source:
@@ -1001,7 +1004,7 @@ def sync_affected_passage_embeddings(
         if records:
             if table_exists:
                 table = db.open_table(PASSAGE_TABLE)
-                _delete_vector_ids(table, changed_ids)
+                _delete_source_or_vector_ids(table, changed_ids)
                 table.add(records)
             else:
                 db.create_table(PASSAGE_TABLE, data=records, mode="create")
@@ -1110,6 +1113,218 @@ def inspect_note_vector_impact(
         "read_only": True,
         "note_vector_count": len(records),
         "note_source_ids": sorted(records),
+    }
+
+
+def inspect_document_passage_vector_state(
+    *,
+    document_id: int,
+    expected_sources: list[dict[str, Any]],
+    store_path: Path | None = None,
+) -> dict[str, Any]:
+    """Strictly validate one document's authoritative passage-vector rows."""
+
+    if (
+        isinstance(document_id, bool)
+        or not isinstance(document_id, int)
+        or document_id <= 0
+    ):
+        raise ValueError("document_id must be a positive integer")
+    if not isinstance(expected_sources, list):
+        raise ValueError("expected_sources must be a list")
+
+    expected_by_id: dict[str, dict[str, Any]] = {}
+    for source in expected_sources:
+        if not isinstance(source, dict):
+            raise ValueError("expected passage source must be a mapping")
+        source_id = source.get("source_id")
+        document = source.get("document")
+        chunk = source.get("chunk")
+        if not isinstance(source_id, str) or document is None or chunk is None:
+            raise ValueError("expected passage source identity is invalid")
+        source_id = source_id.strip()
+        if source_id in expected_by_id:
+            raise ValueError("expected passage source IDs must be unique")
+        try:
+            source_document_id = int(document.id)
+            source_chunk_id = int(chunk.id)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("expected passage source identity is invalid") from exc
+        if (
+            source_document_id != document_id
+            or source_chunk_id <= 0
+            or source_id
+            != make_passage_source_id(source_document_id, source_chunk_id)
+        ):
+            raise ValueError("expected passage source identity is invalid")
+        expected_by_id[source_id] = source
+
+    expected_ids = sorted(expected_by_id)
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    if not actual_store_path.exists():
+        return _unavailable_strict_vector_state(
+            expected_ids,
+            "vector_store_unavailable",
+        )
+    try:
+        db = _connect_existing_vector_store(actual_store_path)
+        if PASSAGE_TABLE not in _table_names(db):
+            return _complete_strict_vector_state(
+                expected_ids=expected_ids,
+                actual_ids=[],
+                duplicate_ids=[],
+                stale_ids=[],
+            )
+        table = db.open_table(PASSAGE_TABLE)
+        fields = _scoped_table_schema_fields(table)
+        required_fields = {
+            "source_id",
+            "vector_id",
+            "document_id",
+            "chunk_id",
+            "source_hash",
+            "profile_version",
+            "embedding_model",
+            "embedding_model_path",
+        }
+        if fields is None or not required_fields.issubset(fields):
+            return _unavailable_strict_vector_state(
+                expected_ids,
+                "passage_identity_schema_unavailable",
+            )
+
+        target_where = f"document_id = {document_id}"
+        target_count = int(table.count_rows(target_where))
+        target_rows = (
+            table.search()
+            .where(target_where)
+            .limit(max(target_count, 1))
+            .to_list()
+            if target_count
+            else []
+        )
+        expected_rows: list[dict[str, Any]] = []
+        if expected_ids:
+            expected_where = "source_id IN (" + ", ".join(
+                _sql_quote(value) for value in expected_ids
+            ) + ")"
+            expected_count = int(table.count_rows(expected_where))
+            expected_rows = (
+                table.search()
+                .where(expected_where)
+                .limit(max(expected_count, 1))
+                .to_list()
+                if expected_count
+                else []
+            )
+    except Exception:
+        return _unavailable_strict_vector_state(
+            expected_ids,
+            "passage_identity_query_failed",
+        )
+
+    actual_ids: list[str] = []
+    for record in target_rows:
+        source_id = record.get("source_id") if isinstance(record, Mapping) else None
+        if not isinstance(source_id, str) or not source_id.strip():
+            return _unavailable_strict_vector_state(
+                expected_ids,
+                "passage_identity_row_parse_failed",
+            )
+        actual_ids.append(source_id.strip())
+
+    rows_by_id: dict[str, list[dict[str, Any]]] = {
+        source_id: [] for source_id in expected_ids
+    }
+    for record in expected_rows:
+        if not isinstance(record, dict):
+            return _unavailable_strict_vector_state(
+                expected_ids,
+                "passage_identity_row_parse_failed",
+            )
+        source_id = record.get("source_id")
+        if not isinstance(source_id, str) or source_id not in rows_by_id:
+            return _unavailable_strict_vector_state(
+                expected_ids,
+                "passage_identity_row_parse_failed",
+            )
+        rows_by_id[source_id].append(record)
+
+    duplicate_ids = sorted(
+        {
+            source_id
+            for source_id, rows in rows_by_id.items()
+            if len(rows) > 1
+        }
+        | _duplicate_source_ids(actual_ids)
+    )
+    stale_ids = sorted(
+        source_id
+        for source_id, rows in rows_by_id.items()
+        if len(rows) == 1
+        and _passage_record_stale(rows[0], expected_by_id[source_id])
+    )
+    return _complete_strict_vector_state(
+        expected_ids=expected_ids,
+        actual_ids=actual_ids,
+        duplicate_ids=duplicate_ids,
+        stale_ids=stale_ids,
+    )
+
+
+def _complete_strict_vector_state(
+    *,
+    expected_ids: list[str],
+    actual_ids: list[str],
+    duplicate_ids: list[str],
+    stale_ids: list[str],
+) -> dict[str, Any]:
+    expected = set(expected_ids)
+    actual = set(actual_ids)
+    return {
+        "status": "ok",
+        "reason": None,
+        "expected_source_ids": sorted(expected),
+        "actual_source_ids": sorted(actual),
+        "expected_count": len(expected_ids),
+        "actual_count": len(actual_ids),
+        "missing_source_ids": sorted(expected - actual),
+        "orphan_source_ids": sorted(actual - expected),
+        "duplicate_source_ids": sorted(duplicate_ids),
+        "stale_source_ids": sorted(stale_ids),
+        "missing_count": len(expected - actual),
+        "orphan_count": len(actual - expected),
+        "duplicate_count": len(duplicate_ids),
+        "stale_count": len(stale_ids),
+    }
+
+
+def _duplicate_source_ids(source_ids: list[str]) -> set[str]:
+    counts: dict[str, int] = {}
+    for source_id in source_ids:
+        counts[source_id] = counts.get(source_id, 0) + 1
+    return {source_id for source_id, count in counts.items() if count > 1}
+
+
+def _unavailable_strict_vector_state(
+    expected_ids: list[str],
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "expected_source_ids": list(expected_ids),
+        "actual_source_ids": [],
+        "expected_count": len(expected_ids),
+        "actual_count": "not_available",
+        "missing_source_ids": list(expected_ids),
+        "orphan_source_ids": "not_available",
+        "duplicate_source_ids": "not_available",
+        "stale_source_ids": "not_available",
+        "missing_count": len(expected_ids),
+        "orphan_count": "not_available",
+        "duplicate_count": "not_available",
+        "stale_count": "not_available",
     }
 
 
@@ -1245,9 +1460,12 @@ def inspect_document_note_vector_state(
         rows_by_id[source_id].append(record)
 
     duplicate_ids = sorted(
-        source_id
-        for source_id, rows in rows_by_id.items()
-        if len(rows) != 1 and len(rows) > 1
+        {
+            source_id
+            for source_id, rows in rows_by_id.items()
+            if len(rows) > 1
+        }
+        | _duplicate_source_ids(actual_ids)
     )
     stale_ids = sorted(
         source_id
@@ -1277,6 +1495,8 @@ def _complete_strict_note_state(
         "reason": None,
         "expected_source_ids": sorted(expected),
         "actual_source_ids": sorted(actual),
+        "expected_count": len(expected_ids),
+        "actual_count": len(actual_ids),
         "missing_source_ids": sorted(expected - actual),
         "orphan_source_ids": sorted(actual - expected),
         "duplicate_source_ids": sorted(duplicate_ids),
@@ -1297,6 +1517,8 @@ def _unavailable_strict_note_state(
         "reason": reason,
         "expected_source_ids": list(expected_ids),
         "actual_source_ids": [],
+        "expected_count": len(expected_ids),
+        "actual_count": "not_available",
         "missing_source_ids": list(expected_ids),
         "orphan_source_ids": "not_available",
         "duplicate_source_ids": "not_available",
@@ -1663,6 +1885,446 @@ def cleanup_document_vectors(
     }
 
 
+def cleanup_document_note_vectors(
+    *,
+    document_id: int,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    """Delete exactly one document's personal-note vector rows from a store.
+
+    Scoped to the document; no orphan sweep, no schema rebuild, no writes
+    outside the given store and manifest.
+    """
+    if (
+        isinstance(document_id, bool)
+        or not isinstance(document_id, int)
+        or document_id <= 0
+    ):
+        raise ValueError("document_id must be a positive integer")
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    actual_manifest_path = Path(manifest_path or MANIFEST_PATH)
+    db = open_vector_store(actual_store_path)
+    if NOTE_TABLE not in _table_names(db):
+        return {
+            "status": "ok",
+            "document_id": document_id,
+            "deleted_note_vectors": 0,
+            "note_count": 0,
+            "full_rebuild_performed": False,
+            "orphan_delete_performed": False,
+        }
+    table = db.open_table(NOTE_TABLE)
+    fields = _table_schema_fields(db, NOTE_TABLE)
+    if "document_id" not in fields:
+        raise VectorStoreSchemaMismatch(
+            "note vector cleanup requires a document_id field"
+        )
+    target_where = f"document_id = {document_id}"
+    deleted = int(table.count_rows(target_where))
+    if deleted:
+        table.delete(target_where)
+    note_count = int(table.count_rows())
+    _updated_manifest(
+        manifest_path=actual_manifest_path,
+        embedding_dim=_table_embedding_dim(
+            _existing_records(db, NOTE_TABLE)
+        ),
+        note_count=note_count,
+    )
+    return {
+        "status": "ok",
+        "document_id": document_id,
+        "deleted_note_vectors": deleted,
+        "note_count": note_count,
+        "full_rebuild_performed": False,
+        "orphan_delete_performed": False,
+    }
+
+
+def sync_affected_object_embeddings(
+    object_keys: list[str],
+    *,
+    dry_run: bool = True,
+    apply: bool = False,
+    store_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    """Sync exactly the affected object keys into one candidate store.
+
+    The authoritative collector (collect_object_sources) is filtered to the
+    requested keys after the fact; keys without a current source are removed
+    from the store when present.  No global scan, no schema rebuild, no orphan
+    sweep beyond the affected keys, and the production store/manifest are
+    forbidden for explicit-source applies.
+    """
+    if dry_run == apply:
+        raise ValueError("specify exactly one of dry_run or apply for affected object sync")
+    requested_keys: list[str] = []
+    seen_keys: set[str] = set()
+    for raw_key in object_keys:
+        if isinstance(raw_key, bool) or not isinstance(raw_key, str):
+            raise ValueError("affected object keys must be strings")
+        key = raw_key.strip()
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        requested_keys.append(key)
+    requested_ids = sorted(make_object_source_id(key) for key in requested_keys)
+    if apply:
+        if store_path is None or Path(store_path).resolve(strict=False) == Path(
+            LANCEDB_DIR
+        ).resolve(strict=False):
+            raise ValueError("explicit affected object apply requires a temp vector store")
+        if manifest_path is None or Path(manifest_path).resolve(strict=False) == Path(
+            MANIFEST_PATH
+        ).resolve(strict=False):
+            raise ValueError("explicit affected object apply requires a temp vector manifest")
+
+    sources = [
+        source
+        for source in collect_object_sources()
+        if str(source.get("source_id") or "") in set(requested_ids)
+    ]
+    source_by_id = {source["source_id"]: source for source in sources}
+    requested_id_set = set(requested_ids)
+
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    existing_by_id: dict[str, dict[str, Any]] = {}
+    db = None
+    if actual_store_path.exists():
+        db = (
+            _connect_existing_vector_store(actual_store_path)
+            if dry_run
+            else open_vector_store(actual_store_path)
+        )
+        existing_by_id = _existing_records_by_source_ids(
+            db,
+            OBJECT_TABLE,
+            requested_ids,
+        )
+    changed_sources = []
+    removed_ids: list[str] = []
+    items = []
+    for source_id in sorted(requested_id_set):
+        source = source_by_id.get(source_id)
+        indexed = existing_by_id.get(source_id)
+        if source and indexed:
+            stale = _object_record_stale(indexed, source)
+            status = "stale" if stale else "up_to_date"
+            planned_action = "upsert" if stale else "skip"
+            if stale:
+                changed_sources.append(source)
+        elif source:
+            status = "missing"
+            planned_action = "upsert"
+            changed_sources.append(source)
+        elif indexed:
+            status = "removed"
+            planned_action = "delete"
+            removed_ids.append(source_id)
+        else:
+            status = "absent"
+            planned_action = "none"
+        items.append(
+            {
+                "source_id": source_id,
+                "exists_in_db": source is not None,
+                "exists_in_lancedb": indexed is not None,
+                "status": status,
+                "planned_action": planned_action,
+            }
+        )
+
+    if apply:
+        if db is None:
+            db = open_vector_store(actual_store_path)
+        table_exists = OBJECT_TABLE in _table_names(db)
+        if table_exists:
+            missing_fields = OBJECT_EXPECTED_RECORD_FIELDS - _table_schema_fields(
+                db,
+                OBJECT_TABLE,
+            )
+            if missing_fields:
+                raise VectorStoreSchemaMismatch(
+                    "affected object apply forbids schema rebuild; missing fields: "
+                    + ", ".join(sorted(missing_fields))
+                )
+        model = local_embedding_service._load_model({}) if changed_sources else None
+        records = [
+            build_object_record(source["object"], model=model)
+            for source in changed_sources
+        ]
+        records = [record for record in records if record]
+        if table_exists:
+            table = db.open_table(OBJECT_TABLE)
+            if removed_ids:
+                _delete_source_or_vector_ids(table, removed_ids)
+            if records:
+                _delete_source_or_vector_ids(
+                    table,
+                    [source["source_id"] for source in changed_sources],
+                )
+                table.add(records)
+        elif records:
+            db.create_table(OBJECT_TABLE, data=records, mode="create")
+        if manifest_path is not None:
+            table_names = _table_names(db)
+            object_records = _existing_records(db, OBJECT_TABLE)
+            object_count = (
+                int(db.open_table(OBJECT_TABLE).count_rows())
+                if OBJECT_TABLE in table_names
+                else 0
+            )
+            passage_count = (
+                int(db.open_table(PASSAGE_TABLE).count_rows())
+                if PASSAGE_TABLE in table_names
+                else 0
+            )
+            current_manifest = get_vector_manifest(Path(manifest_path)) or {}
+            embedding_dim = (
+                _embedding_dim(object_records)
+                or int(current_manifest.get("embedding_dim") or 0)
+            )
+            _updated_manifest(
+                manifest_path=Path(manifest_path),
+                embedding_dim=embedding_dim,
+                passage_count=passage_count,
+                object_count=object_count,
+            )
+
+    return {
+        "kind": "objects",
+        "scope": "affected_object_keys_only",
+        "dry_run": dry_run,
+        "apply": apply,
+        "full_rebuild_allowed": False,
+        "delete_orphans_allowed": False,
+        "store_path": str(actual_store_path),
+        "manifest_path": str(Path(manifest_path or MANIFEST_PATH)),
+        "requested_object_keys": requested_keys,
+        "scanned_count": len(requested_ids),
+        "items": items,
+        "upserted_count": len(changed_sources) if apply else 0,
+        "deleted_count": len(removed_ids) if apply else 0,
+        "lancedb_writes_performed": apply and bool(changed_sources or removed_ids),
+    }
+
+
+def inspect_affected_object_vector_state(
+    *,
+    object_keys: list[str],
+    expected_sources: list[dict[str, Any]],
+    store_path: Path | None = None,
+) -> dict[str, Any]:
+    """Strictly validate exactly the affected object keys in one store.
+
+    Unrelated object rows are ignored completely; missing, duplicate, stale,
+    identity-mismatch, and removed-but-present conditions are reported only
+    for the affected keys.
+    """
+    if not isinstance(object_keys, list) or not isinstance(expected_sources, list):
+        raise ValueError("object_keys and expected_sources must be lists")
+    requested_keys: list[str] = []
+    seen_keys: set[str] = set()
+    for raw_key in object_keys:
+        if not isinstance(raw_key, str):
+            raise ValueError("affected object keys must be strings")
+        key = raw_key.strip()
+        if key and key not in seen_keys:
+            seen_keys.add(key)
+            requested_keys.append(key)
+    requested_ids = sorted(make_object_source_id(key) for key in requested_keys)
+
+    expected_by_id: dict[str, dict[str, Any]] = {}
+    for source in expected_sources:
+        if not isinstance(source, dict):
+            raise ValueError("expected object source must be a mapping")
+        source_id = source.get("source_id")
+        obj = source.get("object")
+        if not isinstance(source_id, str) or not isinstance(obj, Mapping):
+            raise ValueError("expected object source identity is invalid")
+        source_id = source_id.strip()
+        if source_id not in set(requested_ids):
+            raise ValueError("expected object source is outside the affected scope")
+        if source_id in expected_by_id:
+            raise ValueError("expected object source IDs must be unique")
+        expected_by_id[source_id] = source
+
+    actual_store_path = Path(store_path or LANCEDB_DIR)
+    if not actual_store_path.exists():
+        return _unavailable_strict_object_state(
+            requested_ids,
+            "vector_store_unavailable",
+        )
+    try:
+        db = _connect_existing_vector_store(actual_store_path)
+        if OBJECT_TABLE not in _table_names(db):
+            missing_ids = [
+                source_id
+                for source_id in requested_ids
+                if source_id in expected_by_id
+            ]
+            removed_present = [
+                source_id
+                for source_id in requested_ids
+                if source_id not in expected_by_id
+            ]
+            return _complete_strict_object_state(
+                requested_ids=requested_ids,
+                expected_ids=sorted(expected_by_id),
+                actual_ids=[],
+                duplicate_ids=[],
+                stale_ids=[],
+                removed_present_ids=removed_present,
+                missing_ids=missing_ids,
+            )
+        table = db.open_table(OBJECT_TABLE)
+        fields = _table_schema_fields(db, OBJECT_TABLE)
+        required_fields = {
+            "source_id",
+            "vector_id",
+            "object_key",
+            "source_hash",
+            "profile_version",
+            "embedding_model",
+            "embedding_model_path",
+        }
+        if fields is None or not required_fields.issubset(fields):
+            return _unavailable_strict_object_state(
+                requested_ids,
+                "object_identity_schema_unavailable",
+            )
+
+        expected_where = "source_id IN (" + ", ".join(
+            _sql_quote(value) for value in requested_ids
+        ) + ")"
+        expected_count = int(table.count_rows(expected_where))
+        expected_rows = (
+            table.search()
+            .where(expected_where)
+            .limit(max(expected_count, 1))
+            .to_list()
+            if expected_count
+            else []
+        )
+    except Exception:
+        return _unavailable_strict_object_state(
+            requested_ids,
+            "object_identity_query_failed",
+        )
+
+    rows_by_id: dict[str, list[dict[str, Any]]] = {
+        source_id: [] for source_id in requested_ids
+    }
+    for record in expected_rows:
+        if not isinstance(record, dict):
+            return _unavailable_strict_object_state(
+                requested_ids,
+                "object_identity_row_parse_failed",
+            )
+        source_id = record.get("source_id")
+        if not isinstance(source_id, str) or source_id not in rows_by_id:
+            return _unavailable_strict_object_state(
+                requested_ids,
+                "object_identity_row_parse_failed",
+            )
+        rows_by_id[source_id].append(record)
+
+    missing_ids = sorted(
+        source_id
+        for source_id in requested_ids
+        if source_id in expected_by_id and not rows_by_id[source_id]
+    )
+    duplicate_ids = sorted(
+        {
+            source_id
+            for source_id, rows in rows_by_id.items()
+            if len(rows) > 1
+        }
+        | _duplicate_source_ids(
+            [source_id for source_id, rows in rows_by_id.items() for _ in rows]
+        )
+    )
+    stale_ids = sorted(
+        source_id
+        for source_id, rows in rows_by_id.items()
+        if len(rows) == 1
+        and source_id in expected_by_id
+        and _object_record_stale(rows[0], expected_by_id[source_id])
+    )
+    removed_present_ids = sorted(
+        source_id
+        for source_id, rows in rows_by_id.items()
+        if source_id not in expected_by_id and rows
+    )
+    return _complete_strict_object_state(
+        requested_ids=requested_ids,
+        expected_ids=sorted(expected_by_id),
+        actual_ids=sorted(rows_by_id),
+        duplicate_ids=duplicate_ids,
+        stale_ids=stale_ids,
+        removed_present_ids=removed_present_ids,
+        missing_ids=missing_ids,
+    )
+
+
+def _complete_strict_object_state(
+    *,
+    requested_ids: list[str],
+    expected_ids: list[str],
+    actual_ids: list[str],
+    duplicate_ids: list[str],
+    stale_ids: list[str],
+    removed_present_ids: list[str],
+    missing_ids: list[str],
+) -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "reason": None,
+        "requested_object_source_ids": sorted(requested_ids),
+        "expected_source_ids": sorted(expected_ids),
+        "actual_source_ids": sorted(actual_ids),
+        "expected_count": len(expected_ids),
+        "actual_count": len(actual_ids),
+        "missing_source_ids": sorted(missing_ids),
+        "orphan_source_ids": [],
+        "duplicate_source_ids": sorted(duplicate_ids),
+        "stale_source_ids": sorted(stale_ids),
+        "removed_but_present_source_ids": sorted(removed_present_ids),
+        "missing_count": len(missing_ids),
+        "orphan_count": 0,
+        "duplicate_count": len(duplicate_ids),
+        "stale_count": len(stale_ids),
+        "removed_but_present_count": len(removed_present_ids),
+    }
+
+
+def _unavailable_strict_object_state(
+    requested_ids: list[str],
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "requested_object_source_ids": list(requested_ids),
+        "expected_source_ids": [],
+        "actual_source_ids": [],
+        "expected_count": 0,
+        "actual_count": "not_available",
+        "missing_source_ids": "not_available",
+        "orphan_source_ids": "not_available",
+        "duplicate_source_ids": "not_available",
+        "stale_source_ids": "not_available",
+        "removed_but_present_source_ids": "not_available",
+        "missing_count": "not_available",
+        "orphan_count": "not_available",
+        "duplicate_count": "not_available",
+        "stale_count": "not_available",
+        "removed_but_present_count": "not_available",
+    }
+
+
 def sync_object_embeddings(
     *,
     limit: int | None = None,
@@ -1890,8 +2552,6 @@ def _passage_source_rows(
         if scoped_ids:
             statement = statement.where(KnowledgeChunk.id.in_([chunk_id for _document_id, chunk_id in scoped_ids]))
             statement = statement.where(Document.id.in_([document_id for document_id, _chunk_id in scoped_ids]))
-        if limit is not None:
-            statement = statement.limit(max(0, int(limit)))
         rows = session.execute(statement).all()
         chapter_ids = sorted({
             int(chunk.chapter_id)
@@ -1944,12 +2604,14 @@ def _passage_source_rows_from_sqlite(
     else:
         scoped_batches = [None]
     rows: list[sqlite3.Row] = []
-    with connect_readonly_sqlite(
-        database,
-        resolve_strict=True,
-        row_factory=sqlite3.Row,
-        query_only=True,
-        temp_store="MEMORY",
+    with closing(
+        connect_readonly_sqlite(
+            database,
+            resolve_strict=True,
+            row_factory=sqlite3.Row,
+            query_only=True,
+            temp_store="MEMORY",
+        )
     ) as connection:
         for scoped_batch in scoped_batches:
             scope_clause = ""
@@ -1963,8 +2625,8 @@ def _passage_source_rows_from_sqlite(
                     "(documents.id = ? AND chunks.id = ?)"
                     for _ in scoped_batch
                 ) + ")"
-                for document_id, chunk_id in scoped_batch:
-                    params.extend((document_id, chunk_id))
+                for source_document_id, source_chunk_id in scoped_batch:
+                    params.extend((source_document_id, source_chunk_id))
             query = f"""
                 SELECT
                     documents.id AS document_id,
@@ -2188,7 +2850,11 @@ def _sync_records(
         current = existing_by_id.get(source_id)
         if current is None:
             insert_ids.append(source_id)
-        elif schema_needs_upgrade or _record_stale(current, source):
+        elif schema_needs_upgrade or (
+            _passage_record_stale(current, source)
+            if kind == "passages"
+            else _record_stale(current, source)
+        ):
             update_ids.append(source_id)
         else:
             skipped_ids.append(source_id)
@@ -2283,6 +2949,71 @@ def _record_stale(record: dict[str, Any], source: dict[str, Any]) -> bool:
             _active_embedding_model_path(),
         )
     )
+
+
+def _passage_record_stale(
+    record: dict[str, Any],
+    source: dict[str, Any],
+) -> bool:
+    document = source.get("document")
+    chunk = source.get("chunk")
+    if document is None or chunk is None:
+        return True
+    source_id = str(source.get("source_id") or "")
+    if not source_id:
+        return True
+    if str(record.get("source_id") or "") != source_id:
+        return True
+    if str(record.get("vector_id") or "") != source_id:
+        return True
+    try:
+        expected_document_id = int(document.id)
+        expected_chunk_id = int(chunk.id)
+    except (AttributeError, TypeError, ValueError):
+        return True
+    for field, expected in (
+        ("document_id", expected_document_id),
+        ("chunk_id", expected_chunk_id),
+    ):
+        value = record.get(field)
+        if isinstance(value, bool):
+            return True
+        try:
+            current = int(value)
+        except (TypeError, ValueError):
+            return True
+        if current != expected:
+            return True
+    return _record_stale(record, source)
+
+
+def _object_record_stale(
+    record: dict[str, Any],
+    source: dict[str, Any],
+) -> bool:
+    obj = source.get("object")
+    source_id = str(source.get("source_id") or "")
+    if not source_id or not isinstance(obj, Mapping):
+        return True
+    if str(record.get("source_id") or "") != source_id:
+        return True
+    if str(record.get("vector_id") or "") != source_id:
+        return True
+    object_key = str(obj.get("object_key") or obj.get("object_name") or "").strip()
+    if not object_key or str(record.get("object_key") or "") != object_key:
+        return True
+    expected_document_id = obj.get("document_id")
+    if expected_document_id is not None:
+        value = record.get("document_id")
+        if isinstance(value, bool):
+            return True
+        try:
+            current = int(value)
+        except (TypeError, ValueError):
+            return True
+        if current != int(expected_document_id):
+            return True
+    return _record_stale(record, source)
 
 
 def _note_record_stale(
@@ -2403,6 +3134,15 @@ def _delete_vector_ids(table: Any, vector_ids: list[str]) -> None:
         return
     quoted = ", ".join(_sql_quote(value) for value in vector_ids)
     table.delete(f"vector_id IN ({quoted})")
+
+
+def _delete_source_or_vector_ids(table: Any, source_ids: list[str]) -> None:
+    if not source_ids:
+        return
+    quoted = ", ".join(_sql_quote(value) for value in source_ids)
+    table.delete(
+        f"source_id IN ({quoted}) OR vector_id IN ({quoted})"
+    )
 
 
 def _sql_quote(value: str) -> str:

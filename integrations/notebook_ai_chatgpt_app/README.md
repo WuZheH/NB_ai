@@ -137,7 +137,7 @@ In Inspector:
 1. Select **Streamable HTTP**.
 2. Enter `http://127.0.0.1:8787/mcp`.
 3. Connect and run **List Tools**.
-4. Confirm all nine tools and their read/write/destructive annotations.
+4. Confirm all ten tools and their read/write/destructive annotations.
 
 The results widget uses the dedicated
 `https://cread-search-widget.openaiusercontent.com` origin with an empty,

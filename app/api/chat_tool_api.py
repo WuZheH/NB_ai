@@ -11,6 +11,7 @@ from app.schemas.chat_tools import (
     DeletePreviewRequest,
     ImportDocumentRequest,
     ImportPreviewRequest,
+    ImportStatusRequest,
     IntegrityReportRequest,
     ListLibraryRequest,
 )
@@ -80,6 +81,12 @@ def import_document(payload: ImportDocumentRequest, request: Request) -> dict[st
         confirmation_token=payload.confirmation_token,
         confirmed=payload.confirmed,
     )
+
+
+@router.post("/import-status")
+def import_status(payload: ImportStatusRequest, request: Request) -> dict[str, Any]:
+    require_chat_adapter(request)
+    return _call(chat_tool_service.import_status, payload.operation_id)
 
 
 @router.post("/delete-preview")

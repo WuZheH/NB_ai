@@ -9,6 +9,7 @@ import {
   type NotebookSearchInput,
 } from "./contracts.js";
 import { NotebookBackendError, NotebookClient } from "./notebookClient.js";
+import { releaseStagedImportForOperation } from "./fileTransfer.js";
 import { errorPayload } from "./tools/shared.js";
 
 const ACTIONS_PREFIX = "/actions/v1/";
@@ -21,6 +22,7 @@ const ACTION_NAMES = new Set([
   "integrity_report",
   "import_preview",
   "import_document",
+  "import_status",
   "delete_preview",
   "delete_document",
 ]);
@@ -233,6 +235,14 @@ export async function dispatchAction(
       confirmed: true,
     });
   }
+  if (action === "import_status") {
+    const operationId = requiredOperationId(input.operation_id);
+    const result = await client.importStatus({ operation_id: operationId });
+    if (result.terminal) {
+      await releaseStagedImportForOperation(result.operation_id);
+    }
+    return result;
+  }
   if (action === "delete_preview") {
     return await client.deletePreview(boundedInteger(input.document_id, 0, 1, Number.MAX_SAFE_INTEGER));
   }
@@ -438,6 +448,9 @@ function actionDescription(name: string): string {
   if (name === "import_document") {
     return "Write action. Call only after import_preview and explicit user confirmation in the current conversation.";
   }
+  if (name === "import_status") {
+    return "Read-only durable import status. Use the operation_id returned by import_preview or import_document after a timeout or connection loss; this never retries the write.";
+  }
   return `Search ${name.replaceAll("_", " ")} tool.`;
 }
 
@@ -499,6 +512,12 @@ function actionInputSchema(name: string): Record<string, unknown> {
       ],
       required,
     };
+  } else if (name === "import_status") {
+    properties.operation_id = {
+      type: "string",
+      pattern: "^[0-9a-f]{32}$",
+    };
+    required.push("operation_id");
   } else if (name === "delete_preview") {
     properties.document_id = { type: "integer", minimum: 1 };
     required.push("document_id");
@@ -524,6 +543,8 @@ function errorSchema(): Record<string, unknown> {
       safe_to_retry: { type: ["boolean", "null"] },
       replayed_receipt: { type: ["boolean", "null"] },
       operation_in_progress: { type: ["boolean", "null"] },
+      operation_id: { type: ["string", "null"], pattern: "^[0-9a-f]{32}$" },
+      terminal: { type: ["boolean", "null"] },
       publish_substage: { type: ["string", "null"] },
       cause_type: { type: ["string", "null"] },
       cause_message: { type: ["string", "null"] },
@@ -536,4 +557,15 @@ function errorSchema(): Record<string, unknown> {
       error_stage: { type: ["string", "null"] },
     },
   };
+}
+
+function requiredOperationId(value: unknown): string {
+  const operationId = requiredString(value, "operation_id", 32, 32);
+  if (!/^[0-9a-f]{32}$/.test(operationId)) {
+    throw new ActionRequestError(
+      "ACTIONS_INVALID_ARGUMENT",
+      "operation_id must be a 32-character lowercase hexadecimal identifier.",
+    );
+  }
+  return operationId;
 }

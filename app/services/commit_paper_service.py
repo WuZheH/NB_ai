@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 from app.core.paths import DATA_PROJECT_ROOT, DEFAULT_DB_PATH, OUTPUTS_DIR
-from app.db.session import SessionLocal
 from app.models import Document
 from app.services import import_service
 from app.services import local_pdf_source_binding_service
@@ -23,18 +23,19 @@ from app.services.markdown_parser import parse_markdown
 from app.services.vector_index_service import VECTOR_INDEX_DIR, rebuild_vector_index
 
 COMMIT_BACKUP_ROOT = OUTPUTS_DIR / "phase18e_commitpaper_backup"
-DB_PATH = DEFAULT_DB_PATH
 COMMIT_MANIFEST_FILE = "commit_result.json"
 
 
 def commit_paper_from_staging(
     import_job_id: str,
     *,
+    db_path: str | Path = DEFAULT_DB_PATH,
     rebuild_legacy_vector_index: bool = True,
     local_pdf_source_binding: (
         local_pdf_source_binding_service.LocalPdfSourceBinding | None
     ) = None,
 ) -> dict[str, Any]:
+    target_db = Path(db_path).resolve(strict=False)
     job_dir = _existing_job_dir(import_job_id)
 
     paper_md_path = job_dir / "paper.md"
@@ -71,8 +72,11 @@ def commit_paper_from_staging(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     backup_dir = COMMIT_BACKUP_ROOT / timestamp
     backup_dir.mkdir(parents=True, exist_ok=True)
-    if DB_PATH.exists():
-        shutil.copy2(DB_PATH, backup_dir / "research_memory_pre_commit.db")
+    if target_db.exists():
+        shutil.copy2(
+            target_db,
+            backup_dir / "research_memory_pre_commit.db",
+        )
     vector_chunks = VECTOR_INDEX_DIR / "chunks.jsonl"
     vector_manifest = VECTOR_INDEX_DIR / "manifest.json"
     if vector_chunks.exists():
@@ -89,33 +93,50 @@ def commit_paper_from_staging(
     parsed = parse_markdown(paper_text, source_path=str(paper_md_path))
     chunks = import_service.split_nodes(parsed.nodes)
 
-    with SessionLocal() as session:
-        document = Document(
-            title=title,
-            document_type="paper",
-            content_layer="evidence",
-            source_path=str(paper_md_path.relative_to(DATA_PROJECT_ROOT)).replace("\\", "/"),
-            pdf_path=pdf_path,
-            zotero_key=zotero_key,
-            read_status="read",
-        )
-        session.add(document)
-        session.flush()
+    database_engine = create_engine(
+        f"sqlite:///{target_db.as_posix()}",
+        connect_args={"check_same_thread": False},
+    )
+    try:
+        with Session(database_engine, autoflush=False) as session:
+            document = Document(
+                title=title,
+                document_type="paper",
+                content_layer="evidence",
+                source_path=str(
+                    paper_md_path.relative_to(DATA_PROJECT_ROOT)
+                ).replace("\\", "/"),
+                pdf_path=pdf_path,
+                zotero_key=zotero_key,
+                read_status="read",
+            )
+            session.add(document)
+            session.flush()
 
-        result = import_service._upsert_nodes_and_chunks(session, document, parsed.nodes, chunks)
-        session.commit()
-        document_id = document.id
+            result = import_service._upsert_nodes_and_chunks(
+                session,
+                document,
+                parsed.nodes,
+                chunks,
+            )
+            session.commit()
+            document_id = document.id
+    finally:
+        database_engine.dispose()
 
     _record_staging_document_source(
+        db_path=target_db,
         document_id=document_id,
         source_trace=source_trace,
         local_pdf_source_binding=local_pdf_source_binding,
     )
     zotero_native_notes_import = _sync_zotero_native_notes_for_paper(
+        db_path=target_db,
         document_id=document_id,
         source_trace=source_trace,
     )
     zotero_note_alignment_hook = _run_zotero_note_alignment_hook(
+        db_path=target_db,
         document_id=document_id,
         source_trace=source_trace,
         source_path=str(paper_md_path.relative_to(DATA_PROJECT_ROOT)).replace("\\", "/"),
@@ -176,6 +197,7 @@ def commit_paper_from_staging(
 
 def _record_staging_document_source(
     *,
+    db_path: str | Path,
     document_id: int,
     source_trace: dict[str, Any],
     local_pdf_source_binding: (
@@ -184,7 +206,7 @@ def _record_staging_document_source(
 ) -> None:
     if local_pdf_source_binding is not None:
         local_pdf_source_binding_service.record_document_source(
-            db_path=DB_PATH,
+            db_path=Path(db_path),
             document_id=document_id,
             binding=local_pdf_source_binding,
         )
@@ -236,6 +258,7 @@ def _safety_fields() -> dict[str, bool]:
 
 def _run_zotero_note_alignment_hook(
     *,
+    db_path: str | Path,
     document_id: int,
     source_trace: dict[str, Any],
     source_path: str | None,
@@ -261,7 +284,7 @@ def _run_zotero_note_alignment_hook(
         )
     try:
         return zotero_note_alignment_hook_service.run_import_time_alignment_hook_dry_run(
-            DB_PATH,
+            Path(db_path),
             document_id=document_id,
             attachment_key=attachment_key,
             zotero_item_key=zotero_item_key,
@@ -290,6 +313,7 @@ def _run_zotero_note_alignment_hook(
 
 def _sync_zotero_native_notes_for_paper(
     *,
+    db_path: str | Path,
     document_id: int,
     source_trace: dict[str, Any],
 ) -> dict[str, Any]:
@@ -298,7 +322,7 @@ def _sync_zotero_native_notes_for_paper(
     zotero_item_key = _clean_optional_text(source_trace.get("zotero_item_key"))
     if source_type != "zotero_pdf" or not attachment_key:
         return zotero_native_annotation_import_service.sync_zotero_native_annotations_for_document_or_unit(
-            DB_PATH,
+            Path(db_path),
             zotero_native_annotation_import_service.DEFAULT_ZOTERO_SNAPSHOT_PATH,
             document_id=document_id,
             zotero_attachment_key=attachment_key,
@@ -308,7 +332,7 @@ def _sync_zotero_native_notes_for_paper(
         )
     try:
         return zotero_native_annotation_import_service.sync_zotero_native_annotations_for_document_or_unit(
-            DB_PATH,
+            Path(db_path),
             zotero_native_annotation_import_service.DEFAULT_ZOTERO_SNAPSHOT_PATH,
             document_id=document_id,
             zotero_attachment_key=attachment_key,

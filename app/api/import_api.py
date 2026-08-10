@@ -17,8 +17,7 @@ from app.api.schemas import (
     ReviewedObjectsUploadRequest,
 )
 from app.services import (
-    commit_book_service,
-    commit_paper_service,
+    chat_pdf_production_import_service,
     import_duplicate_check_service,
     import_preview_service,
     object_tag_suggestion_package_service,
@@ -169,11 +168,24 @@ def commit_paper(
     if confirmation:
         return JSONResponse(status_code=400, content=confirmation)
     try:
-        payload = commit_paper_service.commit_paper_from_staging(import_job_id)
+        payload = chat_pdf_production_import_service.import_staging_document_to_production(
+            import_job_id=import_job_id,
+            document_type="paper",
+            allow_production=True,
+        )
     except ImportPreviewError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="入库失败；生产数据库与检索生成已保持一致或 fail-closed。",
+        ) from exc
     return {
         **payload,
+        "status": "committed",
+        "import_job_id": import_job_id,
+        "core_db_write_performed": True,
+        "external_llm_called": False,
         "confirmation_required": True,
         "confirmation_received": True,
         "confirmation_context": request.confirmation_context,
@@ -194,11 +206,24 @@ def commit_book(
     if confirmation:
         return JSONResponse(status_code=400, content=confirmation)
     try:
-        payload = commit_book_service.commit_book_from_staging(import_job_id)
+        payload = chat_pdf_production_import_service.import_staging_document_to_production(
+            import_job_id=import_job_id,
+            document_type="book",
+            allow_production=True,
+        )
     except ImportPreviewError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="入库失败；生产数据库与检索生成已保持一致或 fail-closed。",
+        ) from exc
     return {
         **payload,
+        "status": "committed",
+        "import_job_id": import_job_id,
+        "core_db_write_performed": True,
+        "external_llm_called": False,
         "confirmation_required": True,
         "confirmation_received": True,
         "confirmation_context": request.confirmation_context,
@@ -210,14 +235,21 @@ def commit_objects(
     import_job_id: str,
     request: CommitConfirmationRequest | None = Body(default=None),
 ) -> dict[str, Any]:
-    from app.services import commit_objects_service
+    from app.services.commit_objects_service import (
+        commit_objects_to_production_with_generation,
+    )
     confirmation = _commit_confirmation(request, "commit_objects_after_review")
     if confirmation:
         return confirmation
     try:
-        payload = commit_objects_service.commit_objects_from_staging(import_job_id)
+        payload = commit_objects_to_production_with_generation(import_job_id)
     except ImportPreviewError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="对象提交失败；生产数据库与检索生成已保持一致或 fail-closed。",
+        ) from exc
     return {
         **payload,
         "confirmation_required": True,
@@ -231,14 +263,21 @@ def commit_reviewed_objects(
     import_job_id: str,
     request: CommitConfirmationRequest | None = Body(default=None),
 ) -> dict[str, Any]:
-    from app.services.commit_objects_service import commit_reviewed_objects_from_remap
+    from app.services.commit_objects_service import (
+        commit_reviewed_objects_to_production_with_generation,
+    )
     confirmation = _commit_confirmation(request, "commit_reviewed_objects_after_remap")
     if confirmation:
         return confirmation
     try:
-        payload = commit_reviewed_objects_from_remap(import_job_id)
+        payload = commit_reviewed_objects_to_production_with_generation(import_job_id)
     except ImportPreviewError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="对象提交失败；生产数据库与检索生成已保持一致或 fail-closed。",
+        ) from exc
     return {
         **payload,
         "confirmation_required": True,

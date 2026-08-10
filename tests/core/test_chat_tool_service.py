@@ -20,6 +20,7 @@ from app.schemas.chat_tools import ImportPreviewRequest
 from app.services import chat_tool_service, pdf_import_classifier_service
 from app.services import chat_pdf_production_import_service
 from app.services import local_pdf_source_binding_service
+from app.services import retrieval_generation_mutation_service
 from app.services.pdf_backend_service import load_fitz_backend
 from app.services.library import document_deletion_service
 from app.services.import_operation_journal import ImportOperationJournalStore
@@ -454,6 +455,7 @@ def test_import_rejects_changed_pdf_and_duplicate_without_commit_token(tmp_path:
     duplicate = chat_tool_service.import_preview(runtime=duplicate_runtime)
     assert duplicate["duplicate_status"] == "duplicate"
     assert duplicate["confirmation_token"] is None
+    assert duplicate["operation_id"] is None
 
 
 def test_import_preview_request_source_contract() -> None:
@@ -1305,6 +1307,93 @@ def test_default_local_base_exception_removes_managed_copy_and_marks_orphaned(
     managed_dir = tmp_path / "data" / "pdfs" / "chat_imports"
     assert journal.status == "orphaned"
     assert list(managed_dir.glob("*.pdf")) == []
+    assert list(managed_dir.glob("*.tmp")) == []
+
+
+def test_local_generation_rollback_failure_retains_managed_pdf_and_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    pdf = inbox / "phase2-degraded.pdf"
+    pdf.write_bytes(b"%PDF-1.4\nphase2 degraded rollback")
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=tmp_path / "db.sqlite",
+        data_dir=tmp_path / "data",
+        inbox_root=inbox,
+        import_journal_dir=tmp_path / "journals",
+        classify_pdf=lambda *_args, **_kwargs: {
+            "title": "Phase2 Degraded Rollback",
+            "document_type": "paper",
+            "object_import_mode": "full_document",
+            "duplicate": False,
+            "signals": {"page_count": 1},
+        },
+    )
+    sentinel = chat_pdf_production_import_service.ChatPdfImportRuntime.production()
+    monkeypatch.setattr(
+        chat_tool_service,
+        "_resolve_chat_pdf_import_runtime",
+        lambda _runtime: sentinel,
+    )
+    monkeypatch.setattr(
+        chat_tool_service.import_preview_service,
+        "create_import_preview",
+        lambda *_args, **_kwargs: {"import_job_id": "job-local-degraded"},
+    )
+    rollback_error = (
+        retrieval_generation_mutation_service
+        .ProductionGenerationRollbackError(
+            "active pointer rollback failed",
+            stage=retrieval_generation_mutation_service.MutationStage.DEGRADED,
+            rollback_substage="active_pointer_rollback",
+            cause=PermissionError("pointer rollback denied"),
+        )
+    )
+    monkeypatch.setattr(
+        chat_pdf_production_import_service,
+        "import_document_to_production",
+        lambda **_kwargs: (_ for _ in ()).throw(rollback_error),
+    )
+    preview = chat_tool_service.import_preview(
+        inbox_filename=pdf.name,
+        runtime=runtime,
+    )
+    token = str(preview["confirmation_token"])
+
+    with pytest.raises(chat_tool_service.ChatToolError) as caught:
+        chat_tool_service.import_document(
+            confirmation_token=token,
+            confirmed=True,
+            runtime=runtime,
+        )
+
+    assert caught.value.error_code == "chat_import_generation_rollback_failed"
+    assert caught.value.details["safe_to_retry"] is False
+    assert caught.value.details["writes_performed"] is True
+    assert caught.value.details["production_data_modified"] is True
+    assert caught.value.details["rollback_attempted"] is True
+    assert caught.value.details["rollback_completed"] is False
+    assert caught.value.details["operation_id"] == preview["operation_id"]
+    assert caught.value.details["terminal"] is True
+    assert caught.value.details["status"] == "failed"
+
+    journal = _journal_for_token(runtime, token)
+    assert journal.status == "failed"
+    assert journal.rollback == {"attempted": True, "completed": False}
+    status = chat_tool_service.import_status(
+        str(preview["operation_id"]),
+        runtime=runtime,
+    )
+    assert status["status"] == "failed"
+    assert status["safe_to_retry"] is False
+    assert status["rollback_completed"] is False
+
+    managed_dir = tmp_path / "data" / "pdfs" / "chat_imports"
+    managed_files = list(managed_dir.glob("*.pdf"))
+    assert len(managed_files) == 1
+    assert managed_files[0].read_bytes() == pdf.read_bytes()
     assert list(managed_dir.glob("*.tmp")) == []
 
 

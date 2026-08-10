@@ -165,6 +165,12 @@ export function errorPayload(
     if (typeof value !== "string") return null;
     return redactErrorSecrets(value).slice(0, 512);
   };
+  const nullableOperationId = (): string | null => {
+    const value = backendDetails.operation_id;
+    return typeof value === "string" && /^[0-9a-f]{32}$/.test(value)
+      ? value
+      : null;
+  };
 
   return {
     status: "error" as const,
@@ -182,6 +188,8 @@ export function errorPayload(
       : nullableBoolean("writes_performed", writeOperation ? null : false),
     ...(writeOperation
       ? {
+          operation_id: nullableOperationId(),
+          terminal: nullableBoolean("terminal", null),
           token_consumed: writeStateUncertain
             ? null
             : nullableBoolean("token_consumed", null),

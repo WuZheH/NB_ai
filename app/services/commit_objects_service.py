@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import sqlite3
+import tempfile
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,13 +13,18 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.core.paths import DATA_PROJECT_ROOT, DEFAULT_DB_PATH, OUTPUTS_DIR
+from app.core.paths import DATA_DIR, DATA_PROJECT_ROOT, DEFAULT_DB_PATH, OUTPUTS_DIR
 from app.db.session import SessionLocal
 from app.models import KnowledgeChunk
 from app.models.object_candidate import (
     ALLOWED_REVIEW_STATUSES,
     ALLOWED_MAPPING_STATUSES,
     ObjectCandidate,
+)
+from app.services import (
+    retrieval_generation_mutation_service,
+    retrieval_generation_service,
+    vector_store_service,
 )
 from app.services.import_preview_service import (
     ImportPreviewError, _existing_job_dir, _read_json, _write_json, _relative,
@@ -26,7 +35,11 @@ DB_PATH = DEFAULT_DB_PATH
 COMMIT_OBJECTS_FILE = "commit_objects_result.json"
 
 
-def commit_objects_from_staging(import_job_id: str) -> dict[str, Any]:
+def commit_objects_from_staging(
+    import_job_id: str,
+    *,
+    persist_result: bool = True,
+) -> dict[str, Any]:
     job_dir = _existing_job_dir(import_job_id)
 
     commit_paper_path = job_dir / "commit_result.json"
@@ -161,7 +174,8 @@ def commit_objects_from_staging(import_job_id: str) -> dict[str, Any]:
         "core_db_write_performed": True,
         "external_llm_called": False,
     }
-    _write_json(commit_objects_path, result)
+    if persist_result:
+        _write_json(commit_objects_path, result)
 
     return result
 
@@ -404,7 +418,11 @@ COMMIT_REVIEWED_FILE = "commit_reviewed_objects_result.json"
 COMMIT_REVIEWED_BACKUP_ROOT = OUTPUTS_DIR / "phase18e_commitreviewedobjects_backup"
 
 
-def commit_reviewed_objects_from_remap(import_job_id: str) -> dict[str, Any]:
+def commit_reviewed_objects_from_remap(
+    import_job_id: str,
+    *,
+    persist_result: bool = True,
+) -> dict[str, Any]:
     """Commit reviewed objects using pre-computed remap preview.
 
     Reads reviewed_object_tag_package.json + object_evidence_remap_preview.json,
@@ -596,6 +614,314 @@ def commit_reviewed_objects_from_remap(import_job_id: str) -> dict[str, Any]:
         "core_db_write_performed": True,
         "external_llm_called": False,
     }
-    _write_json(result_path, result)
+    if persist_result:
+        _write_json(result_path, result)
 
     return result
+
+
+class _ObjectCommitAlreadyPerformed(Exception):
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__("object commit already performed")
+        self.payload = payload
+
+
+def _job_marker(
+    import_job_id: str,
+    *,
+    reviewed: bool,
+) -> Path | None:
+    job_dir = _existing_job_dir(import_job_id)
+    marker_name = COMMIT_REVIEWED_FILE if reviewed else COMMIT_OBJECTS_FILE
+    marker = job_dir / marker_name
+    return marker if marker.is_file() else None
+
+
+def _already_committed_payload(stored: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **dict(stored),
+        "status": "already_committed",
+        "core_db_write_performed": False,
+    }
+
+
+def _verified_post_write_snapshot(db_path: Path) -> Path:
+    target = Path(db_path).resolve(strict=True)
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{target.name}.object-commit-post-write-",
+        suffix=".sqlite",
+        dir=str(target.parent),
+    )
+    os.close(descriptor)
+    snapshot = Path(raw_path)
+    expected_sha = _file_sha256(target)
+    expected_size = target.stat().st_size
+    try:
+        shutil.copy2(target, snapshot)
+        if (
+            snapshot.stat().st_size != expected_size
+            or _file_sha256(snapshot) != expected_sha
+        ):
+            raise RuntimeError("object_commit_post_write_snapshot_invalid")
+    except BaseException:
+        snapshot.unlink(missing_ok=True)
+        raise
+    return snapshot
+
+
+def _file_sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _affected_object_keys(
+    snapshot_db_path: Path,
+    import_job_id: str,
+) -> list[str]:
+    with closing(
+        sqlite3.connect(
+            f"file:{Path(snapshot_db_path).resolve().as_posix()}?mode=ro",
+            uri=True,
+        )
+    ) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        rows = connection.execute(
+            "SELECT DISTINCT object_key FROM object_candidates "
+            "WHERE import_job_id = ? AND object_key IS NOT NULL "
+            "AND TRIM(object_key) <> ''",
+            (import_job_id,),
+        ).fetchall()
+    keys = sorted({str(row["object_key"]).strip() for row in rows})
+    if not keys:
+        raise ImportPreviewError(
+            "object_commit_affected_keys_empty: "
+            "本次对象提交未产生任何 affected object keys。"
+        )
+    return keys
+
+
+def _strict_affected_object_validation(
+    *,
+    object_keys: list[str],
+    expected_sources: list[dict[str, Any]],
+    vector_store_path: Path,
+    expected_db_sha256: str,
+    db_path: Path,
+) -> dict[str, Any]:
+    if _file_sha256(db_path).lower() != expected_db_sha256.lower():
+        raise RuntimeError("object_commit_generation_database_revision_invalid")
+    state = vector_store_service.inspect_affected_object_vector_state(
+        object_keys=object_keys,
+        expected_sources=expected_sources,
+        store_path=vector_store_path,
+    )
+    if (
+        state.get("status") != "ok"
+        or int(state.get("missing_count") or 0) != 0
+        or int(state.get("duplicate_count") or 0) != 0
+        or int(state.get("stale_count") or 0) != 0
+        or int(state.get("removed_but_present_count") or 0) != 0
+    ):
+        raise RuntimeError("object_commit_affected_vectors_invalid")
+    return state
+
+
+def _commit_objects_with_generation(
+    import_job_id: str,
+    *,
+    reviewed: bool,
+    db_path: Path,
+    data_dir: Path,
+) -> dict[str, Any]:
+    body_commit = (
+        commit_reviewed_objects_from_remap
+        if reviewed
+        else commit_objects_from_staging
+    )
+    marker_path = _job_marker(import_job_id, reviewed=reviewed)
+    if marker_path is not None:
+        return _already_committed_payload(_read_json(marker_path))
+
+    active_before = (
+        retrieval_generation_service.resolve_active_retrieval_generation(
+            data_dir=data_dir,
+            db_path=db_path,
+            verify_fingerprints=True,
+        )
+    )
+    retrieval_generation_service.verify_generation_database_revision(
+        active_before,
+        db_path,
+    )
+
+    post_write_snapshot: Path | None = None
+    generation_id: str | None = None
+    result: dict[str, Any] = {}
+    try:
+        with retrieval_generation_mutation_service.ProductionGenerationMutationSession(
+            data_dir=data_dir,
+            db_path=db_path,
+        ) as mutation:
+            locked_marker = _job_marker(import_job_id, reviewed=reviewed)
+            if locked_marker is not None:
+                raise _ObjectCommitAlreadyPerformed(
+                    _already_committed_payload(_read_json(locked_marker))
+                )
+
+            result = body_commit(import_job_id, persist_result=False)
+            mutation.mark_body_db_mutated()
+            after_db_sha256 = mutation.capture_post_write_database()
+            post_write_snapshot = _verified_post_write_snapshot(db_path)
+            if _file_sha256(post_write_snapshot).lower() != after_db_sha256:
+                raise RuntimeError("object_commit_post_write_snapshot_invalid")
+
+            affected_keys = _affected_object_keys(
+                post_write_snapshot,
+                import_job_id,
+            )
+            expected_sources = [
+                source
+                for source in vector_store_service.collect_object_sources()
+                if str(source.get("source_id") or "")
+                in {
+                    vector_store_service.make_object_source_id(key)
+                    for key in affected_keys
+                }
+            ]
+            candidate = mutation.candidate
+            if candidate is None:
+                raise RuntimeError("object_commit_generation_candidate_missing")
+
+            sync_result = (
+                vector_store_service.sync_affected_object_embeddings(
+                    affected_keys,
+                    dry_run=False,
+                    apply=True,
+                    store_path=candidate.vector_store_path,
+                    manifest_path=candidate.vector_manifest_path,
+                )
+            )
+            if (
+                sync_result.get("scope") != "affected_object_keys_only"
+                or sync_result.get("full_rebuild_allowed") is not False
+                or sync_result.get("delete_orphans_allowed") is not False
+            ):
+                raise RuntimeError("object_commit_affected_scope_invalid")
+
+            mutation.mark_candidate_synced()
+
+            def validate_candidate(candidate_value, expected_sha: str) -> None:
+                _strict_affected_object_validation(
+                    object_keys=affected_keys,
+                    expected_sources=expected_sources,
+                    vector_store_path=candidate_value.vector_store_path,
+                    expected_db_sha256=expected_sha,
+                    db_path=post_write_snapshot,
+                )
+
+            mutation.validate_candidate(validate_candidate)
+            finalized = mutation.finalize_candidate(
+                profile_versions={
+                    "object_profile": vector_store_service.OBJECT_PROFILE_VERSION,
+                }
+            )
+            mutation.begin_activation()
+            mutation.publish_active()
+
+            def validate_active(active_value) -> None:
+                if active_value.generation_id != finalized.generation_id:
+                    raise RuntimeError("object_commit_active_generation_mismatch")
+                _strict_affected_object_validation(
+                    object_keys=affected_keys,
+                    expected_sources=expected_sources,
+                    vector_store_path=active_value.vector_store_path,
+                    expected_db_sha256=after_db_sha256,
+                    db_path=db_path,
+                )
+
+            mutation.verify_active(validate_active)
+            post_write_snapshot.unlink()
+            post_write_snapshot = None
+            mutation.clear_activation()
+            generation_id = finalized.generation_id
+            job_dir = _existing_job_dir(import_job_id)
+            marker_name = COMMIT_REVIEWED_FILE if reviewed else COMMIT_OBJECTS_FILE
+            marker = job_dir / marker_name
+            if marker.is_file():
+                raise ImportPreviewError(
+                    "object_commit_marker_collision: "
+                    "对象提交结果标记冲突，请检查 import job。"
+                )
+            _write_json(marker, result)
+    except _ObjectCommitAlreadyPerformed as exc:
+        return dict(exc.payload)
+    except (
+        retrieval_generation_mutation_service
+        .ProductionGenerationRollbackError
+    ) as exc:
+        if post_write_snapshot is not None:
+            try:
+                post_write_snapshot.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise ImportPreviewError(
+            "object_commit_generation_rollback_failed: "
+            "对象提交进入 fail-closed 状态；生产数据库与检索生成已保持一致。"
+        ) from exc
+    except ImportPreviewError:
+        if post_write_snapshot is not None:
+            try:
+                post_write_snapshot.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+    except Exception as exc:
+        if post_write_snapshot is not None:
+            try:
+                post_write_snapshot.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise ImportPreviewError(
+            "object_commit_transaction_rolled_back: "
+            "对象提交失败，已完整回滚，未修改检索生成。"
+        ) from exc
+
+    return {
+        **result,
+        "generation_id": generation_id,
+        "derived_index_publish_performed": True,
+    }
+
+
+def commit_objects_to_production_with_generation(
+    import_job_id: str,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+    data_dir: str | Path = DATA_DIR,
+) -> dict[str, Any]:
+    return _commit_objects_with_generation(
+        import_job_id,
+        reviewed=False,
+        db_path=Path(db_path),
+        data_dir=Path(data_dir),
+    )
+
+
+def commit_reviewed_objects_to_production_with_generation(
+    import_job_id: str,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+    data_dir: str | Path = DATA_DIR,
+) -> dict[str, Any]:
+    return _commit_objects_with_generation(
+        import_job_id,
+        reviewed=True,
+        db_path=Path(db_path),
+        data_dir=Path(data_dir),
+    )

@@ -95,6 +95,60 @@ def test_create_read_round_trip(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.operation_id == rec.operation_id
     assert loaded.writes_performed is None
+    assert loaded.canonical_transaction_fingerprint is True
+
+
+def test_legacy_v1_weak_transaction_fingerprint_is_readable(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    record = _make_record()
+    payload = record.to_dict()
+    payload["transaction_fingerprint"] = "legacy-transaction-v1"
+    journal_dir = tmp_path / "operation_journal"
+    journal_dir.mkdir()
+    (journal_dir / f"{record.operation_id}.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    loaded = store.read(record.operation_id)
+
+    assert loaded is not None
+    assert loaded.transaction_fingerprint == "legacy-transaction-v1"
+    assert loaded.canonical_transaction_fingerprint is False
+
+
+def test_mixed_canonical_and_legacy_v1_scan_remains_available(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    canonical = store.create(_make_record())
+    legacy = _make_record(
+        operation_id=uuid.uuid4().hex,
+        confirmation_token_digest=_DIGEST_Z,
+    ).to_dict()
+    legacy["transaction_fingerprint"] = "historical-noncanonical-value"
+    (tmp_path / "operation_journal" / f"{legacy['operation_id']}.json").write_text(
+        json.dumps(legacy),
+        encoding="utf-8",
+    )
+
+    matched = store.find_by_token_digest(canonical.confirmation_token_digest)
+
+    assert [record.operation_id for record in matched] == [canonical.operation_id]
+
+
+def test_create_rejects_legacy_weak_transaction_fingerprint(
+    tmp_path: Path,
+) -> None:
+    payload = _make_record().to_dict()
+    payload["transaction_fingerprint"] = "legacy-weak"
+    legacy = ImportOperationJournal.from_dict(payload)
+    assert legacy.canonical_transaction_fingerprint is False
+
+    with pytest.raises(JournalValidationError, match="transaction_fingerprint"):
+        _store(tmp_path).create(legacy)
 
 
 def test_create_duplicate_operation_id_raises(tmp_path: Path) -> None:

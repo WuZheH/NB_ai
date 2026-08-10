@@ -187,6 +187,7 @@ class MockNotebookClient extends NotebookClient {
     this.calls.push({ tool: "import_preview", input });
     return {
       status: "ok" as const,
+      operation_id: "a".repeat(32),
       filename: input.inbox_filename ?? "fixture.pdf",
       title: "Fixture",
       pdf_sha256: "a".repeat(64),
@@ -205,6 +206,8 @@ class MockNotebookClient extends NotebookClient {
     this.calls.push({ tool: "import_document", input });
     return {
       status: "committed",
+      operation_id: "a".repeat(32),
+      terminal: true,
       document_id: 3,
       title: "Fixture",
       document_type: "paper",
@@ -217,6 +220,28 @@ class MockNotebookClient extends NotebookClient {
       token_consumed: true,
       writes_performed: true,
       safe_to_retry: false,
+    };
+  }
+
+  override async importStatus(input: { operation_id: string }) {
+    this.calls.push({ tool: "import_status", input });
+    return {
+      status: "committed" as const,
+      operation_id: input.operation_id,
+      document_id: 3,
+      title: "Fixture",
+      document_type: "paper",
+      chunk_count: 6,
+      terminal: true,
+      operation_in_progress: false,
+      writes_performed: true,
+      token_consumed: true,
+      safe_to_retry: false,
+      replayed_receipt: false,
+      error_code: null,
+      error_stage: null,
+      rollback_attempted: false,
+      rollback_completed: false,
     };
   }
 
@@ -248,7 +273,7 @@ class MockNotebookClient extends NotebookClient {
   }
 }
 
-test("tools/list exposes nine annotated tools and widget resource", async () => {
+test("tools/list exposes ten annotated tools and widget resource", async () => {
   const backend = new MockNotebookClient();
   const server = createNotebookMcpServer({ client: backend, widget: { html: "<html><body>widget</body></html>" } });
   const client = new Client({ name: "notebook-ai-test", version: "0.1.0" });
@@ -284,6 +309,7 @@ test("tools/list exposes nine annotated tools and widget resource", async () => 
     }
     const importPreview = listed.tools.find((tool) => tool.name === "import_preview");
     assert.deepEqual(importPreview?._meta?.["openai/fileParams"], ["file"]);
+    assert.ok(importPreview?.outputSchema?.properties?.operation_id);
     const fileSchema = (
       importPreview?.inputSchema?.properties?.file as {
         properties?: Record<string, unknown>;
@@ -295,6 +321,37 @@ test("tools/list exposes nine annotated tools and widget resource", async () => 
       ["download_url", "file_id", "file_name", "mime_type"],
     );
     assert.deepEqual([...(fileSchema?.required ?? [])].sort(), ["download_url", "file_id"]);
+    const importStatus = listed.tools.find((tool) => tool.name === "import_status");
+    assert.deepEqual(importStatus?.annotations, {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    assert.deepEqual(importStatus?.inputSchema?.required, ["operation_id"]);
+    assert.equal(
+      "confirmation_token" in (importStatus?.inputSchema?.properties ?? {}),
+      false,
+    );
+    for (const field of [
+      "operation_id",
+      "document_id",
+      "title",
+      "document_type",
+      "chunk_count",
+      "terminal",
+      "operation_in_progress",
+      "writes_performed",
+      "token_consumed",
+      "safe_to_retry",
+      "replayed_receipt",
+      "error_code",
+      "error_stage",
+      "rollback_attempted",
+      "rollback_completed",
+    ]) {
+      assert.ok(importStatus?.outputSchema?.properties?.[field], `import_status declares ${field}`);
+    }
     const listLibrary = listed.tools.find((tool) => tool.name === "list_library");
     assert.deepEqual(
       listLibrary?.inputSchema?.properties?.status?.enum,
@@ -350,7 +407,7 @@ test("widget domain and CSP are fixed to the unique production contract", async 
   }
 });
 
-test("all nine tools call only the backend adapter", async () => {
+test("all ten tools call only the backend adapter", async () => {
   const backend = new MockNotebookClient();
   const server = createNotebookMcpServer({ client: backend, widget: { html: "<html></html>" } });
   const client = new Client({ name: "notebook-ai-test", version: "0.1.0" });
@@ -391,13 +448,26 @@ test("all nine tools call only the backend adapter", async () => {
       arguments: { confirmation_token: "i".repeat(40), confirmed: true },
     });
     const importedPayload = imported.structuredContent as {
+      operation_id: string;
+      terminal: boolean;
       document_id: number;
       already_completed: boolean;
       replayed_receipt: boolean;
     };
     assert.equal(importedPayload.document_id, 3);
+    assert.equal(importedPayload.operation_id, "a".repeat(32));
+    assert.equal(importedPayload.terminal, true);
     assert.equal(importedPayload.already_completed, false);
     assert.equal(importedPayload.replayed_receipt, false);
+    const importStatus = await client.callTool({
+      name: "import_status",
+      arguments: { operation_id: "a".repeat(32) },
+    });
+    assert.equal((importStatus.structuredContent as { status: string }).status, "committed");
+    assert.deepEqual(
+      JSON.parse(String(importStatus.content[0]?.text)),
+      importStatus.structuredContent,
+    );
     const deletePreview = await client.callTool({ name: "delete_preview", arguments: { document_id: 3 } });
     assert.equal((deletePreview.structuredContent as { safe_to_delete: boolean }).safe_to_delete, true);
     const deleted = await client.callTool({
@@ -415,6 +485,7 @@ test("all nine tools call only the backend adapter", async () => {
         "integrity_report",
         "import_preview",
         "import_document",
+        "import_status",
         "delete_preview",
         "delete_document",
       ],
@@ -531,7 +602,7 @@ test("anonymous startup is refused without the explicit development switch", () 
   }).port, 9876);
 });
 
-test("Actions OpenAPI exposes the same nine operations with bearer authentication", () => {
+test("Actions OpenAPI exposes the same ten operations with bearer authentication", () => {
   const document = actionsOpenApiDocument({
     SEARCH_ACTIONS_PUBLIC_BASE_URL: "https://search-actions.example/private",
   }) as {
@@ -541,6 +612,9 @@ test("Actions OpenAPI exposes the same nine operations with bearer authenticatio
       post?: {
         security?: unknown[];
         description?: string;
+        requestBody?: {
+          content?: Record<string, { schema?: Record<string, unknown> }>;
+        };
         responses?: Record<string, {
           content?: Record<string, { schema?: { properties?: Record<string, unknown> } }>;
         }>;
@@ -567,6 +641,13 @@ test("Actions OpenAPI exposes the same nine operations with bearer authenticatio
   assert.ok(writeErrorProperties?.operation_in_progress);
   assert.ok(writeErrorProperties?.token_consumed);
   assert.ok(writeErrorProperties?.writes_performed);
+  const importStatusSchema = document.paths["/actions/v1/import_status"].post
+    ?.requestBody?.content?.["application/json"]?.schema as {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+  assert.ok(importStatusSchema.properties?.operation_id);
+  assert.deepEqual(importStatusSchema.required, ["operation_id"]);
 });
 
 test("ChatGPT PDF file params stream to isolated staging and are removed after confirmed import", async () => {
@@ -604,6 +685,7 @@ test("ChatGPT PDF file params stream to isolated staging and are removed after c
     );
     const previewPayload = "structuredContent" in preview ? preview.structuredContent : null;
     assert.equal(previewPayload?.confirmation_token, "i".repeat(40));
+    assert.equal(previewPayload?.operation_id, "a".repeat(32));
     const imported = await runImportDocumentTool(client, {
       confirmation_token: "i".repeat(40),
       confirmed: true,
@@ -686,6 +768,12 @@ test("Actions dispatch uses compact core calls and enforces separate confirmatio
     backend,
   );
   assert.equal(deleted.cleanup_complete, true);
+  const importStatus = await dispatchAction(
+    "import_status",
+    { operation_id: "a".repeat(32) },
+    backend,
+  );
+  assert.equal(importStatus.status, "committed");
   await assert.rejects(
     dispatchAction("import_document", { confirmation_token: "i".repeat(40) }, backend),
     /Explicit user confirmation/,
@@ -774,6 +862,7 @@ test("all tool failures use isError content without output-schema mismatch", asy
     { name: "integrity_report", arguments: { document_id: 1 } },
     { name: "import_preview", arguments: {} },
     { name: "import_document", arguments: { confirmation_token: "i".repeat(40), confirmed: true } },
+    { name: "import_status", arguments: { operation_id: "a".repeat(32) } },
     { name: "delete_preview", arguments: { document_id: 1 } },
     { name: "delete_document", arguments: { confirmation_token: "d".repeat(40), confirmed: true } },
   ] as const;
@@ -804,6 +893,9 @@ test("all tool failures use isError content without output-schema mismatch", asy
         return this.fail();
       }
       override async importDocument(_input: Parameters<MockNotebookClient["importDocument"]>[0]): Promise<never> {
+        return this.fail();
+      }
+      override async importStatus(_input: Parameters<MockNotebookClient["importStatus"]>[0]): Promise<never> {
         return this.fail();
       }
       override async deletePreview(_documentId: number): Promise<never> {
@@ -966,6 +1058,8 @@ test("Actions import timeout preserves the write uncertainty whitelist", async (
 
 const PUBLISH_FAILURE_DETAILS: Record<string, unknown> = {
   status: "error",
+  operation_id: "b".repeat(32),
+  terminal: true,
   error_code: "zotero_direction_b_production_index_publish_failed",
   message: "Direction-B derived index publish failed.",
   error_stage: "publish_started",
@@ -1002,6 +1096,8 @@ test("Actions import errors propagate only the registered write-safety whitelist
   const { status, payload } = await callImportDocumentAction(new FailedImportClient());
   assert.equal(status, 500);
   for (const key of [
+    "operation_id",
+    "terminal",
     "token_consumed",
     "writes_performed",
     "safe_to_retry",
@@ -1184,6 +1280,8 @@ test("registered import_document returns the complete structured failure contrac
     const content = response.content as Array<{ type: string; text?: string }>;
     const parsed = JSON.parse(content[0]?.text ?? "{}");
     assert.deepEqual(parsed, structured);
+    assert.equal(structured.operation_id, "b".repeat(32));
+    assert.equal(structured.terminal, true);
     assert.equal(structured.token_consumed, true);
     assert.equal(structured.writes_performed, true);
     assert.equal(structured.safe_to_retry, false);

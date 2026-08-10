@@ -2,8 +2,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { logToolInvocation } from "../logging.js";
-import { releaseStagedImport } from "../fileTransfer.js";
-import type { NotebookClient } from "../notebookClient.js";
+import {
+  bindStagedImportOperation,
+  releaseStagedImport,
+} from "../fileTransfer.js";
+import { NotebookBackendError, type NotebookClient } from "../notebookClient.js";
 import {
   WRITE_ANNOTATIONS,
   elapsedMilliseconds,
@@ -21,6 +24,8 @@ export const importDocumentInputSchema = z.object(importDocumentInputShape);
 export const importDocumentOutputShape = {
   status: z.string(),
   tool: z.string().optional(),
+  operation_id: z.string().regex(/^[0-9a-f]{32}$/).nullable().optional(),
+  terminal: z.boolean().nullable().optional(),
   document_id: z.number().int().positive().nullable().optional(),
   title: z.string().optional(),
   document_type: z.string().optional(),
@@ -50,13 +55,21 @@ export const importDocumentOutputShape = {
 export async function runImportDocumentTool(client: NotebookClient, rawInput: unknown) {
   const startedAt = performance.now();
   let confirmationToken: string | null = null;
+  let releaseStagedSource = false;
   try {
     const input = importDocumentInputSchema.parse(rawInput);
     confirmationToken = input.confirmation_token;
     const response = await client.importDocument(input);
+    releaseStagedSource = rememberOperationOutcome(confirmationToken, response);
     logToolInvocation({ tool: "import_document", duration_ms: elapsedMilliseconds(startedAt), result_count: 1 });
     return { content: jsonContent(response), structuredContent: response };
   } catch (error) {
+    if (confirmationToken && error instanceof NotebookBackendError && error.details) {
+      releaseStagedSource = rememberOperationOutcome(
+        confirmationToken,
+        error.details,
+      );
+    }
     logToolInvocation({
       tool: "import_document",
       duration_ms: elapsedMilliseconds(startedAt),
@@ -68,10 +81,38 @@ export async function runImportDocumentTool(client: NotebookClient, rawInput: un
       includeStructuredContent: true,
     });
   } finally {
-    if (confirmationToken) {
+    if (confirmationToken && releaseStagedSource) {
       await releaseStagedImport(confirmationToken);
     }
   }
+}
+
+function rememberOperationOutcome(
+  confirmationToken: string,
+  outcome: unknown,
+): boolean {
+  if (typeof outcome !== "object" || outcome === null || Array.isArray(outcome)) {
+    return false;
+  }
+  const state = outcome as Record<string, unknown>;
+  const operationId = state.operation_id;
+  if (typeof operationId === "string" && /^[0-9a-f]{32}$/.test(operationId)) {
+    bindStagedImportOperation(confirmationToken, operationId);
+  }
+  const status = typeof state.status === "string"
+    ? state.status.toLowerCase()
+    : "";
+  if (
+    state.operation_in_progress === true
+    || status === "accepted"
+    || status === "running"
+    || status === "in_progress"
+  ) {
+    return false;
+  }
+  return status === "committed"
+    || status === "failed"
+    || state.terminal === true;
 }
 
 export function registerImportDocumentTool(server: McpServer, client: NotebookClient): void {

@@ -59,6 +59,10 @@ class ImportDocumentRequest(StrictChatToolRequest):
     confirmed: bool
 
 
+class ImportStatusRequest(StrictChatToolRequest):
+    operation_id: str = Field(..., pattern=r"^[0-9a-f]{32}$")
+
+
 class DeletePreviewRequest(StrictChatToolRequest):
     document_id: int = Field(..., ge=1)
 

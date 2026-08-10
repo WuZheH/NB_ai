@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -187,9 +188,14 @@ def verify_document_source(
 ) -> dict[str, Any]:
     expected_trace = binding.source_trace()
     verify_managed_pdf(data_dir=data_dir, binding=binding)
-    with sqlite3.connect(
-        f"file:{Path(db_path).resolve().as_posix()}?mode=ro",
-        uri=True,
+    # sqlite3.Connection's context manager commits/rolls back but does not
+    # close.  Close explicitly so a verified post-write snapshot can be
+    # removed immediately on Windows after generation validation.
+    with closing(
+        sqlite3.connect(
+            f"file:{Path(db_path).resolve().as_posix()}?mode=ro",
+            uri=True,
+        )
     ) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON")

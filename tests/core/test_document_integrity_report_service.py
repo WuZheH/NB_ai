@@ -894,6 +894,45 @@ def test_integrity_report_disambiguates_reused_document_id_by_transaction(
     assert "import_journal_multiple_matches" not in result["warnings"]
 
 
+def test_legacy_weak_transaction_is_readable_but_never_a_strong_selector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = replace(
+        _runtime(tmp_path),
+        import_journal_dir=tmp_path / "operation_journal",
+    )
+    _patch_ready_dependencies(monkeypatch)
+    current_transaction = "2" * 64
+    _set_source_transaction_fingerprint(runtime, current_transaction)
+    selected = _write_terminal_journal(
+        runtime,
+        operation_id="2" * 32,
+        transaction_fingerprint=current_transaction,
+    )
+    weak = _write_terminal_journal(
+        runtime,
+        operation_id="1" * 32,
+        transaction_fingerprint="1" * 64,
+        status="failed",
+        completion_receipt={"kind": "failure"},
+    )
+    assert runtime.import_journal_dir is not None
+    weak_path = runtime.import_journal_dir / f"{weak.operation_id}.json"
+    weak_payload = json.loads(weak_path.read_text(encoding="utf-8"))
+    weak_payload["transaction_fingerprint"] = "legacy-recorded-fingerprint"
+    weak_path.write_text(
+        json.dumps(weak_payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+    result = service.build_integrity_report(document_id=1, runtime=runtime)
+
+    assert result["history"]["terminal_status"] == "committed"
+    assert result["history"]["journal_operation_id"] == selected.operation_id
+    assert "import_journal_multiple_matches" not in result["warnings"]
+
+
 def test_integrity_report_fails_closed_when_no_journal_transaction_matches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

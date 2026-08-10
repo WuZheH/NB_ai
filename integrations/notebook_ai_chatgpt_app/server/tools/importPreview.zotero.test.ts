@@ -7,6 +7,7 @@ import { runImportPreviewTool } from "./importPreview";
 function zoteroResponse() {
   return {
     status: "ok" as const,
+    operation_id: "a".repeat(32),
     source_type: "zotero_selected_book" as const,
     filename: "book.pdf",
     title: "Selected Zotero Book",
@@ -108,7 +109,7 @@ test("NotebookClient forwards all Zotero import preview fields", async () => {
       return Response.json(zoteroResponse());
     },
   });
-  await client.importPreview({
+  const response = await client.importPreview({
     source_type: "zotero_selected_book",
     zotero_item_key: "ABCD1234",
     zotero_attachment_key: "EFGH5678",
@@ -118,4 +119,42 @@ test("NotebookClient forwards all Zotero import preview fields", async () => {
     zotero_item_key: "ABCD1234",
     zotero_attachment_key: "EFGH5678",
   });
+  assert.equal(response.operation_id, "a".repeat(32));
+});
+
+test("NotebookClient rejects import preview without a canonical operation identity", async () => {
+  for (const operationId of ["../journal", null]) {
+    const client = new NotebookClient({
+      baseUrl: "http://127.0.0.1:8000",
+      fetchImpl: async () => Response.json({
+        ...zoteroResponse(),
+        operation_id: operationId,
+      }),
+    });
+    await assert.rejects(
+      client.importPreview({
+        source_type: "zotero_selected_book",
+        zotero_item_key: "ABCD1234",
+      }),
+      /invalid response/i,
+    );
+  }
+});
+
+test("NotebookClient accepts a non-importable preview with no token or operation identity", async () => {
+  const client = new NotebookClient({
+    baseUrl: "http://127.0.0.1:8000",
+    fetchImpl: async () => Response.json({
+      ...zoteroResponse(),
+      duplicate_status: "duplicate",
+      confirmation_token: null,
+      operation_id: null,
+    }),
+  });
+  const result = await client.importPreview({
+    source_type: "zotero_selected_book",
+    zotero_item_key: "ABCD1234",
+  });
+  assert.equal(result.confirmation_token, null);
+  assert.equal(result.operation_id, null);
 });

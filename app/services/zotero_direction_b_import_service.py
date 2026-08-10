@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
-from contextlib import closing, nullcontext
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -21,6 +21,7 @@ from app.domains.retrieval.result_contracts import NOTE_SOURCE_TYPES
 from app.services import (
     book_import_service,
     commit_book_service,
+    retrieval_generation_mutation_service,
     vector_store_service,
     retrieval_generation_service,
     zotero_direction_b_commit_service,
@@ -269,14 +270,7 @@ def _commit_selected_book_import(
     now_ts: float | None = None,
     stage_callback: DirectionBStageCallback | None = None,
 ) -> dict[str, Any]:
-    generation_guard = (
-        retrieval_generation_service.production_write_generation(
-            data_dir=runtime.data_dir
-        )
-        if runtime.persistence_scope == "production"
-        else nullcontext()
-    )
-    with _DIRECTION_B_IMPORT_LOCK, generation_guard:
+    with _DIRECTION_B_IMPORT_LOCK:
         try:
             return _commit_selected_book_import_locked(
                 preview_token=preview_token,
@@ -341,6 +335,12 @@ def _commit_selected_book_import_locked(
         )
 
     production = runtime.persistence_scope == "production"
+    generation_session: (
+        retrieval_generation_mutation_service
+        .ProductionGenerationMutationSession
+        | None
+    ) = None
+    generation_session_closed = False
     active_generation_before: (
         retrieval_generation_service.RetrievalGenerationSnapshot | None
     ) = None
@@ -554,16 +554,29 @@ def _commit_selected_book_import_locked(
         staging_root
         / "n"
     )
+    rollback_snapshot: DatabaseRollbackSnapshot | None = None
 
     try:
         if production:
-            assert active_generation_before is not None
-            generation_candidate = (
-                retrieval_generation_service.prepare_candidate_generation(
-                    active_generation_before,
+            generation_session = (
+                retrieval_generation_mutation_service
+                .ProductionGenerationMutationSession(
                     data_dir=data_root,
+                    db_path=path,
+                    rollback_snapshot_factory=_create_rollback_copy,
+                    rollback_snapshot_restorer=_restore_rollback_copy,
+                    pointer_restorer=(
+                        retrieval_generation_service.restore_active_pointer
+                    ),
+                    owned_tree_remover=_remove_generated_tree,
                 )
             )
+            generation_session.__enter__()
+            active_generation_before = generation_session.previous_generation
+            previous_pointer_bytes = generation_session.previous_pointer_bytes
+            generation_candidate = generation_session.candidate
+            assert active_generation_before is not None
+            assert generation_candidate is not None
             staging_fts_index = generation_candidate.fts_index_path
             staging_fts_manifest = generation_candidate.fts_manifest_path
             staging_vector_store = generation_candidate.vector_store_path
@@ -590,7 +603,7 @@ def _commit_selected_book_import_locked(
                 staging_fts_index=staging_fts_index,
                 staging_fts_manifest=staging_fts_manifest,
             )
-        rollback_snapshot = _create_rollback_copy(path)
+            rollback_snapshot = _create_rollback_copy(path)
     except Exception:
         _remove_generated_tree(staging_root)
         raise
@@ -701,7 +714,14 @@ def _commit_selected_book_import_locked(
             ) from exc
 
         post_write_snapshot = path
-        after_db_sha256 = _sha256_file(path)
+        if production:
+            assert generation_session is not None
+            generation_session.mark_body_db_mutated()
+            after_db_sha256 = (
+                generation_session.capture_post_write_database()
+            )
+        else:
+            after_db_sha256 = _sha256_file(path)
 
         if production:
             post_write_snapshot = (
@@ -958,27 +978,50 @@ def _commit_selected_book_import_locked(
                 status_code=500,
             ) from exc
 
-        _verify_staging_final_state(
-            runtime=runtime,
-            post_write_snapshot=post_write_snapshot,
-            expected_db_sha256=after_db_sha256,
-            document_id=document_id,
-            passage_source_ids=passage_source_ids,
-            expected_note_sources=note_sources,
-            expected_native_note_vector_count=int(
-                native_note_vector_sync.get(
-                    "scoped_entry_count_after"
+        def validate_staged_generation(
+            _candidate: retrieval_generation_service.CandidateGeneration | None = None,
+            validated_db_sha256: str = after_db_sha256,
+        ) -> None:
+            if validated_db_sha256 != after_db_sha256:
+                raise DirectionBSelectedBookImportError(
+                    code="zotero_direction_b_staging_validation_failed",
+                    message="Direction-B staged generation database revision changed.",
+                    status_code=500,
                 )
-                or 0
-            ),
-            staging_fts_index=staging_fts_index,
-            staging_fts_manifest=staging_fts_manifest,
-            staging_vector_store=staging_vector_store,
-            staging_vector_manifest=staging_vector_manifest,
-            staging_zotero_note_vector_path=(
-                staging_zotero_note_vector_path
-            ),
-        )
+            _verify_staging_final_state(
+                runtime=runtime,
+                post_write_snapshot=post_write_snapshot,
+                expected_db_sha256=after_db_sha256,
+                document_id=document_id,
+                passage_source_ids=passage_source_ids,
+                expected_passage_sources=(
+                    vector_store_service.collect_passage_sources(
+                        document_id=document_id,
+                        source_db_path=post_write_snapshot,
+                    )
+                ),
+                expected_note_sources=note_sources,
+                expected_native_note_vector_count=int(
+                    native_note_vector_sync.get(
+                        "scoped_entry_count_after"
+                    )
+                    or 0
+                ),
+                staging_fts_index=staging_fts_index,
+                staging_fts_manifest=staging_fts_manifest,
+                staging_vector_store=staging_vector_store,
+                staging_vector_manifest=staging_vector_manifest,
+                staging_zotero_note_vector_path=(
+                    staging_zotero_note_vector_path
+                ),
+            )
+
+        if production:
+            assert generation_session is not None
+            generation_session.mark_candidate_synced()
+            generation_session.validate_candidate(validate_staged_generation)
+        else:
+            validate_staged_generation()
 
         if production:
             forward_stage(
@@ -988,12 +1031,10 @@ def _commit_selected_book_import_locked(
                 writes_performed=True,
             )
             assert generation_candidate is not None
+            assert generation_session is not None
             try:
                 activated_generation = (
-                    retrieval_generation_service
-                    .finalize_candidate_generation(
-                        generation_candidate,
-                        production_db_sha256=after_db_sha256,
+                    generation_session.finalize_candidate(
                         profile_versions={
                             "fts_schema": (
                                 fts_status_service.INDEX_SCHEMA_VERSION
@@ -1046,13 +1087,9 @@ def _commit_selected_book_import_locked(
             if production:
                 assert active_generation_before is not None
                 assert activated_generation is not None
+                assert generation_session is not None
                 try:
-                    retrieval_generation_service.begin_generation_activation(
-                        active_generation_before,
-                        activated_generation,
-                        production_db_sha256=after_db_sha256,
-                        data_dir=data_root,
-                    )
+                    generation_session.begin_activation()
                     activation_state_written = True
                 except Exception as exc:
                     activation_state_written = (
@@ -1088,10 +1125,8 @@ def _commit_selected_book_import_locked(
             publish_attempted = True
             if production:
                 assert activated_generation is not None
-                retrieval_generation_service.publish_active_generation(
-                    activated_generation,
-                    data_dir=data_root,
-                )
+                assert generation_session is not None
+                generation_session.publish_active()
                 pointer_switched = True
             else:
                 _publish_staged_derived_indexes(
@@ -1156,17 +1191,20 @@ def _commit_selected_book_import_locked(
         )
         if production:
             assert activated_generation is not None
-            _verify_production_final_state(
-                runtime=runtime,
-                document_id=document_id,
-                expected_db_sha256=after_db_sha256,
-                expected_native_note_vector_count=int(
-                    native_note_vector_sync.get(
-                        "scoped_entry_count_after"
-                    )
-                    or 0
-                ),
-                generation=activated_generation,
+            assert generation_session is not None
+            generation_session.verify_active(
+                lambda generation: _verify_production_final_state(
+                    runtime=runtime,
+                    document_id=document_id,
+                    expected_db_sha256=after_db_sha256,
+                    expected_native_note_vector_count=int(
+                        native_note_vector_sync.get(
+                            "scoped_entry_count_after"
+                        )
+                        or 0
+                    ),
+                    generation=generation,
+                )
             )
         forward_stage(
             "final_verification_completed",
@@ -1176,9 +1214,8 @@ def _commit_selected_book_import_locked(
         )
         if production:
             try:
-                retrieval_generation_service.clear_activation_state(
-                    data_dir=data_root
-                )
+                assert generation_session is not None
+                generation_session.clear_activation()
                 activation_state_written = False
             except Exception as exc:
                 cause = getattr(exc, "cause", exc)
@@ -1200,6 +1237,13 @@ def _commit_selected_book_import_locked(
                         **_extract_cause_metadata(cause),
                     },
                 ) from exc
+
+        if production:
+            assert generation_session is not None
+            try:
+                generation_session.__exit__(None, None, None)
+            finally:
+                generation_session_closed = True
 
         return {
             "status": "committed",
@@ -1262,6 +1306,133 @@ def _commit_selected_book_import_locked(
         }
 
     except Exception as exc:
+        if (
+            production
+            and generation_session is not None
+            and not generation_session_closed
+        ):
+            failure_stage = current_stage
+            session_rollback_error: (
+                retrieval_generation_mutation_service
+                .ProductionGenerationRollbackError
+                | None
+            ) = None
+            try:
+                generation_session.__exit__(
+                    type(exc),
+                    exc,
+                    exc.__traceback__,
+                )
+            except (
+                retrieval_generation_mutation_service
+                .ProductionGenerationRollbackError
+            ) as rollback_exc:
+                session_rollback_error = rollback_exc
+            finally:
+                generation_session_closed = True
+
+            rollback_attempted = (
+                generation_session.stage
+                is not retrieval_generation_mutation_service.MutationStage.ACTIVATION_CLEARED
+            )
+            rollback_completed = (
+                generation_session.stage
+                is retrieval_generation_mutation_service.MutationStage.ROLLED_BACK
+            )
+            try:
+                _emit_stage(
+                    stage_callback,
+                    "rollback_completed",
+                    document_id=document_id,
+                    chunk_count=chunk_count,
+                    writes_performed=writes_performed,
+                    rollback_attempted=rollback_attempted,
+                    rollback_completed=rollback_completed,
+                )
+            except Exception as callback_exc:
+                callback_warning_codes.append(
+                    "rollback_completed_callback_failed:"
+                    + type(callback_exc).__name__
+                )
+
+            original_details = (
+                dict(exc.details)
+                if isinstance(exc, DirectionBSelectedBookImportError)
+                else {}
+            )
+            stable_details = dict(original_details)
+            stable_details.setdefault("error_stage", failure_stage)
+            stable_details.setdefault("writes_performed", writes_performed)
+            stable_details.setdefault(
+                "production_data_modified",
+                production_data_modified,
+            )
+            stable_details.setdefault("publish_attempted", publish_attempted)
+            stable_details.setdefault(
+                "derived_index_publish_performed",
+                derived_index_publish_performed,
+            )
+            stable_details["rollback_attempted"] = rollback_attempted
+            stable_details["rollback_completed"] = rollback_completed
+            stable_details.setdefault("safe_to_retry", False)
+            stable_details.setdefault("document_id", document_id)
+            stable_details.setdefault("chunk_count", chunk_count)
+            stable_details.setdefault("publish_substage", None)
+            for cause_key in (
+                "cause_type",
+                "cause_message",
+                "cause_errno",
+                "cause_winerror",
+                "cause_filename",
+                "cause_filename2",
+            ):
+                stable_details.setdefault(cause_key, None)
+            if callback_warning_codes:
+                stable_details.setdefault("warnings", list(callback_warning_codes))
+
+            if session_rollback_error is not None:
+                rollback_substage = session_rollback_error.rollback_substage
+                stable_details.update(
+                    {
+                        "publish_substage": rollback_substage,
+                        **_extract_cause_metadata(
+                            session_rollback_error.cause
+                        ),
+                        "rollback_completed": False,
+                    }
+                )
+                db_rollback_failed = (
+                    rollback_substage == "production_db_rollback"
+                )
+                raise DirectionBSelectedBookImportError(
+                    code=(
+                        "zotero_direction_b_production_db_rollback_failed"
+                        if db_rollback_failed
+                        else "zotero_direction_b_production_derived_rollback_failed"
+                    ),
+                    message=(
+                        "Direction-B database rollback failed."
+                        if db_rollback_failed
+                        else "Direction-B generation rollback failed."
+                    ),
+                    status_code=500,
+                    details=stable_details,
+                ) from session_rollback_error
+
+            if isinstance(exc, DirectionBSelectedBookImportError):
+                raise DirectionBSelectedBookImportError(
+                    code=exc.code,
+                    message=exc.message,
+                    status_code=exc.status_code,
+                    details=stable_details,
+                ) from exc
+            raise DirectionBSelectedBookImportError(
+                code="zotero_direction_b_production_import_failed",
+                message="Direction-B selected-book import failed.",
+                status_code=500,
+                details=stable_details,
+            ) from exc
+
         derived_rollback_exc: Exception | None = None
         db_rollback_exc: Exception | None = None
         failure_stage = current_stage
@@ -1538,7 +1709,7 @@ def _commit_selected_book_import_locked(
         ) from exc
 
     finally:
-        if not retain_db_rollback:
+        if rollback_snapshot is not None and not retain_db_rollback:
             try:
                 rollback_snapshot.path.unlink(
                     missing_ok=True
@@ -1787,6 +1958,7 @@ def _verify_staging_final_state(
     expected_db_sha256: str,
     document_id: int,
     passage_source_ids: list[str],
+    expected_passage_sources: list[dict[str, Any]],
     expected_note_sources: list[dict[str, Any]],
     expected_native_note_vector_count: int,
     staging_fts_index: Path,
@@ -1878,13 +2050,19 @@ def _verify_staging_final_state(
             missing_components.append("staging_vector_manifest_invalid")
     if staging_vector_store.is_dir():
         try:
-            impact = vector_store_service.inspect_document_vector_impact(
-                passage_source_ids=passage_source_ids,
-                object_keys=[],
-                store_path=staging_vector_store,
+            passage_state = (
+                vector_store_service.inspect_document_passage_vector_state(
+                    document_id=document_id,
+                    expected_sources=expected_passage_sources,
+                    store_path=staging_vector_store,
+                )
             )
-            if int(impact.get("passage_vector_count") or 0) != len(
-                passage_source_ids
+            if (
+                passage_state.get("status") != "ok"
+                or int(passage_state.get("missing_count") or 0) != 0
+                or int(passage_state.get("orphan_count") or 0) != 0
+                or int(passage_state.get("duplicate_count") or 0) != 0
+                or int(passage_state.get("stale_count") or 0) != 0
             ):
                 missing_components.append("staging_passage_vectors")
         except Exception:
@@ -3042,12 +3220,11 @@ def _verify_production_final_state(
         )
     )
 
-    resolved = (
-        retrieval_generation_service
-        .resolve_active_retrieval_generation(
-            data_dir=runtime.data_dir,
-            db_path=runtime.db_path,
-        )
+    # Resolve the pointer directly instead of consulting the request-pinned
+    # ContextVar. A writer may retain an N pin while verifying published N+1.
+    resolved = retrieval_generation_service.resolve_active_retrieval_generation(
+        data_dir=runtime.data_dir,
+        db_path=runtime.db_path,
     )
     if (
         resolved.generation_id != generation.generation_id
@@ -3060,6 +3237,7 @@ def _verify_production_final_state(
             status_code=500,
             details={"publish_substage": "post_switch_verify"},
         )
+
     if int(
         note_vector_impact.get(
             "document_entry_count"

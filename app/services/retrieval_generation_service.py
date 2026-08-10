@@ -149,8 +149,57 @@ def _path_entry_exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
 
+def _path_is_reparse_point(path: Path) -> bool:
+    """Return whether a path entry is a Windows reparse point without following it."""
+
+    try:
+        attributes = int(getattr(os.lstat(path), "st_file_attributes", 0) or 0)
+    except (OSError, TypeError, ValueError):
+        return False
+    return bool(attributes & 0x400)
+
+
+def _invalid_generation_root(message: str) -> RetrievalGenerationError:
+    return RetrievalGenerationError(
+        "active_index_invalid",
+        message,
+        safe_to_retry=False,
+    )
+
+
+def _validated_generation_root(
+    data_dir: str | Path,
+    *,
+    create: bool = False,
+) -> Path:
+    data_root = Path(data_dir).resolve(strict=False)
+    root = data_root / GENERATION_ROOT_NAME
+    if not _path_entry_exists(root):
+        if not create:
+            return root
+        root.mkdir(parents=True, exist_ok=False)
+    if (
+        root.is_symlink()
+        or _path_is_reparse_point(root)
+        or not root.is_dir()
+    ):
+        raise _invalid_generation_root(
+            "Retrieval generation root must be an ordinary controlled directory."
+        )
+    try:
+        if root.parent.resolve(strict=True) != data_root.resolve(strict=True):
+            raise _invalid_generation_root(
+                "Retrieval generation root escapes the controlled data directory."
+            )
+    except OSError as exc:
+        raise _invalid_generation_root(
+            "Retrieval generation root is unreadable."
+        ) from exc
+    return root
+
+
 def generation_root(data_dir: str | Path = DATA_DIR) -> Path:
-    return Path(data_dir).resolve(strict=False) / GENERATION_ROOT_NAME
+    return _validated_generation_root(data_dir)
 
 
 def _safe_generation_id(value: Any) -> str:
@@ -168,6 +217,15 @@ def _safe_generation_id(value: Any) -> str:
 
 
 def _contained_existing_path(root: Path, path: Path) -> Path:
+    if (
+        not _path_entry_exists(root)
+        or root.is_symlink()
+        or _path_is_reparse_point(root)
+        or not root.is_dir()
+    ):
+        raise _invalid_generation_root(
+            "Retrieval generation root is missing or unsafe."
+        )
     try:
         root_resolved = root.resolve(strict=True)
         resolved = path.resolve(strict=True)
@@ -185,10 +243,10 @@ def _contained_existing_path(root: Path, path: Path) -> Path:
         ) from exc
     current = path
     while current != root and current != current.parent:
-        if current.is_symlink():
+        if current.is_symlink() or _path_is_reparse_point(current):
             raise RetrievalGenerationError(
                 "active_index_invalid",
-                "Active retrieval generation contains a symbolic link.",
+                "Active retrieval generation contains a link or reparse point.",
             )
         current = current.parent
     return resolved
@@ -247,7 +305,11 @@ def _resolve_proven_legacy_snapshot(
 
     root = data_dir / GENERATION_ROOT_NAME
     if _path_entry_exists(root):
-        if root.is_symlink() or not root.is_dir():
+        if (
+            root.is_symlink()
+            or _path_is_reparse_point(root)
+            or not root.is_dir()
+        ):
             raise _fail_invalid_legacy_state(
                 "Retrieval generation root is invalid while the active pointer is absent."
             )
@@ -323,7 +385,11 @@ def resolve_active_retrieval_generation(
             "active_index_invalid", "Active retrieval database revision is invalid."
         )
 
-    root = data_root / GENERATION_ROOT_NAME
+    root = _validated_generation_root(data_root)
+    if not _path_entry_exists(root):
+        raise _invalid_generation_root(
+            "Active retrieval generation root is missing."
+        )
     generation_dir = _contained_existing_path(root, root / generation_id)
     manifest_path = _contained_existing_path(
         root, generation_dir / GENERATION_MANIFEST_NAME
@@ -394,12 +460,11 @@ def prepare_candidate_generation(
     generation_id: str | None = None,
 ) -> CandidateGeneration:
     selected_id = _safe_generation_id(generation_id or new_generation_id())
-    root = generation_root(data_dir)
-    root.mkdir(parents=True, exist_ok=True)
+    root = _validated_generation_root(data_dir, create=True)
     final_dir = root / selected_id
     # Keep the transient directory short for Windows MAX_PATH compatibility.
     candidate_dir = root / f".c-{uuid4().hex[:8]}"
-    if final_dir.exists() or candidate_dir.exists():
+    if _path_entry_exists(final_dir) or _path_entry_exists(candidate_dir):
         raise FileExistsError(selected_id)
     candidate_dir.mkdir(parents=False, exist_ok=False)
     candidate = CandidateGeneration(
@@ -430,6 +495,25 @@ def finalize_candidate_generation(
     production_db_sha256: str,
     profile_versions: dict[str, Any] | None = None,
 ) -> RetrievalGenerationSnapshot:
+    root = candidate.candidate_dir.parent
+    expected_root = _validated_generation_root(root.parent)
+    if root != expected_root:
+        raise _invalid_generation_root(
+            "Candidate generation is outside the controlled generation root."
+        )
+    if (
+        candidate.final_dir.parent != root
+        or candidate.candidate_dir.parent != root
+        or candidate.final_dir.name != candidate.generation_id
+        or candidate.candidate_dir.is_symlink()
+        or _path_is_reparse_point(candidate.candidate_dir)
+        or not candidate.candidate_dir.is_dir()
+        or _path_entry_exists(candidate.final_dir)
+    ):
+        raise _invalid_generation_root(
+            "Candidate generation paths are invalid or unsafe."
+        )
+    _contained_existing_path(root, candidate.candidate_dir)
     db_sha = str(production_db_sha256 or "").lower()
     if not re.fullmatch(r"[0-9a-f]{64}", db_sha):
         raise ValueError("production_db_sha256 must be a SHA256 digest")
@@ -565,8 +649,8 @@ def _read_activation_state(
             "Retrieval generation activation timestamp is invalid."
         )
 
-    root = generation_root(data_root)
     try:
+        root = generation_root(data_root)
         _contained_existing_path(root, root / candidate_id)
         if previous_id is not None:
             _contained_existing_path(root, root / previous_id)
@@ -578,7 +662,7 @@ def _read_activation_state(
     pointer = active_pointer_path(data_root)
     active_id: str | None = None
     active_sha: str | None = None
-    if pointer.exists():
+    if _path_entry_exists(pointer):
         if not pointer.is_file() or pointer.is_symlink():
             raise _activation_error(
                 "Retrieval generation activation pointer is invalid."
@@ -671,6 +755,22 @@ def begin_generation_activation(
     production_db_sha256: str,
     data_dir: str | Path = DATA_DIR,
 ) -> dict[str, Any]:
+    root = _validated_generation_root(data_dir)
+    if not _path_entry_exists(root):
+        raise _invalid_generation_root(
+            "Retrieval generation root is missing during activation."
+        )
+    if candidate.generation_dir is None:
+        raise _invalid_generation_root(
+            "Candidate generation directory is missing during activation."
+        )
+    _contained_existing_path(root, candidate.generation_dir)
+    if previous.mode == "versioned":
+        if previous.generation_dir is None:
+            raise _invalid_generation_root(
+                "Previous generation directory is missing during activation."
+            )
+        _contained_existing_path(root, previous.generation_dir)
     if candidate.mode != "versioned" or not candidate.generation_id:
         raise ValueError("candidate must be a versioned generation")
     db_sha = str(production_db_sha256 or "").lower()
@@ -733,6 +833,12 @@ def clear_activation_state(*, data_dir: str | Path = DATA_DIR) -> None:
     state_path = activation_state_path(data_dir)
     if not _path_entry_exists(state_path):
         return
+    root = _validated_generation_root(data_dir)
+    if not _path_entry_exists(root):
+        raise ActivationStatePublishError(
+            "activation_state_clear",
+            OSError("generation root is missing"),
+        )
     if not state_path.is_file() or state_path.is_symlink():
         raise ActivationStatePublishError(
             "activation_state_clear",
@@ -774,7 +880,30 @@ def publish_active_generation(
     *,
     data_dir: str | Path = DATA_DIR,
 ) -> None:
+    root = _validated_generation_root(data_dir)
+    if not _path_entry_exists(root) or snapshot.generation_dir is None:
+        raise _invalid_generation_root(
+            "Published retrieval generation is outside a valid controlled root."
+        )
+    resolved_generation = _contained_existing_path(root, snapshot.generation_dir)
+    if (
+        snapshot.generation_id is None
+        or resolved_generation != (root / snapshot.generation_id).resolve(strict=True)
+    ):
+        raise _invalid_generation_root(
+            "Published retrieval generation identity is invalid."
+        )
     pointer = active_pointer_path(data_dir)
+    if _path_entry_exists(pointer) and (
+        pointer.is_symlink()
+        or _path_is_reparse_point(pointer)
+        or not pointer.is_file()
+    ):
+        raise RetrievalGenerationError(
+            "active_index_invalid",
+            "Active retrieval generation pointer is invalid.",
+            safe_to_retry=False,
+        )
     temporary = pointer.with_name(f"{pointer.name}.{uuid4().hex}.tmp")
     try:
         try:
@@ -799,7 +928,22 @@ def restore_active_pointer(
     *,
     data_dir: str | Path = DATA_DIR,
 ) -> None:
+    root = _validated_generation_root(data_dir)
+    if not _path_entry_exists(root):
+        raise _invalid_generation_root(
+            "Retrieval generation root is missing during pointer restore."
+        )
     pointer = active_pointer_path(data_dir)
+    if _path_entry_exists(pointer) and (
+        pointer.is_symlink()
+        or _path_is_reparse_point(pointer)
+        or not pointer.is_file()
+    ):
+        raise RetrievalGenerationError(
+            "active_index_invalid",
+            "Active retrieval generation pointer is invalid.",
+            safe_to_retry=False,
+        )
     temporary = pointer.with_name(f"{pointer.name}.{uuid4().hex}.rollback.tmp")
     try:
         if previous_bytes is None:
@@ -824,7 +968,25 @@ def restore_active_pointer(
 
 def read_active_pointer_bytes(*, data_dir: str | Path = DATA_DIR) -> bytes | None:
     pointer = active_pointer_path(data_dir)
-    return pointer.read_bytes() if pointer.is_file() else None
+    if _path_entry_exists(pointer) and (
+        pointer.is_symlink()
+        or _path_is_reparse_point(pointer)
+        or not pointer.is_file()
+    ):
+        raise RetrievalGenerationError(
+            "active_index_invalid",
+            "Active retrieval generation pointer is invalid during restore.",
+            safe_to_retry=False,
+        )
+    if not _path_entry_exists(pointer):
+        return None
+    if pointer.is_symlink() or _path_is_reparse_point(pointer) or not pointer.is_file():
+        raise RetrievalGenerationError(
+            "active_index_invalid",
+            "Active retrieval generation pointer is invalid.",
+            safe_to_retry=False,
+        )
+    return pointer.read_bytes()
 
 
 def _fsync_directory(path: Path) -> None:

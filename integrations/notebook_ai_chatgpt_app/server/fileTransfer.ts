@@ -9,7 +9,11 @@ import { NotebookBackendError } from "./notebookClient.js";
 
 const MAX_PDF_BYTES = 200 * 1024 * 1024;
 const STAGED_IMPORT_TTL_MS = 10 * 60 * 1000;
-const stagedImports = new Map<string, { path: string; expiresAt: number }>();
+const stagedImports = new Map<string, {
+  path: string;
+  expiresAt: number;
+  operationId: string | null;
+}>();
 
 export interface OpenAIFileInput {
   download_url: string;
@@ -118,7 +122,19 @@ export function rememberStagedImport(confirmationToken: string, path: string): v
   stagedImports.set(confirmationToken, {
     path,
     expiresAt: Date.now() + STAGED_IMPORT_TTL_MS,
+    operationId: null,
   });
+}
+
+export function bindStagedImportOperation(
+  confirmationToken: string,
+  operationId: string,
+): void {
+  if (!/^[0-9a-f]{32}$/.test(operationId)) return;
+  const staged = stagedImports.get(confirmationToken);
+  if (!staged) return;
+  if (staged.operationId !== null && staged.operationId !== operationId) return;
+  stagedImports.set(confirmationToken, { ...staged, operationId });
 }
 
 export async function releaseStagedImport(confirmationToken: string): Promise<void> {
@@ -129,12 +145,25 @@ export async function releaseStagedImport(confirmationToken: string): Promise<vo
   }
 }
 
+export async function releaseStagedImportForOperation(
+  operationId: string,
+): Promise<void> {
+  if (!/^[0-9a-f]{32}$/.test(operationId)) return;
+  const matchingTokens = [...stagedImports.entries()]
+    .filter(([, value]) => value.operationId === operationId)
+    .map(([token]) => token);
+  for (const token of matchingTokens) {
+    await releaseStagedImport(token);
+  }
+}
+
 export async function discardStagedPath(path: string): Promise<void> {
   await unlink(path).catch(() => undefined);
 }
 
-async function purgeExpiredStagedImports(): Promise<void> {
-  const now = Date.now();
+export async function purgeExpiredStagedImports(
+  now: number = Date.now(),
+): Promise<void> {
   const expired = [...stagedImports.entries()].filter(([, value]) => value.expiresAt <= now);
   for (const [token, value] of expired) {
     stagedImports.delete(token);

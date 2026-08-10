@@ -239,6 +239,7 @@ export interface OpenAIFileInput {
 
 export interface ImportPreviewResponse {
   status: "ok";
+  operation_id: string | null;
   source_type: "local_pdf" | "zotero_selected_book";
   filename: string | null;
   title: string;
@@ -285,6 +286,8 @@ export interface ImportDocumentInput {
 export interface ImportDocumentResponse {
   status: string;
   tool?: string;
+  operation_id?: string | null;
+  terminal?: boolean | null;
   document_id?: number | null;
   title?: string;
   document_type?: string;
@@ -309,6 +312,36 @@ export interface ImportDocumentResponse {
   rollback_attempted?: boolean | null;
   rollback_completed?: boolean | null;
   error_stage?: string | null;
+}
+
+export interface ImportStatusInput {
+  operation_id: string;
+}
+
+export type ImportOperationStatus =
+  | "accepted"
+  | "running"
+  | "committed"
+  | "failed"
+  | "orphaned";
+
+export interface ImportStatusResponse {
+  status: ImportOperationStatus;
+  operation_id: string;
+  document_id: number | null;
+  title: string | null;
+  document_type: string | null;
+  chunk_count: number | null;
+  terminal: boolean;
+  operation_in_progress: boolean;
+  writes_performed: boolean | null;
+  token_consumed: boolean | null;
+  safe_to_retry: boolean;
+  replayed_receipt: boolean;
+  error_code: string | null;
+  error_stage: string | null;
+  rollback_attempted: boolean | null;
+  rollback_completed: boolean | null;
 }
 
 export interface DeletePreviewResponse {

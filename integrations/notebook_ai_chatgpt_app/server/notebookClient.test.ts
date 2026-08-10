@@ -219,6 +219,7 @@ test("NotebookClient preserves structured machine config errors without exposing
 
 test("NotebookClient retains only whitelisted import failure details", async () => {
   const rawToken = "RAW_CONFIRMATION_TOKEN_MUST_NOT_SURVIVE";
+  const operationId = "a".repeat(32);
   const client = new NotebookClient({
     baseUrl: "http://127.0.0.1:8123",
     bearerToken: "request-authorization-secret",
@@ -230,6 +231,9 @@ test("NotebookClient retains only whitelisted import failure details", async () 
           token_consumed: true,
           writes_performed: true,
           safe_to_retry: false,
+          status: "failed",
+          operation_id: operationId,
+          terminal: true,
           confirmation_token: rawToken,
           authorization: "Bearer request-authorization-secret",
           private_backend_field: "must not survive",
@@ -247,6 +251,9 @@ test("NotebookClient retains only whitelisted import failure details", async () 
     (error: unknown) => {
       if (!(error instanceof NotebookBackendError)) return false;
       assert.deepEqual(error.details, {
+        status: "failed",
+        operation_id: operationId,
+        terminal: true,
         token_consumed: true,
         writes_performed: true,
         safe_to_retry: false,
@@ -349,5 +356,80 @@ test("NotebookClient reports its confirmed-import deadline as a backend timeout"
       && error.status === 504
       && error.code === "BACKEND_TIMEOUT"
       && error.details === null,
+  );
+});
+
+test("NotebookClient import_status uses the durable read-only endpoint and strips private fields", async () => {
+  const operationId = "a".repeat(32);
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const client = new NotebookClient({
+    baseUrl: "http://127.0.0.1:8123",
+    fetchImpl: async (input, init = {}) => {
+      requests.push({ url: String(input), init });
+      return Response.json({
+        status: "running",
+        operation_id: operationId,
+        document_id: null,
+        title: "Fixture",
+        document_type: "book",
+        chunk_count: null,
+        terminal: false,
+        operation_in_progress: true,
+        writes_performed: true,
+        token_consumed: true,
+        safe_to_retry: false,
+        replayed_receipt: false,
+        error_code: null,
+        error_stage: null,
+        rollback_attempted: null,
+        rollback_completed: null,
+        confirmation_token: "RAW_TOKEN_MUST_NOT_SURVIVE",
+        confirmation_token_digest: "DIGEST_MUST_NOT_SURVIVE",
+        journal_path: "D:\\private\\journal.json",
+        staged_path: "D:\\private\\fixture.pdf",
+      });
+    },
+  });
+
+  const response = await client.importStatus({ operation_id: operationId });
+
+  assert.equal(requests[0].url, "http://127.0.0.1:8123/api/v1/chat-tools/import-status");
+  assert.equal(requests[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(String(requests[0].init.body)), { operation_id: operationId });
+  assert.equal(new Headers(requests[0].init.headers).get("X-Search-Chat-Adapter"), "mcp");
+  assert.deepEqual(response, {
+    status: "running",
+    operation_id: operationId,
+    document_id: null,
+    title: "Fixture",
+    document_type: "book",
+    chunk_count: null,
+    terminal: false,
+    operation_in_progress: true,
+    writes_performed: true,
+    token_consumed: true,
+    safe_to_retry: false,
+    replayed_receipt: false,
+    error_code: null,
+    error_stage: null,
+    rollback_attempted: null,
+    rollback_completed: null,
+  });
+  assert.doesNotMatch(JSON.stringify(response), /RAW_TOKEN|DIGEST|private|journal_path|staged_path/);
+});
+
+test("NotebookClient import_status rejects an incomplete or unknown status response", async () => {
+  const client = new NotebookClient({
+    baseUrl: "http://127.0.0.1:8123",
+    fetchImpl: async () => Response.json({
+      status: "mystery",
+      operation_id: "a".repeat(32),
+    }),
+  });
+
+  await assert.rejects(
+    client.importStatus({ operation_id: "a".repeat(32) }),
+    (error: unknown) => error instanceof NotebookBackendError
+      && error.code === "BACKEND_RESPONSE_INVALID",
   );
 });

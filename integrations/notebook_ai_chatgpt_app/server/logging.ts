@@ -7,6 +7,7 @@ export interface ToolLogRecord {
     | "integrity_report"
     | "import_preview"
     | "import_document"
+    | "import_status"
     | "delete_preview"
     | "delete_document";
   duration_ms: number;

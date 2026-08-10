@@ -115,6 +115,116 @@ def _next_generation(
     )
 
 
+def _mark_generation_root_as_reparse(monkeypatch, data: Path) -> Path:
+    root = data / generations.GENERATION_ROOT_NAME
+    monkeypatch.setattr(
+        generations,
+        "_path_is_reparse_point",
+        lambda path: Path(path) == root,
+        raising=False,
+    )
+    return root
+
+
+def test_versioned_generation_root_reparse_point_fails_closed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    data, database, _source_snapshot, active = _ready_generation(tmp_path)
+    generations.publish_active_generation(active, data_dir=data)
+    _mark_generation_root_as_reparse(monkeypatch, data)
+
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        generations.resolve_active_retrieval_generation(
+            data_dir=data,
+            db_path=database,
+        )
+
+    assert caught.value.code == "active_index_invalid"
+    assert caught.value.safe_to_retry is False
+
+
+def test_generation_mutations_reject_reparse_root_before_writing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    data, database, source, active = _ready_generation(tmp_path)
+    root = _mark_generation_root_as_reparse(monkeypatch, data)
+    before = sorted(path.name for path in root.iterdir())
+
+    with pytest.raises(generations.RetrievalGenerationError):
+        generations.generation_root(data)
+    with pytest.raises(generations.RetrievalGenerationError):
+        generations.prepare_candidate_generation(
+            source,
+            data_dir=data,
+            generation_id="gen-blocked",
+        )
+    with pytest.raises(generations.RetrievalGenerationError):
+        generations.publish_active_generation(active, data_dir=data)
+
+    assert sorted(path.name for path in root.iterdir()) == before
+    assert not generations.active_pointer_path(data).exists()
+    assert generations.sha256_file(database)
+
+
+def test_finalize_rejects_reparse_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    data, database, _source, active = _ready_generation(tmp_path)
+    candidate = generations.prepare_candidate_generation(
+        active,
+        data_dir=data,
+        generation_id="gen-2",
+    )
+    _mark_generation_root_as_reparse(monkeypatch, data)
+
+    with pytest.raises(generations.RetrievalGenerationError):
+        generations.finalize_candidate_generation(
+            candidate,
+            production_db_sha256=generations.sha256_file(database),
+        )
+    assert candidate.candidate_dir.is_dir()
+    assert not candidate.final_dir.exists()
+
+
+def test_activation_validation_rejects_reparse_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    data, database, _source, active = _ready_generation(tmp_path)
+    generations.publish_active_generation(active, data_dir=data)
+    candidate = _next_generation(data, database, active)
+    generations.begin_generation_activation(
+        active,
+        candidate,
+        production_db_sha256=generations.sha256_file(database),
+        data_dir=data,
+    )
+    _mark_generation_root_as_reparse(monkeypatch, data)
+
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        generations._read_activation_state(data_dir=data)
+
+    assert caught.value.code == "retrieval_generation_degraded"
+
+
+def test_restore_pointer_rejects_reparse_generation_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    data, _database, _source_snapshot, active = _ready_generation(tmp_path)
+    generations.publish_active_generation(active, data_dir=data)
+    before = generations.read_active_pointer_bytes(data_dir=data)
+    _mark_generation_root_as_reparse(monkeypatch, data)
+
+    with pytest.raises(generations.RetrievalGenerationError):
+        generations.restore_active_pointer(None, data_dir=data)
+
+    assert generations.active_pointer_path(data).read_bytes() == before
+
+
 def test_active_pointer_absent_uses_legacy(monkeypatch, tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()

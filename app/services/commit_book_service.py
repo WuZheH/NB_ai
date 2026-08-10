@@ -24,7 +24,6 @@ from app.services.markdown_parser import PDF_PAGE_RE, parse_markdown
 from app.services.pdf_parser_backends import PdfParseResult
 
 
-DB_PATH = DEFAULT_DB_PATH
 COMMIT_MANIFEST_FILE = "commit_book_result.json"
 PAPER_COMMIT_MANIFEST_FILE = "commit_result.json"
 STAGING_PREVIEW_BACKEND = "staging_preview_text"
@@ -35,10 +34,13 @@ MAIN_CHAPTER_MAX_COUNT = 120
 def commit_book_from_staging(
     import_job_id: str,
     *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+    backup: bool = True,
     local_pdf_source_binding: (
         local_pdf_source_binding_service.LocalPdfSourceBinding | None
     ) = None,
 ) -> dict[str, Any]:
+    target_db = Path(db_path)
     job_dir = _existing_job_dir(import_job_id)
     paper_md_path = job_dir / "paper.md"
     manifest_path = job_dir / "import_manifest.json"
@@ -71,7 +73,7 @@ def commit_book_from_staging(
     manifest = _read_json(manifest_path)
     source_trace = _read_json(source_trace_path)
     pdf_path = _resolve_source_pdf_path(source_trace)
-    _preflight_document_sources_table(DB_PATH)
+    _preflight_document_sources_table(target_db)
 
     markdown_text = paper_md_path.read_text(encoding="utf-8")
     title = _extract_title(markdown_text, manifest, pdf_path)
@@ -124,7 +126,11 @@ def commit_book_from_staging(
     )
 
     try:
-        apply_result = apply_prepared_book_import(prepared, db_path=DB_PATH, backup=True)
+        apply_result = apply_prepared_book_import(
+            prepared,
+            db_path=target_db,
+            backup=backup,
+        )
     except ValueError as exc:
         raise ImportPreviewError(f"Book commit safety blocked: {exc}") from exc
 
@@ -132,7 +138,7 @@ def commit_book_from_staging(
     if local_pdf_source_binding is not None:
         source_result = (
             local_pdf_source_binding_service.record_document_source(
-                db_path=DB_PATH,
+                db_path=target_db,
                 document_id=document_id,
                 binding=local_pdf_source_binding,
             )
@@ -143,12 +149,12 @@ def commit_book_from_staging(
         )
     else:
         document_source_written = _record_document_source(
-            DB_PATH,
+            target_db,
             document_id,
             source_trace,
             pdf_path,
         )
-    _record_document_zotero_key(DB_PATH, document_id, source_trace)
+    _record_document_zotero_key(target_db, document_id, source_trace)
 
     committed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     commit_data = {

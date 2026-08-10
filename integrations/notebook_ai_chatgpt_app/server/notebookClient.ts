@@ -6,6 +6,8 @@ import {
   type FragmentResponse,
   type ImportDocumentInput,
   type ImportDocumentResponse,
+  type ImportStatusInput,
+  type ImportStatusResponse,
   type ImportPreviewInput,
   type ImportPreviewResponse,
   type IntegrityReportInput,
@@ -176,7 +178,7 @@ export class NotebookClient {
   }
 
   async importPreview(input: ImportPreviewInput): Promise<ImportPreviewResponse> {
-    return this.requestChatTool<ImportPreviewResponse>(
+    const response = await this.requestChatTool<ImportPreviewResponse>(
       "/api/v1/chat-tools/import-preview",
       {
         source_type: input.source_type,
@@ -186,6 +188,15 @@ export class NotebookClient {
       },
       "ok",
     );
+    const operationIdIsValid = typeof response.operation_id === "string"
+      && /^[0-9a-f]{32}$/.test(response.operation_id);
+    if (
+      (response.operation_id !== null && !operationIdIsValid)
+      || (response.confirmation_token !== null && !operationIdIsValid)
+    ) {
+      throw invalidBackendResponse();
+    }
+    return response;
   }
 
   async importDocument(input: ImportDocumentInput): Promise<ImportDocumentResponse> {
@@ -195,6 +206,14 @@ export class NotebookClient {
       undefined,
       this.importTimeoutMs,
     );
+  }
+
+  async importStatus(input: ImportStatusInput): Promise<ImportStatusResponse> {
+    const response = await this.requestChatTool<Record<string, unknown>>(
+      "/api/v1/chat-tools/import-status",
+      input,
+    );
+    return normalizeImportStatusResponse(response);
   }
 
   async deletePreview(documentId: number): Promise<DeletePreviewResponse> {
@@ -436,6 +455,9 @@ function invalidBackendResponse(): NotebookBackendError {
 }
 
 const BACKEND_ERROR_DETAIL_FIELDS = [
+  "status",
+  "operation_id",
+  "terminal",
   "operation_in_progress",
   "token_consumed",
   "writes_performed",
@@ -464,4 +486,95 @@ function backendErrorDetails(
     }
   }
   return details;
+}
+
+const IMPORT_OPERATION_STATUSES = new Set([
+  "accepted",
+  "running",
+  "committed",
+  "failed",
+  "orphaned",
+]);
+
+function normalizeImportStatusResponse(
+  response: Record<string, unknown>,
+): ImportStatusResponse {
+  const operationId = response.operation_id;
+  const status = response.status;
+  if (
+    typeof operationId !== "string"
+    || !/^[0-9a-f]{32}$/.test(operationId)
+    || typeof status !== "string"
+    || !IMPORT_OPERATION_STATUSES.has(status)
+    || typeof response.terminal !== "boolean"
+    || typeof response.operation_in_progress !== "boolean"
+    || typeof response.safe_to_retry !== "boolean"
+    || typeof response.replayed_receipt !== "boolean"
+    || !isNullableBoolean(response.writes_performed)
+    || !isNullableBoolean(response.token_consumed)
+    || !isNullableBoolean(response.rollback_attempted)
+    || !isNullableBoolean(response.rollback_completed)
+    || !isNullablePositiveInteger(response.document_id)
+    || !isNullableNonnegativeInteger(response.chunk_count)
+    || !isNullableString(response.title)
+    || !isNullableString(response.document_type)
+    || !isNullableSafeCode(response.error_code)
+    || !isNullableSafeCode(response.error_stage)
+  ) {
+    throw invalidBackendResponse();
+  }
+  if (
+    response.safe_to_retry !== false
+    || ((status === "accepted" || status === "running")
+      && (response.terminal !== false || response.operation_in_progress !== true))
+    || ((status === "committed" || status === "failed" || status === "orphaned")
+      && (response.terminal !== true || response.operation_in_progress !== false))
+  ) {
+    throw invalidBackendResponse();
+  }
+
+  // Construct a fixed whitelist instead of forwarding the backend object.
+  // This prevents confirmation tokens, digests, paths, or arbitrary journal
+  // fields from crossing the public MCP/Actions boundary.
+  return {
+    status: status as ImportStatusResponse["status"],
+    operation_id: operationId,
+    document_id: response.document_id as number | null,
+    title: response.title as string | null,
+    document_type: response.document_type as string | null,
+    chunk_count: response.chunk_count as number | null,
+    terminal: response.terminal,
+    operation_in_progress: response.operation_in_progress,
+    writes_performed: response.writes_performed as boolean | null,
+    token_consumed: response.token_consumed as boolean | null,
+    safe_to_retry: false,
+    replayed_receipt: response.replayed_receipt,
+    error_code: response.error_code as string | null,
+    error_stage: response.error_stage as string | null,
+    rollback_attempted: response.rollback_attempted as boolean | null,
+    rollback_completed: response.rollback_completed as boolean | null,
+  };
+}
+
+function isNullableBoolean(value: unknown): value is boolean | null {
+  return value === null || typeof value === "boolean";
+}
+
+function isNullablePositiveInteger(value: unknown): value is number | null {
+  return value === null
+    || (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+}
+
+function isNullableNonnegativeInteger(value: unknown): value is number | null {
+  return value === null
+    || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && value.length <= 512);
+}
+
+function isNullableSafeCode(value: unknown): value is string | null {
+  return value === null
+    || (typeof value === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(value));
 }
