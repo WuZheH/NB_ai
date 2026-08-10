@@ -310,7 +310,7 @@ def _install_seams(
     fail_sync: bool = False,
     fail_validation: bool = False,
     fail_active_validation: bool = False,
-) -> None:
+):
     engine = create_engine(f"sqlite:///{database.as_posix()}")
     test_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     monkeypatch.setattr(objects_commit, "SessionLocal", test_session)
@@ -374,6 +374,7 @@ def _install_seams(
         "_strict_affected_object_validation",
         guarded_validate,
     )
+    return engine
 
 
 def test_commit_objects_uses_generation_and_preserves_unrelated_drift(

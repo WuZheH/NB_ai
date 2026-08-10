@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -10,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.paths import DATA_DIR, DATA_PROJECT_ROOT, DEFAULT_DB_PATH, OUTPUTS_DIR
@@ -34,11 +36,174 @@ COMMIT_OBJECTS_BACKUP_ROOT = OUTPUTS_DIR / "phase18e_commitobjects_backup"
 DB_PATH = DEFAULT_DB_PATH
 COMMIT_OBJECTS_FILE = "commit_objects_result.json"
 
+PHASE_COMMIT_OBJECTS = "commit_objects"
+PHASE_COMMIT_REVIEWED_OBJECTS = "commit_reviewed_objects"
+RECEIPT_TABLE = "object_commit_receipts"
+_RECEIPT_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
+_RECEIPT_TABLE_DDL = (
+    "CREATE TABLE IF NOT EXISTS object_commit_receipts ("
+    "import_job_id VARCHAR(255) NOT NULL, "
+    "phase VARCHAR(64) NOT NULL, "
+    "document_id INTEGER, "
+    "input_fingerprint VARCHAR(64) NOT NULL, "
+    "committed_at TEXT NOT NULL, "
+    "revision INTEGER NOT NULL DEFAULT 1, "
+    "PRIMARY KEY (import_job_id, phase)"
+    ")"
+)
+
+
+def _canonical_package_value(value: Any, *, depth: int = 0) -> Any:
+    """Deterministically canonicalize reviewed-package content.
+
+    object_key values are reduced to their canonical semantic identity,
+    mapping keys are sorted, and list order is preserved (the commit services
+    consume the lists in order).  Nothing volatile (paths, timestamps,
+    markers) belongs in the packages, so no stripping is required.
+    """
+    if depth > 10:
+        raise ImportPreviewError(
+            "object_commit_fingerprint_depth: 对象包嵌套过深。"
+        )
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key in sorted(value):
+            item = value[key]
+            if key == "object_key" and isinstance(item, str):
+                item = vector_store_service.canonical_object_key(item)
+            normalized[key] = _canonical_package_value(item, depth=depth + 1)
+        return normalized
+    if isinstance(value, list):
+        return [
+            _canonical_package_value(item, depth=depth + 1)
+            for item in value
+        ]
+    if isinstance(value, bool) or value is None or isinstance(
+        value, (int, float, str)
+    ):
+        return value
+    return str(value)
+
+
+def _phase_input_fingerprint(
+    *,
+    import_job_id: str,
+    document_id: int | None,
+    reviewed_package: Any,
+    remap_preview: Any | None = None,
+    phase: str,
+) -> str:
+    payload = {
+        "phase": phase,
+        "import_job_id": import_job_id,
+        "document_id": document_id,
+        "reviewed_object_package": _canonical_package_value(reviewed_package),
+    }
+    if remap_preview is not None:
+        payload["object_evidence_remap_preview"] = _canonical_package_value(
+            remap_preview
+        )
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _ensure_receipt_table(connection: Any) -> None:
+    connection.execute(text(_RECEIPT_TABLE_DDL))
+
+
+def _insert_receipt_row(
+    connection: Any,
+    *,
+    import_job_id: str,
+    phase: str,
+    document_id: int | None,
+    input_fingerprint: str,
+) -> None:
+    if not _RECEIPT_FINGERPRINT_RE.fullmatch(input_fingerprint):
+        raise ImportPreviewError(
+            "object_commit_receipt_fingerprint_invalid: "
+            "对象提交 receipt 的 input fingerprint 格式无效。"
+        )
+    _ensure_receipt_table(connection)
+    connection.execute(
+        text(
+            "INSERT INTO object_commit_receipts ("
+            "import_job_id, phase, document_id, input_fingerprint, committed_at"
+            ") VALUES (:import_job_id, :phase, :document_id, :input_fingerprint, "
+            ":committed_at)"
+        ),
+        {
+            "import_job_id": import_job_id,
+            "phase": phase,
+            "document_id": document_id,
+            "input_fingerprint": input_fingerprint,
+            "committed_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+def _read_object_commit_receipt(
+    *,
+    import_job_id: str,
+    phase: str,
+    db_path: Path,
+) -> dict[str, Any] | None:
+    """Read the durable phase receipt, failing closed on ambiguity."""
+    database = Path(db_path).resolve(strict=False)
+    if not database.is_file():
+        return None
+    with closing(
+        sqlite3.connect(
+            f"file:{database.as_posix()}?mode=ro",
+            uri=True,
+        )
+    ) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        try:
+            rows = connection.execute(
+                "SELECT import_job_id, phase, document_id, input_fingerprint, "
+                "committed_at, revision FROM object_commit_receipts "
+                "WHERE import_job_id = ? AND phase = ? LIMIT 2",
+                (import_job_id, phase),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return None
+    if not rows:
+        return None
+    if len(rows) > 1:
+        raise ImportPreviewError(
+            "object_commit_receipt_ambiguous: "
+            "对象提交 receipt 出现重复记录，fail-closed。"
+        )
+    row = rows[0]
+    fingerprint = str(row["input_fingerprint"] or "").lower()
+    if not _RECEIPT_FINGERPRINT_RE.fullmatch(fingerprint):
+        raise ImportPreviewError(
+            "object_commit_receipt_invalid: "
+            "对象提交 receipt 的 fingerprint 损坏，fail-closed。"
+        )
+    return {
+        "import_job_id": str(row["import_job_id"]),
+        "phase": str(row["phase"]),
+        "document_id": row["document_id"],
+        "input_fingerprint": fingerprint,
+        "committed_at": str(row["committed_at"] or ""),
+        "revision": int(row["revision"] or 0),
+    }
+
 
 def commit_objects_from_staging(
     import_job_id: str,
     *,
     persist_result: bool = True,
+    receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     job_dir = _existing_job_dir(import_job_id)
 
@@ -60,8 +225,11 @@ def commit_objects_from_staging(
     reviewed = _read_json(reviewed_path)
     source_trace = _read_json(source_trace_path) if source_trace_path.is_file() else {}
 
-    # Idempotency
-    if commit_objects_path.is_file():
+    # Idempotency: the filesystem marker is only a convenience cache.  It may
+    # only gate correctness when persisting (legacy non-production callers);
+    # the production generation wrapper (persist_result=False) is driven
+    # exclusively by the durable database receipt.
+    if persist_result and commit_objects_path.is_file():
         existing = _read_json(commit_objects_path)
         return {
             "status": "already_committed",
@@ -173,6 +341,16 @@ def commit_objects_from_staging(
                     inserted += 1
             except IntegrityError:
                 continue
+
+        if receipt is not None:
+            connection = session.connection()
+            _insert_receipt_row(
+                connection,
+                import_job_id=str(receipt["import_job_id"]),
+                phase=str(receipt["phase"]),
+                document_id=receipt.get("document_id"),
+                input_fingerprint=str(receipt["input_fingerprint"]),
+            )
 
         session.commit()
 
@@ -438,6 +616,7 @@ def commit_reviewed_objects_from_remap(
     import_job_id: str,
     *,
     persist_result: bool = True,
+    receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Commit reviewed objects using pre-computed remap preview.
 
@@ -467,8 +646,11 @@ def commit_reviewed_objects_from_remap(
     if document_id is None:
         raise ImportPreviewError("commit_result.json has no document_id.")
 
-    # Idempotency
-    if result_path.is_file():
+    # Idempotency: the filesystem marker is only a convenience cache.  It may
+    # only gate correctness when persisting (legacy non-production callers);
+    # the production generation wrapper (persist_result=False) is driven
+    # exclusively by the durable database receipt.
+    if persist_result and result_path.is_file():
         existing = _read_json(result_path)
         return {
             "status": "already_committed",
@@ -624,6 +806,16 @@ def commit_reviewed_objects_from_remap(
                 session.add(candidate)
                 inserted += 1
 
+        if receipt is not None:
+            connection = session.connection()
+            _insert_receipt_row(
+                connection,
+                import_job_id=str(receipt["import_job_id"]),
+                phase=str(receipt["phase"]),
+                document_id=receipt.get("document_id"),
+                input_fingerprint=str(receipt["input_fingerprint"]),
+            )
+
         session.commit()
 
     mapping_stats: dict[str, int] = {}
@@ -682,50 +874,6 @@ def _job_document_id(import_job_id: str) -> int | None:
         return int(payload.get("document_id"))
     except (TypeError, ValueError):
         return None
-
-
-def _object_commit_durably_performed(
-    import_job_id: str,
-    *,
-    reviewed: bool,
-    db_path: Path,
-) -> bool:
-    """Return whether the object commit is durably present in the database.
-
-    The object rows themselves are the durable commit identity: the plain
-    phase inserts rows for the job, and the reviewed phase either marks its
-    rows with ``source_import_manifest_path`` or deprecates the old rows.
-    This decision never depends on the filesystem marker, which is only a
-    convenience cache, and it is only ever consulted under the production
-    generation writer lock after the active generation has been verified
-    against the database revision.
-    """
-    database = Path(db_path).resolve(strict=False)
-    if not database.is_file():
-        return False
-    with closing(
-        sqlite3.connect(
-            f"file:{database.as_posix()}?mode=ro",
-            uri=True,
-        )
-    ) as connection:
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA query_only=ON")
-        if reviewed:
-            row = connection.execute(
-                "SELECT 1 FROM object_candidates "
-                "WHERE import_job_id = ? "
-                "AND (source_import_manifest_path IS NOT NULL "
-                "OR status = 'deprecated') LIMIT 1",
-                (import_job_id,),
-            ).fetchone()
-        else:
-            row = connection.execute(
-                "SELECT 1 FROM object_candidates "
-                "WHERE import_job_id = ? LIMIT 1",
-                (import_job_id,),
-            ).fetchone()
-    return row is not None
 
 
 def _reconstructed_already_committed(
@@ -876,6 +1024,23 @@ def _strict_affected_object_validation(
     return state
 
 
+def _dispose_production_engine() -> None:
+    """Drop pooled ORM connections after a file-level database restore.
+
+    The generation session restores the production database by replacing the
+    file.  A pooled SQLAlchemy connection can then hold a stale schema cache
+    (e.g. an ``object_commit_receipts`` table that was rolled back), which
+    makes the next ``CREATE TABLE IF NOT EXISTS`` fail with a malformed
+    schema error.  Disposing the engine forces fresh connections.
+    """
+    try:
+        from app.db.session import engine
+
+        engine.dispose()
+    except Exception:
+        pass
+
+
 def _commit_objects_with_generation(
     import_job_id: str,
     *,
@@ -888,14 +1053,16 @@ def _commit_objects_with_generation(
         if reviewed
         else commit_objects_from_staging
     )
-    # The idempotency decision is a true no-write path: under the production
-    # generation writer barrier the active generation is resolved and
-    # verified against the current database revision (fail-closed on
-    # mismatch, which covers a process crash between the database body
-    # commit and the pointer switch).  Only when the durable phase identity
-    # is absent is the mutation session created.  An already-committed
-    # request therefore never copies a candidate, never creates a database
-    # rollback snapshot, and never restores the database.
+    phase = PHASE_COMMIT_REVIEWED_OBJECTS if reviewed else PHASE_COMMIT_OBJECTS
+    # The idempotency decision is a true no-write path driven by the durable
+    # database receipt bound to the phase's authoritative input fingerprint.
+    # Under the production generation writer barrier the active generation is
+    # resolved and verified against the current database revision (fail-closed
+    # on mismatch, which covers a process crash between the database body
+    # commit and the pointer switch).  Only when no receipt exists is the
+    # mutation session created.  An already-committed request therefore never
+    # copies a candidate, never creates a database rollback snapshot, and
+    # never restores the database.
     post_write_snapshot: Path | None = None
     generation_id: str | None = None
     result: dict[str, Any] = {}
@@ -915,11 +1082,44 @@ def _commit_objects_with_generation(
                 active,
                 db_path,
             )
-            if _object_commit_durably_performed(
-                import_job_id,
-                reviewed=reviewed,
+
+            job_dir = _existing_job_dir(import_job_id)
+            commit_paper = _read_json(job_dir / "commit_result.json")
+            document_id = commit_paper.get("document_id")
+            if document_id is None:
+                raise ImportPreviewError(
+                    "commit_result.json has no document_id."
+                )
+            reviewed_package = _read_json(
+                job_dir / "reviewed_object_tag_package.json"
+            )
+            remap_preview = None
+            if reviewed:
+                remap_preview = _read_json(
+                    job_dir / "object_evidence_remap_preview.json"
+                )
+            current_fingerprint = _phase_input_fingerprint(
+                import_job_id=import_job_id,
+                document_id=document_id,
+                reviewed_package=reviewed_package,
+                remap_preview=remap_preview,
+                phase=phase,
+            )
+            receipt = _read_object_commit_receipt(
+                import_job_id=import_job_id,
+                phase=phase,
                 db_path=db_path,
-            ):
+            )
+            if receipt is not None:
+                if receipt["input_fingerprint"] != current_fingerprint:
+                    # The same phase input changed after the commit: never
+                    # report success, never overwrite the old commit, never
+                    # delete the receipt.
+                    raise ImportPreviewError(
+                        "object_commit_input_changed_after_commit: "
+                        "本次对象提交输入与已提交 phase 不一致，fail-closed；"
+                        "请人工核查后再处理。"
+                    )
                 # Read-only strict validation of the affected object vectors
                 # in the already-active generation before confirming the
                 # terminal state.  Historical rows paired with stale or
@@ -948,11 +1148,22 @@ def _commit_objects_with_generation(
                     db_path=db_path,
                 )
 
+            receipt_payload = {
+                "import_job_id": import_job_id,
+                "phase": phase,
+                "document_id": document_id,
+                "input_fingerprint": current_fingerprint,
+            }
+
             with retrieval_generation_mutation_service.ProductionGenerationMutationSession(
                 data_dir=data_dir,
                 db_path=db_path,
             ) as mutation:
-                result = body_commit(import_job_id, persist_result=False)
+                result = body_commit(
+                    import_job_id,
+                    persist_result=False,
+                    receipt=receipt_payload,
+                )
                 mutation.mark_body_db_mutated()
                 after_db_sha256 = mutation.capture_post_write_database()
                 post_write_snapshot = _verified_post_write_snapshot(db_path)
@@ -1033,8 +1244,8 @@ def _commit_objects_with_generation(
                 mutation.clear_activation()
                 generation_id = finalized.generation_id
                 # The filesystem receipt is a convenience cache only; the
-                # durable commit identity is the database rows themselves (see
-                # _object_commit_durably_performed).  A failed cache write
+                # durable commit identity is the database receipt row written
+                # atomically with the body transaction.  A failed cache write
                 # must never surface as a transaction error after the commit
                 # point.
                 try:
@@ -1054,6 +1265,7 @@ def _commit_objects_with_generation(
                 post_write_snapshot.unlink(missing_ok=True)
             except OSError:
                 pass
+        _dispose_production_engine()
         raise ImportPreviewError(
             "object_commit_generation_rollback_failed: "
             "对象提交进入 fail-closed 状态；生产数据库与检索生成已保持一致。"
@@ -1064,6 +1276,7 @@ def _commit_objects_with_generation(
                 post_write_snapshot.unlink(missing_ok=True)
             except OSError:
                 pass
+        _dispose_production_engine()
         raise
     except Exception as exc:
         if post_write_snapshot is not None:
@@ -1071,6 +1284,7 @@ def _commit_objects_with_generation(
                 post_write_snapshot.unlink(missing_ok=True)
             except OSError:
                 pass
+        _dispose_production_engine()
         raise ImportPreviewError(
             "object_commit_failed: "
             "对象提交未产生已提交结果；生产状态保持 fail-closed，请人工核查。"
