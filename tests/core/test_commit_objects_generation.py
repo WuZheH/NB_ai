@@ -465,6 +465,269 @@ def test_commit_objects_second_call_is_stable_idempotent(
     assert not generations.activation_state_path(data_dir).exists()
 
 
+def test_commit_objects_marker_loss_is_still_durably_idempotent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _versioned_fixture(tmp_path)
+    database = fixture["database"]
+    data_dir = fixture["data_dir"]
+    job_id = _new_job_id("job_commit_objects_marker_loss")
+    job_dir = _write_job_files(job_id)
+    _install_seams(monkeypatch, database=database)
+
+    first = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+    assert first["status"] == "committed"
+
+    marker = job_dir / "commit_objects_result.json"
+    assert marker.is_file()
+    marker.unlink()
+
+    before_pointer = generations.read_active_pointer_bytes(data_dir=data_dir)
+    before_db = database.read_bytes()
+    before_rows = _object_rows(database, job_id)
+
+    second = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+
+    assert second["status"] == "already_committed"
+    assert second["core_db_write_performed"] is False
+    assert second["inserted_count"] == 1
+    assert second["document_id"] == 1
+    assert generations.read_active_pointer_bytes(data_dir=data_dir) == before_pointer
+    assert database.read_bytes() == before_db
+    assert _object_rows(database, job_id) == before_rows
+    assert not generations.activation_state_path(data_dir).exists()
+
+
+def test_commit_objects_marker_write_failure_does_not_claim_rollback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _versioned_fixture(tmp_path)
+    database = fixture["database"]
+    data_dir = fixture["data_dir"]
+    job_id = _new_job_id("job_commit_objects_marker_fail")
+    _write_job_files(job_id)
+    _install_seams(monkeypatch, database=database)
+
+    original_write_json = objects_commit._write_json
+
+    def failing_write_json(path, payload):
+        if Path(path).name == "commit_objects_result.json":
+            raise OSError("simulated marker write failure")
+        return original_write_json(path, payload)
+
+    monkeypatch.setattr(objects_commit, "_write_json", failing_write_json)
+
+    result = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+
+    assert result["status"] == "committed"
+    assert result["generation_id"]
+    assert generations.resolve_active_retrieval_generation(
+        data_dir=data_dir,
+        db_path=database,
+        verify_fingerprints=True,
+    ).generation_id == result["generation_id"]
+    assert not generations.activation_state_path(data_dir).exists()
+    assert _object_rows(database, job_id) == [("mdm", "candidate")]
+
+    before_pointer = generations.read_active_pointer_bytes(data_dir=data_dir)
+    before_db = database.read_bytes()
+    second = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+    assert second["status"] == "already_committed"
+    assert second["core_db_write_performed"] is False
+    assert generations.read_active_pointer_bytes(data_dir=data_dir) == before_pointer
+    assert database.read_bytes() == before_db
+
+
+def test_commit_objects_duplicate_key_does_not_rollback_previous_rows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _versioned_fixture(tmp_path)
+    database = fixture["database"]
+    data_dir = fixture["data_dir"]
+    job_id = _new_job_id("job_commit_objects_duplicate")
+    job_dir = _write_job_files(job_id)
+    (job_dir / "reviewed_object_tag_package.json").write_text(
+        json.dumps(
+            {
+                "objects": [
+                    {
+                        "object_key": "mdm",
+                        "object_name": "MDM 机制",
+                        "object_type": "mechanism",
+                        "review_status": "accepted",
+                        "confidence": "medium",
+                        "aliases": [],
+                        "topic_tags": [],
+                        "problem_tags": [],
+                        "mechanism_tags": [],
+                        "inspiration_tags": [],
+                        "evidence_refs": [],
+                        "source_note_ids": [],
+                        "description": "mechanism description",
+                        "user_comment": "",
+                        "warnings": [],
+                    },
+                    {
+                        "object_key": "other-key",
+                        "object_name": "Other",
+                        "object_type": "concept",
+                        "review_status": "accepted",
+                        "confidence": "medium",
+                        "aliases": [],
+                        "topic_tags": [],
+                        "problem_tags": [],
+                        "mechanism_tags": [],
+                        "inspiration_tags": [],
+                        "evidence_refs": [],
+                        "source_note_ids": [],
+                        "description": "other description",
+                        "user_comment": "",
+                        "warnings": [],
+                    },
+                    {
+                        "object_key": "mdm",
+                        "object_name": "MDM duplicate",
+                        "object_type": "mechanism",
+                        "review_status": "accepted",
+                        "confidence": "medium",
+                        "aliases": [],
+                        "topic_tags": [],
+                        "problem_tags": [],
+                        "mechanism_tags": [],
+                        "inspiration_tags": [],
+                        "evidence_refs": [],
+                        "source_note_ids": [],
+                        "description": "duplicate must be skipped",
+                        "user_comment": "",
+                        "warnings": [],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    _install_seams(monkeypatch, database=database)
+
+    result = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+
+    assert result["status"] == "committed"
+    assert result["inserted_count"] == 2
+    rows = _object_rows(database, job_id)
+    assert sorted(row[0] for row in rows) == ["mdm", "other-key"]
+    assert all(row[1] == "candidate" for row in rows)
+    with sqlite3.connect(database) as connection:
+        names = [
+            row[0]
+            for row in connection.execute(
+                "SELECT object_name FROM object_candidates "
+                "WHERE import_job_id = ?",
+                (job_id,),
+            ).fetchall()
+        ]
+    assert sorted(names) == ["MDM 机制", "Other"]
+
+
+def test_commit_objects_cross_job_same_key_uses_canonical_snapshot_source(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_id = _new_job_id("job_commit_objects_canonical")
+
+    def seed_job_a(database: Path) -> None:
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "INSERT INTO object_candidates (id, document_id, import_job_id, "
+                "object_key, object_name, object_type, review_status, status, "
+                "aliases_json, topic_tags_json, problem_tags_json, "
+                "mechanism_tags_json, inspiration_tags_json, evidence_refs_json, "
+                "note_refs_json, source_note_ids_json, mapping_status, "
+                "mapped_chunk_ids_json, warnings_json, created_by, created_at, "
+                "updated_at) VALUES (9, 1, 'job-A', 'mdm', 'MDM from job A', "
+                "'mechanism', 'accepted', 'candidate', '[]', '[]', '[]', '[]', "
+                "'[]', '[]', '[]', '[]', 'not_mapped', '[]', '[]', "
+                "'user_reviewed', '2026-08-01T00:00:00+00:00', "
+                "'2026-08-01T00:00:00+00:00')"
+            )
+            connection.commit()
+
+    fixture = _versioned_fixture(tmp_path, after_database=seed_job_a)
+    database = fixture["database"]
+    data_dir = fixture["data_dir"]
+    _write_job_files(job_id)
+    _install_seams(monkeypatch, database=database)
+
+    result = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+    assert result["status"] == "committed"
+
+    active = generations.resolve_active_retrieval_generation(
+        data_dir=data_dir,
+        db_path=database,
+        verify_fingerprints=True,
+    )
+    state = vector_store_service.inspect_affected_object_vector_state(
+        object_keys=["mdm"],
+        expected_sources=vector_store_service.collect_affected_object_sources(
+            db_path=database,
+            object_keys=["mdm"],
+        ),
+        store_path=active.vector_store_path,
+    )
+    assert state["status"] == "ok"
+    assert state["missing_count"] == 0
+
+    with sqlite3.connect(database) as connection:
+        job_b_name = connection.execute(
+            "SELECT object_name FROM object_candidates "
+            "WHERE import_job_id = ? AND object_key = 'mdm'",
+            (job_id,),
+        ).fetchone()[0]
+        job_a_name = connection.execute(
+            "SELECT object_name FROM object_candidates "
+            "WHERE import_job_id = 'job-A' AND object_key = 'mdm'",
+        ).fetchone()[0]
+    assert job_b_name == "MDM 机制"
+    assert job_a_name == "MDM from job A"
+
+    expected_sources = vector_store_service.collect_affected_object_sources(
+        db_path=database,
+        object_keys=["mdm"],
+    )
+    assert len(expected_sources) == 1
+    assert expected_sources[0]["object"]["object_name"] == "MDM 机制"
+
+    global_objects = object_semantic_search_service._load_all_objects()
+    mdm = [obj for obj in global_objects if obj.get("object_key") == "mdm"]
+    assert len(mdm) == 1
+    assert mdm[0]["object_name"] == "MDM 机制"
+
+
 def _object_rows(database: Path, job_id: str) -> list[tuple]:
     with sqlite3.connect(database) as connection:
         return [

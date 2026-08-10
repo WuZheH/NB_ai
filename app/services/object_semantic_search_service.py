@@ -5,7 +5,7 @@ import re
 import time
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 
 from app.db.session import SessionLocal
 from app.models import Document, KnowledgeChunk
@@ -440,10 +440,27 @@ def _load_all_objects() -> list[dict[str, Any]]:
     objects: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
 
-    # Load DB objects
+    # Load DB objects with a deterministic canonical order: reviewed
+    # (accepted/edited) rows first, then newest updated_at, then highest id.
+    # object_key is only unique per import job, so the first row per key after
+    # this ordering is the authoritative global object content.
     with SessionLocal() as session:
         rows = session.scalars(
-            select(ObjectCandidate).where(ObjectCandidate.status == "candidate")
+            select(ObjectCandidate)
+            .where(ObjectCandidate.status == "candidate")
+            .order_by(
+                case(
+                    (
+                        ObjectCandidate.review_status.in_(
+                            ("accepted", "edited")
+                        ),
+                        0,
+                    ),
+                    else_=1,
+                ),
+                ObjectCandidate.updated_at.desc(),
+                ObjectCandidate.id.desc(),
+            )
         ).all()
 
     for row in rows:

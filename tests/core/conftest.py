@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
 """Isolated production-shaped data sandbox for the core test suite.
 
 The full test suite must run without the real production ``data`` tree.
@@ -16,33 +14,24 @@ vector/native-note directories.
 ``app.core.paths`` and every module-level path constant resolve inside the
 sandbox.  Tests that need their own data use explicit ``tmp_path`` runtimes
 and are unaffected.
+
+Safety: ``SEARCH_TEST_DATA_ROOT`` (when set) is only a *parent* directory.
+The sandbox is a uniquely named child guarded by an ownership sentinel; only
+owned children of previous runs are ever removed, never the parent.
 """
 
-import json
 import os
-import shutil
-import tempfile
-from pathlib import Path
 
-_SANDBOX_ROOT = Path(
-    os.environ.get("SEARCH_TEST_DATA_ROOT", "").strip()
-    or (Path(tempfile.gettempdir()) / "search-core-test-sandbox")
-)
+from tests.core.sandbox_support import owned_sandbox_root, purge_owned_sandboxes
 
+# Remove only sandbox children owned by previous runs; the parent directory
+# itself is never touched.
+purge_owned_sandboxes()
 
-def _sha256_file(path: Path) -> str:
-    import hashlib
-
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+_SANDBOX_ROOT = owned_sandbox_root()
 
 
-def _build_sandbox() -> Path:
-    shutil.rmtree(_SANDBOX_ROOT, ignore_errors=True)
-    _SANDBOX_ROOT.mkdir(parents=True)
+def _build_sandbox() -> str:
     os.environ["SEARCH_DATA_DIR"] = str(_SANDBOX_ROOT)
 
     from app.core import paths
@@ -104,7 +93,7 @@ def _build_sandbox() -> Path:
         "{}\n",
         encoding="utf-8",
     )
-    return _SANDBOX_ROOT
+    return str(_SANDBOX_ROOT)
 
 
 SANDBOX = _build_sandbox()

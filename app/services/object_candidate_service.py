@@ -541,6 +541,103 @@ def _build_db_candidate(db_obj: ObjectCandidate) -> dict[str, Any]:
     return candidate
 
 
+def build_db_candidate_from_snapshot(
+    row: sqlite3.Row,
+    *,
+    chunks_by_id: dict[int, dict[str, Any]],
+    document_titles: dict[int, str],
+) -> dict[str, Any]:
+    """Build the same candidate dict from a raw object_candidates row.
+
+    Mirrors :func:`_build_db_candidate` against a SQLite snapshot so the
+    generation transaction and the global object model agree on the exact
+    authoritative object content without touching the live ORM session.
+    Evidence enrichment (snippets, chunk identity, document title) uses only
+    snapshot data; fields that are not read by the object profile are kept
+    minimal but equivalent.
+    """
+    import json
+
+    def _json_list(value: str | None) -> list[Any]:
+        try:
+            parsed = json.loads(value or "[]")
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    mapped_ids = [int(value) for value in _json_list(row["mapped_chunk_ids_json"])]
+    evidence_refs_raw = _json_list(row["evidence_refs_json"])
+
+    evidence_refs: list[dict[str, Any]] = []
+    if mapped_ids:
+        for ref in evidence_refs_raw:
+            ref_out = dict(ref) if isinstance(ref, dict) else {}
+            chunk_id_for_ref = None
+            if isinstance(ref, dict):
+                for mid in mapped_ids:
+                    if mid in chunks_by_id:
+                        chunk_id_for_ref = mid
+                        break
+            if chunk_id_for_ref is not None:
+                chunk = chunks_by_id[chunk_id_for_ref]
+                if library_service.is_metadata_chunk_text(
+                    chunk.get("chunk_text") or ""
+                ):
+                    continue
+                ref_out["chunk_id"] = chunk["id"]
+                ref_out["pdf_page"] = chunk.get("pdf_page_start")
+                ref_out["pdf_page_start"] = chunk.get("pdf_page_start")
+                ref_out["pdf_page_end"] = chunk.get("pdf_page_end")
+                ref_out["heading_path"] = chunk.get("heading_path") or ""
+                ref_out["snippet"] = _snippet(chunk.get("chunk_text"), 220)
+                ref_out["chunk_text"] = chunk.get("chunk_text") or ""
+                ref_out["document_title"] = document_titles.get(
+                    chunk.get("document_id")
+                ) or ""
+            evidence_refs.append(ref_out)
+    else:
+        evidence_refs = [
+            dict(r) if isinstance(r, dict) else {} for r in evidence_refs_raw
+        ]
+
+    document_id = row["document_id"]
+    top_docs = (
+        [{"document_id": document_id, "title": document_titles.get(document_id) or ""}]
+        if document_id is not None
+        else []
+    )
+
+    return {
+        "object_key": row["object_key"],
+        "object_name": row["object_name"],
+        "object_type": row["object_type"],
+        "aliases": _json_list(row["aliases_json"]),
+        "topic_tags": _json_list(row["topic_tags_json"]),
+        "problem_tags": _json_list(row["problem_tags_json"]),
+        "mechanism_tags": _json_list(row["mechanism_tags_json"]),
+        "inspiration_tags": _json_list(row["inspiration_tags_json"]),
+        "evidence_refs": evidence_refs,
+        "linked_personal_notes": [],
+        "status": row["status"],
+        "review_status": row["review_status"],
+        "source_origin": row["source_origin"],
+        "necessity_judgment": row["necessity_judgment"],
+        "importance_score": row["importance_score"],
+        "source_note_ids": _json_list(row["source_note_ids_json"]),
+        "source": "object_candidates",
+        "confidence": row["confidence"] or "medium",
+        "mapping_status": row["mapping_status"],
+        "mapped_chunk_ids": mapped_ids,
+        "mapping_warnings": _json_list(row["warnings_json"]),
+        "description": row["description"] or "",
+        "user_comment": row["user_comment"] or "",
+        "import_job_id": row["import_job_id"],
+        "document_id": document_id,
+        "top_documents": top_docs,
+        "warnings": _json_list(row["warnings_json"]),
+    }
+
+
 def _query_db_objects(session, query: str) -> list[dict[str, Any]]:
     """Query object_candidates table by name, key, type, or aliases."""
     import json

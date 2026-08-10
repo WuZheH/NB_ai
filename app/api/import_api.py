@@ -238,7 +238,11 @@ def commit_objects(
     from app.services.commit_objects_service import (
         commit_objects_to_production_with_generation,
     )
-    confirmation = _commit_confirmation(request, "commit_objects_after_review")
+    confirmation = _commit_confirmation(
+        request,
+        "commit_objects_after_review",
+        strict_context=True,
+    )
     if confirmation:
         return confirmation
     try:
@@ -266,7 +270,11 @@ def commit_reviewed_objects(
     from app.services.commit_objects_service import (
         commit_reviewed_objects_to_production_with_generation,
     )
-    confirmation = _commit_confirmation(request, "commit_reviewed_objects_after_remap")
+    confirmation = _commit_confirmation(
+        request,
+        "commit_reviewed_objects_after_remap",
+        strict_context=True,
+    )
     if confirmation:
         return confirmation
     try:

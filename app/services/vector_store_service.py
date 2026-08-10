@@ -1942,6 +1942,137 @@ def cleanup_document_note_vectors(
     }
 
 
+def collect_affected_object_sources(
+    *,
+    db_path: str | Path,
+    object_keys: list[str],
+) -> list[dict[str, Any]]:
+    """Authoritative object sources for exactly the affected keys.
+
+    Reads the given SQLite database (typically the verified post-write
+    snapshot) and applies the deterministic global object canonicalization
+    contract: for each ``object_key`` only ``status = 'candidate'`` rows are
+    eligible, reviewed rows (``accepted``/``edited``) are preferred, ties are
+    broken by ``updated_at DESC, id DESC``, and exactly one row per key wins.
+    The candidate dicts are built from snapshot data only (mirroring the ORM
+    builder), so the generation transaction, the sync, the validator, and the
+    global object model all agree on the same authoritative content.
+    """
+    from app.services.object_candidate_service import (
+        build_db_candidate_from_snapshot,
+    )
+
+    requested_keys: list[str] = []
+    seen_keys: set[str] = set()
+    for raw_key in object_keys:
+        if isinstance(raw_key, bool) or not isinstance(raw_key, str):
+            raise ValueError("affected object keys must be strings")
+        key = raw_key.strip()
+        if key and key not in seen_keys:
+            seen_keys.add(key)
+            requested_keys.append(key)
+    requested_ids = sorted(make_object_source_id(key) for key in requested_keys)
+    if not requested_ids:
+        return []
+
+    database = Path(db_path).resolve(strict=False)
+    if not database.is_file():
+        raise ValueError("db_path must identify an existing SQLite database")
+    with closing(
+        connect_readonly_sqlite(
+            database,
+            resolve_strict=True,
+            row_factory=sqlite3.Row,
+            query_only=True,
+            temp_store="MEMORY",
+        )
+    ) as connection:
+        placeholders = ",".join("?" for _ in requested_keys)
+        rows = connection.execute(
+            "SELECT * FROM object_candidates "
+            "WHERE status = 'candidate' "
+            f"AND object_key IN ({placeholders}) "
+            "ORDER BY "
+            "CASE WHEN review_status IN ('accepted', 'edited') THEN 0 ELSE 1 END, "
+            "updated_at DESC, id DESC",
+            tuple(requested_keys),
+        ).fetchall()
+        mapped_chunk_ids: set[int] = set()
+        for row in rows:
+            try:
+                mapped = json.loads(row["mapped_chunk_ids_json"] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            for value in mapped:
+                try:
+                    mapped_chunk_ids.add(int(value))
+                except (TypeError, ValueError):
+                    continue
+        chunks_by_id: dict[int, dict[str, Any]] = {}
+        document_titles: dict[int, str] = {}
+        if mapped_chunk_ids:
+            chunk_rows = connection.execute(
+                "SELECT chunks.id, chunks.document_id, chunks.chunk_text, "
+                "chunks.pdf_page_start, chunks.pdf_page_end, chunks.heading_path "
+                "FROM knowledge_chunks AS chunks "
+                "WHERE chunks.id IN ("
+                + ",".join("?" for _ in mapped_chunk_ids)
+                + ")",
+                tuple(sorted(mapped_chunk_ids)),
+            ).fetchall()
+            for chunk_row in chunk_rows:
+                chunks_by_id[int(chunk_row["id"])] = dict(chunk_row)
+                doc_id = chunk_row["document_id"]
+                if doc_id is not None and doc_id not in document_titles:
+                    document_titles[int(doc_id)] = ""
+        doc_ids = {
+            int(row["document_id"])
+            for row in rows
+            if row["document_id"] is not None
+        } | set(chunks_by_id)
+        if doc_ids:
+            doc_rows = connection.execute(
+                "SELECT id, title FROM documents WHERE id IN ("
+                + ",".join("?" for _ in doc_ids)
+                + ")",
+                tuple(sorted(doc_ids)),
+            ).fetchall()
+            for doc_row in doc_rows:
+                document_titles[int(doc_row["id"])] = str(doc_row["title"] or "")
+
+    canonical_keys: set[str] = set()
+    sources: list[dict[str, Any]] = []
+    for row in rows:
+        key = str(row["object_key"] or "").strip()
+        if not key or key.lower() in canonical_keys:
+            continue
+        canonical_keys.add(key.lower())
+        candidate = build_db_candidate_from_snapshot(
+            row,
+            chunks_by_id=chunks_by_id,
+            document_titles=document_titles,
+        )
+        profile_text = object_semantic_search_service._build_object_profile(
+            candidate
+        )
+        if not profile_text:
+            continue
+        source_id = make_object_source_id(key)
+        sources.append(
+            {
+                "source_type": "object",
+                "source_id": source_id,
+                "vector_id": source_id,
+                "source_hash": compute_source_hash(profile_text),
+                "profile_version": OBJECT_PROFILE_VERSION,
+                "embedding_model": EMBEDDING_MODEL,
+                "embedding_model_path": _active_embedding_model_path(),
+                "object": candidate,
+            }
+        )
+    return sources
+
+
 def sync_affected_object_embeddings(
     object_keys: list[str],
     *,
@@ -1949,12 +2080,15 @@ def sync_affected_object_embeddings(
     apply: bool = False,
     store_path: Path | None = None,
     manifest_path: Path | None = None,
+    sources: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Sync exactly the affected object keys into one candidate store.
 
-    The authoritative collector (collect_object_sources) is filtered to the
-    requested keys after the fact; keys without a current source are removed
-    from the store when present.  No global scan, no schema rebuild, no orphan
+    ``sources`` carries the authoritative object sources (for example the
+    deterministic canonical selection computed from the post-write database
+    snapshot); when omitted the global collector is filtered to the requested
+    keys.  Keys without a current source are removed from the store when
+    present.  No global scan, no schema rebuild, no orphan
     sweep beyond the affected keys, and the production store/manifest are
     forbidden for explicit-source applies.
     """
@@ -1981,11 +2115,23 @@ def sync_affected_object_embeddings(
         ).resolve(strict=False):
             raise ValueError("explicit affected object apply requires a temp vector manifest")
 
-    sources = [
-        source
-        for source in collect_object_sources()
-        if str(source.get("source_id") or "") in set(requested_ids)
-    ]
+    if sources is None:
+        sources = [
+            source
+            for source in collect_object_sources()
+            if str(source.get("source_id") or "") in set(requested_ids)
+        ]
+    else:
+        if not isinstance(sources, list):
+            raise ValueError("affected object sources must be a list")
+        requested_id_set = set(requested_ids)
+        for source in sources:
+            if not isinstance(source, dict) or str(
+                source.get("source_id") or ""
+            ) not in requested_id_set:
+                raise ValueError(
+                    "affected object sources must belong to the requested keys"
+                )
     source_by_id = {source["source_id"]: source for source in sources}
     requested_id_set = set(requested_ids)
 
@@ -2261,7 +2407,11 @@ def inspect_affected_object_vector_state(
     return _complete_strict_object_state(
         requested_ids=requested_ids,
         expected_ids=sorted(expected_by_id),
-        actual_ids=sorted(rows_by_id),
+        actual_ids=sorted(
+            source_id
+            for source_id, rows in rows_by_id.items()
+            if rows
+        ),
         duplicate_ids=duplicate_ids,
         stale_ids=stale_ids,
         removed_present_ids=removed_present_ids,

@@ -150,12 +150,16 @@ def commit_objects_from_staging(
             candidate.set_warnings((obj.get("warnings") or []) + map_warnings)
 
             try:
-                session.add(candidate)
-                session.flush()
-                inserted += 1
+                # A duplicate row must only discard its own insert.  A bare
+                # session.rollback() would also undo every earlier flush in
+                # this transaction while the returned inserted_count keeps
+                # counting them, so each candidate insert gets its own
+                # SAVEPOINT instead.
+                with session.begin_nested():
+                    session.add(candidate)
+                    session.flush()
+                    inserted += 1
             except IntegrityError:
-                session.rollback()
-                # Duplicate — skip
                 continue
 
         session.commit()
@@ -645,6 +649,116 @@ def _already_committed_payload(stored: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _job_document_id(import_job_id: str) -> int | None:
+    job_dir = _existing_job_dir(import_job_id)
+    commit_paper_path = job_dir / "commit_result.json"
+    if not commit_paper_path.is_file():
+        return None
+    payload = _read_json(commit_paper_path)
+    try:
+        return int(payload.get("document_id"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _object_commit_durably_performed(
+    import_job_id: str,
+    *,
+    reviewed: bool,
+    db_path: Path,
+) -> bool:
+    """Return whether the object commit is durably present in the database.
+
+    The object rows themselves are the durable commit identity: the plain
+    phase inserts rows for the job, and the reviewed phase marks its rows
+    with ``source_import_manifest_path``.  This decision never depends on the
+    filesystem marker, which is only a convenience cache.
+    """
+    database = Path(db_path).resolve(strict=False)
+    if not database.is_file():
+        return False
+    with closing(
+        sqlite3.connect(
+            f"file:{database.as_posix()}?mode=ro",
+            uri=True,
+        )
+    ) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        if reviewed:
+            row = connection.execute(
+                "SELECT 1 FROM object_candidates "
+                "WHERE import_job_id = ? "
+                "AND source_import_manifest_path IS NOT NULL LIMIT 1",
+                (import_job_id,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT 1 FROM object_candidates "
+                "WHERE import_job_id = ? LIMIT 1",
+                (import_job_id,),
+            ).fetchone()
+    return row is not None
+
+
+def _reconstructed_already_committed(
+    import_job_id: str,
+    *,
+    reviewed: bool,
+    db_path: Path,
+    marker_path: Path | None,
+) -> dict[str, Any]:
+    if marker_path is not None:
+        return _already_committed_payload(_read_json(marker_path))
+    database = Path(db_path).resolve(strict=False)
+    candidate_count = 0
+    deprecated_count = 0
+    if database.is_file():
+        with closing(
+            sqlite3.connect(
+                f"file:{database.as_posix()}?mode=ro",
+                uri=True,
+            )
+        ) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            candidate_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM object_candidates "
+                    "WHERE import_job_id = ? AND status = 'candidate'",
+                    (import_job_id,),
+                ).fetchone()[0]
+            )
+            deprecated_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM object_candidates "
+                    "WHERE import_job_id = ? AND status = 'deprecated'",
+                    (import_job_id,),
+                ).fetchone()[0]
+            )
+    payload: dict[str, Any] = {
+        "status": "already_committed",
+        "import_job_id": import_job_id,
+        "document_id": _job_document_id(import_job_id),
+        "committed_at": None,
+        "message": "Objects already committed for this import job.",
+        "core_db_write_performed": False,
+        "external_llm_called": False,
+    }
+    if reviewed:
+        payload["inserted_count"] = candidate_count
+        payload["updated_count"] = 0
+        payload["deprecated_count"] = deprecated_count
+        payload["total_active"] = candidate_count
+        payload["mapping_status_counts"] = {}
+    else:
+        payload["inserted_count"] = candidate_count
+        payload["skipped_rejected"] = 0
+        payload["skipped_suggested"] = 0
+        payload["mapping_status_counts"] = {}
+    return payload
+
+
 def _verified_post_write_snapshot(db_path: Path) -> Path:
     target = Path(db_path).resolve(strict=True)
     descriptor, raw_path = tempfile.mkstemp(
@@ -745,8 +859,17 @@ def _commit_objects_with_generation(
         else commit_objects_from_staging
     )
     marker_path = _job_marker(import_job_id, reviewed=reviewed)
-    if marker_path is not None:
-        return _already_committed_payload(_read_json(marker_path))
+    if marker_path is not None or _object_commit_durably_performed(
+        import_job_id,
+        reviewed=reviewed,
+        db_path=db_path,
+    ):
+        return _reconstructed_already_committed(
+            import_job_id,
+            reviewed=reviewed,
+            db_path=db_path,
+            marker_path=marker_path,
+        )
 
     active_before = (
         retrieval_generation_service.resolve_active_retrieval_generation(
@@ -769,9 +892,18 @@ def _commit_objects_with_generation(
             db_path=db_path,
         ) as mutation:
             locked_marker = _job_marker(import_job_id, reviewed=reviewed)
-            if locked_marker is not None:
+            if locked_marker is not None or _object_commit_durably_performed(
+                import_job_id,
+                reviewed=reviewed,
+                db_path=db_path,
+            ):
                 raise _ObjectCommitAlreadyPerformed(
-                    _already_committed_payload(_read_json(locked_marker))
+                    _reconstructed_already_committed(
+                        import_job_id,
+                        reviewed=reviewed,
+                        db_path=db_path,
+                        marker_path=locked_marker,
+                    )
                 )
 
             result = body_commit(import_job_id, persist_result=False)
@@ -785,15 +917,12 @@ def _commit_objects_with_generation(
                 post_write_snapshot,
                 import_job_id,
             )
-            expected_sources = [
-                source
-                for source in vector_store_service.collect_object_sources()
-                if str(source.get("source_id") or "")
-                in {
-                    vector_store_service.make_object_source_id(key)
-                    for key in affected_keys
-                }
-            ]
+            expected_sources = (
+                vector_store_service.collect_affected_object_sources(
+                    db_path=post_write_snapshot,
+                    object_keys=affected_keys,
+                )
+            )
             candidate = mutation.candidate
             if candidate is None:
                 raise RuntimeError("object_commit_generation_candidate_missing")
@@ -805,6 +934,7 @@ def _commit_objects_with_generation(
                     apply=True,
                     store_path=candidate.vector_store_path,
                     manifest_path=candidate.vector_manifest_path,
+                    sources=expected_sources,
                 )
             )
             if (
@@ -850,15 +980,18 @@ def _commit_objects_with_generation(
             post_write_snapshot = None
             mutation.clear_activation()
             generation_id = finalized.generation_id
-            job_dir = _existing_job_dir(import_job_id)
-            marker_name = COMMIT_REVIEWED_FILE if reviewed else COMMIT_OBJECTS_FILE
-            marker = job_dir / marker_name
-            if marker.is_file():
-                raise ImportPreviewError(
-                    "object_commit_marker_collision: "
-                    "对象提交结果标记冲突，请检查 import job。"
+            # The filesystem receipt is a convenience cache only; the durable
+            # commit identity is the database rows themselves (see
+            # _object_commit_durably_performed).  A failed cache write must
+            # never surface as a transaction error after the commit point.
+            try:
+                job_dir = _existing_job_dir(import_job_id)
+                marker_name = (
+                    COMMIT_REVIEWED_FILE if reviewed else COMMIT_OBJECTS_FILE
                 )
-            _write_json(marker, result)
+                _write_json(job_dir / marker_name, result)
+            except OSError:
+                pass
     except _ObjectCommitAlreadyPerformed as exc:
         return dict(exc.payload)
     except (

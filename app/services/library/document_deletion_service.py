@@ -12,7 +12,7 @@ import threading
 import time
 import unicodedata
 from contextlib import closing
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -244,6 +244,39 @@ _TOKEN_LOCK = threading.RLock()
 _PREVIEW_TOKENS: dict[str, PreviewRecord] = {}
 
 
+def _production_generation_scoped_runtime(
+    runtime: DeletionRuntime,
+) -> DeletionRuntime:
+    """Point a production delete runtime at the active retrieval generation.
+
+    Deletion preview impact (FTS rows, passage vectors, object vectors,
+    native notes) must be computed against the same generation the deletion
+    transaction will mutate.  Fixed legacy artifacts are frozen and can lag
+    behind the active generation, so production previews never read them.
+    """
+    if not _uses_production_generation(runtime):
+        return runtime
+    try:
+        generation = retrieval_generation_service.current_retrieval_generation(
+            data_dir=runtime.data_dir,
+            db_path=runtime.db_path,
+        )
+    except retrieval_generation_service.RetrievalGenerationError as exc:
+        raise DeletionError(
+            "deletion_generation_unavailable",
+            "删除影响确认需要可读的当前检索生成。",
+            status_code=503,
+            details={"safe_to_retry": False},
+        ) from exc
+    return replace(
+        runtime,
+        fts_path=generation.fts_index_path,
+        fts_manifest_path=generation.fts_manifest_path,
+        vector_store_path=generation.vector_store_path,
+        vector_manifest_path=generation.vector_manifest_path,
+    )
+
+
 def create_deletion_preview(
     document_id: int,
     *,
@@ -254,7 +287,9 @@ def create_deletion_preview(
     runtime: DeletionRuntime | None = None,
     issue_token: bool = True,
 ) -> dict[str, Any]:
-    actual_runtime = runtime or DeletionRuntime()
+    actual_runtime = _production_generation_scoped_runtime(
+        runtime or DeletionRuntime()
+    )
     options = _normalize_options(deletion_options)
     acknowledgment = _normalize_acknowledgment(
         manual_preservation_acknowledgment
@@ -302,7 +337,9 @@ def delete_document(
     ) = None,
     runtime: DeletionRuntime | None = None,
 ) -> dict[str, Any]:
-    actual_runtime = runtime or DeletionRuntime()
+    actual_runtime = _production_generation_scoped_runtime(
+        runtime or DeletionRuntime()
+    )
     options = _normalize_options(deletion_options)
     acknowledgment = _normalize_acknowledgment(
         manual_preservation_acknowledgment
@@ -558,7 +595,11 @@ def _strict_delete_scope_validation(
                     object_ids=tuple(),
                 )
             )
-        if checks["document_rows"] or checks["dangling_personal_notes"]:
+        if (
+            checks["document_rows"]
+            or checks["dangling_personal_notes"]
+            or checks.get("dangling_zotero_notes", 0)
+        ):
             raise RuntimeError("deletion_generation_database_rows_remain")
 
     fts_status = _generation_fts_status(
@@ -987,7 +1028,9 @@ def preflight_delete_document(
     ) = None,
     runtime: DeletionRuntime | None = None,
 ) -> PreparedPreview:
-    actual_runtime = runtime or DeletionRuntime()
+    actual_runtime = _production_generation_scoped_runtime(
+        runtime or DeletionRuntime()
+    )
     options = _normalize_options(deletion_options)
     acknowledgment = _normalize_acknowledgment(
         manual_preservation_acknowledgment
@@ -1032,7 +1075,9 @@ def delete_documents_batch(
     confirmation_text: str,
     runtime: DeletionRuntime | None = None,
 ) -> dict[str, Any]:
-    actual_runtime = runtime or DeletionRuntime()
+    actual_runtime = _production_generation_scoped_runtime(
+        runtime or DeletionRuntime()
+    )
     ids = [int(value) for value in document_ids]
     if not ids or len(ids) > MAX_BATCH_SIZE or len(set(ids)) != len(ids) or any(value < 1 for value in ids) or len(requests) != len(ids):
         raise DeletionError(

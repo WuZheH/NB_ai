@@ -12,6 +12,7 @@ from app.services.library.local_mutation_security import (
     require_local_renderer,
     require_mutation_token,
 )
+from app.services.retrieval_generation_service import product_read_generation_guard
 
 
 router = APIRouter()
@@ -34,6 +35,7 @@ def delete_documents_batch(
 
 
 @router.get("/documents/{document_id}/deletion-preview")
+@product_read_generation_guard
 def deletion_preview(
     document_id: int,
     request: Request,
@@ -50,6 +52,7 @@ def deletion_preview(
 
 
 @router.post("/documents/{document_id}/deletion-preview")
+@product_read_generation_guard
 def deletion_preview_with_acknowledgment(
     document_id: int,
     payload: DeletionPreviewRequest,

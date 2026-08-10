@@ -90,6 +90,7 @@ def import_status(payload: ImportStatusRequest, request: Request) -> dict[str, A
 
 
 @router.post("/delete-preview")
+@product_read_generation_guard
 def delete_preview(payload: DeletePreviewRequest, request: Request) -> dict[str, Any]:
     require_chat_adapter(request)
     return _call(chat_tool_service.delete_preview, payload.document_id)

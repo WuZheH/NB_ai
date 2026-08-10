@@ -431,6 +431,81 @@ def _preview_and_delete(
     )
 
 
+def test_delete_preview_impact_reads_active_generation_not_frozen_legacy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _versioned_fixture(tmp_path)
+    runtime = fixture["runtime"]
+    database = fixture["database"]
+    legacy = fixture["legacy"]
+    _install_delete_seams(monkeypatch)
+
+    # Freeze-legacy simulation: remove document 1 from the fixed legacy FTS
+    # and passage store after the active generation was published.  The fixed
+    # artifacts are intentionally stale; only the active generation still
+    # reflects the document.
+    with sqlite3.connect(legacy / generations.FTS_INDEX_NAME) as connection:
+        connection.execute(
+            "DELETE FROM retrieval_fragments WHERE document_id = 1"
+        )
+        connection.commit()
+    legacy_store = vector_store_service.open_vector_store(
+        legacy / generations.VECTOR_STORE_NAME
+    )
+    legacy_store.open_table(vector_store_service.PASSAGE_TABLE).delete(
+        "document_id = 1"
+    )
+
+    preview = deletion.create_deletion_preview(1, runtime=runtime)
+
+    assert preview["fts_row_count"] == 1
+    assert preview["passage_vector_count"] == 1
+    assert "fts_impact_unavailable" not in preview["warnings"]
+    assert "vector_impact_unavailable" not in preview["warnings"]
+    assert preview["manifest_index_impact"]["fts_rebuild_required"] is True
+    active = generations.resolve_active_retrieval_generation(
+        data_dir=runtime.data_dir,
+        db_path=database,
+    )
+    assert runtime.fts_path != active.fts_index_path
+
+
+def test_delete_strict_validation_blocks_dangling_zotero_notes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _versioned_fixture(tmp_path)
+    runtime = fixture["runtime"]
+    database = fixture["database"]
+    data_dir = runtime.data_dir
+    _install_delete_seams(monkeypatch)
+    runtime = replace(runtime, cleanup_fts=_test_cleanup_fts)
+
+    before_db = database.read_bytes()
+    before_pointer = generations.read_active_pointer_bytes(data_dir=data_dir)
+    generation_root = data_dir / generations.GENERATION_ROOT_NAME
+    before_generations = generations.tree_fingerprint(generation_root)
+
+    monkeypatch.setattr(
+        deletion,
+        "_detach_zotero_notes",
+        lambda _connection, _plan: 0,
+    )
+
+    with pytest.raises(deletion.DeletionError):
+        _preview_and_delete(runtime)
+
+    assert database.read_bytes() == before_db
+    assert generations.read_active_pointer_bytes(data_dir=data_dir) == before_pointer
+    assert generations.tree_fingerprint(generation_root) == before_generations
+    assert not generations.activation_state_path(data_dir).exists()
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM documents WHERE id = 1"
+        ).fetchone()[0] == 1
+
+
 def test_explicit_production_delete_uses_generation_runtime(tmp_path: Path) -> None:
     runtime = deletion.DeletionRuntime(
         db_path=tmp_path / "data" / "db" / "research_memory.db",
