@@ -113,12 +113,35 @@ def _database(path: Path) -> None:
             CREATE TABLE object_candidates (
                 id INTEGER PRIMARY KEY,
                 document_id INTEGER,
-                object_key TEXT NOT NULL,
-                user_comment TEXT,
+                chapter_id INTEGER,
+                import_job_id VARCHAR(255) NOT NULL,
+                object_key VARCHAR(255) NOT NULL,
+                object_name VARCHAR(512) NOT NULL,
+                object_type VARCHAR(64) NOT NULL,
+                review_status VARCHAR(32) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'candidate',
+                confidence VARCHAR(16),
+                aliases_json TEXT NOT NULL DEFAULT '[]',
+                description TEXT,
+                topic_tags_json TEXT NOT NULL DEFAULT '[]',
+                problem_tags_json TEXT NOT NULL DEFAULT '[]',
+                mechanism_tags_json TEXT NOT NULL DEFAULT '[]',
+                inspiration_tags_json TEXT NOT NULL DEFAULT '[]',
+                evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                note_refs_json TEXT NOT NULL DEFAULT '[]',
+                source_note_ids_json TEXT NOT NULL DEFAULT '[]',
+                source_origin VARCHAR(64),
+                necessity_judgment VARCHAR(64),
+                importance_score VARCHAR(32),
                 source_package_path TEXT,
                 source_import_manifest_path TEXT,
-                evidence_refs_json TEXT NOT NULL DEFAULT '[]',
-                mapped_chunk_ids_json TEXT NOT NULL DEFAULT '[]'
+                mapping_status VARCHAR(32) NOT NULL DEFAULT 'not_mapped',
+                mapped_chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+                warnings_json TEXT NOT NULL DEFAULT '[]',
+                user_comment TEXT,
+                created_by VARCHAR(64) NOT NULL DEFAULT 'user_reviewed',
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
             );
 
             CREATE TABLE personal_notes (
@@ -204,7 +227,19 @@ def _database(path: Path) -> None:
         connection.execute("INSERT INTO knowledge_chunks VALUES (102, 2, 12, 0, 'H', 'chunk two', 'hash-2', 'chunk:2:102', NULL, NULL, 22, ?)", (now,))
         connection.execute("INSERT INTO book_chapters VALUES (21, 1, 'C')")
         connection.execute("INSERT INTO book_chapters VALUES (22, 2, 'C')")
-        connection.execute("INSERT INTO object_candidates VALUES (31, 1, 'exclusive-key', '', NULL, NULL, '[]', '[101]')")
+        now = "2026-08-10T00:00:00+00:00"
+        connection.execute(
+            "INSERT INTO object_candidates ("
+            "id, document_id, import_job_id, object_key, object_name, "
+            "object_type, review_status, status, aliases_json, "
+            "evidence_refs_json, note_refs_json, source_note_ids_json, "
+            "mapping_status, mapped_chunk_ids_json, warnings_json, "
+            "created_by, created_at, updated_at"
+            ") VALUES (31, 1, 'delete-job', 'exclusive-key', 'Exclusive', "
+            "'mechanism', 'accepted', 'candidate', '[]', '[]', '[]', '[]', "
+            "'not_mapped', '[101]', '[]', 'user_reviewed', ?, ?)",
+            (now, now),
+        )
         connection.execute("INSERT INTO personal_notes VALUES (41, 1, 'personal', NULL, NULL, NULL, NULL, 'note', 'private', NULL, ?, ?)", (now, now))
         connection.execute(
             "INSERT INTO note_evidence_links VALUES (51, 41, 101, 'quote', 'evidence', '', 1.0, 'test', ?)",
@@ -249,7 +284,10 @@ def _passage_record(document_id: int, chunk_id: int) -> dict:
     return vector_store_service.build_passage_schema_record(document, chunk)
 
 
-def _versioned_fixture(tmp_path: Path) -> dict[str, Path]:
+def _versioned_fixture(
+    tmp_path: Path,
+    after_legacy_store: object | None = None,
+) -> dict[str, Path]:
     data = tmp_path / "data"
     data.mkdir()
     database = data / "research_memory.db"
@@ -288,6 +326,8 @@ def _versioned_fixture(tmp_path: Path) -> dict[str, Path]:
     )
     vector_manifest.write_text("{}\n", encoding="utf-8")
     native.mkdir(parents=True)
+    if callable(after_legacy_store):
+        after_legacy_store(vectors)
 
     source = generations.RetrievalGenerationSnapshot(
         mode="legacy",
@@ -556,6 +596,66 @@ def test_delete_strict_validation_blocks_each_dangling_zotero_dimension(
     assert generations.read_active_pointer_bytes(data_dir=data_dir) == before_pointer
     assert generations.tree_fingerprint(generation_root) == before_generations
     assert not generations.activation_state_path(data_dir).exists()
+
+
+def test_delete_reconciles_legacy_case_variant_object_vectors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def seed_legacy_objects(vectors: Path) -> None:
+        store = vector_store_service.open_vector_store(vectors)
+        rows = [
+            vector_store_service.build_object_schema_record(
+                {
+                    "object_key": "EXCLUSIVE-KEY",
+                    "object_name": "Exclusive",
+                    "object_type": "mechanism",
+                    "document_id": 1,
+                    "evidence_refs": [],
+                    "top_documents": [{"document_id": 1, "title": "Book 1"}],
+                }
+            ),
+            vector_store_service.build_object_schema_record(
+                {
+                    "object_key": "shared",
+                    "object_name": "Shared",
+                    "object_type": "concept",
+                    "document_id": 2,
+                    "evidence_refs": [],
+                    "top_documents": [{"document_id": 2, "title": "Book 2"}],
+                }
+            ),
+        ]
+        store.create_table(
+            vector_store_service.OBJECT_TABLE,
+            data=rows,
+            mode="create",
+        )
+
+    fixture = _versioned_fixture(
+        tmp_path,
+        after_legacy_store=seed_legacy_objects,
+    )
+    runtime = fixture["runtime"]
+    database = fixture["database"]
+    data_dir = runtime.data_dir
+    _install_delete_seams(monkeypatch)
+    runtime = replace(runtime, cleanup_fts=_test_cleanup_fts)
+
+    result = _preview_and_delete(runtime)
+
+    assert result["status"] == "completed"
+    active = generations.resolve_active_retrieval_generation(
+        data_dir=data_dir,
+        db_path=database,
+        verify_fingerprints=True,
+    )
+    active_db = vector_store_service.open_vector_store(active.vector_store_path)
+    rows = active_db.open_table(
+        vector_store_service.OBJECT_TABLE
+    ).search().limit(100).to_list()
+    assert [row["source_id"] for row in rows] == ["object:shared"]
+    assert all(row["document_id"] == 2 for row in rows)
 
 
 def test_explicit_production_delete_uses_generation_runtime(tmp_path: Path) -> None:

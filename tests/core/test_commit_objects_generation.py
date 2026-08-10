@@ -752,6 +752,173 @@ def test_commit_objects_cross_job_case_variant_is_one_semantic_source(
     assert mdm[0]["object_name"] == "MDM 机制"
 
 
+def test_commit_objects_whitespace_key_is_canonicalized_at_ingress(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _versioned_fixture(tmp_path)
+    database = fixture["database"]
+    data_dir = fixture["data_dir"]
+    job_id = _new_job_id("job_commit_objects_space")
+    job_dir = _write_job_files(job_id)
+    (job_dir / "reviewed_object_tag_package.json").write_text(
+        json.dumps(
+            {
+                "objects": [
+                    {
+                        "object_key": "  MDM  ",
+                        "object_name": "MDM 机制",
+                        "object_type": "mechanism",
+                        "review_status": "accepted",
+                        "confidence": "medium",
+                        "aliases": [],
+                        "topic_tags": [],
+                        "problem_tags": [],
+                        "mechanism_tags": [],
+                        "inspiration_tags": [],
+                        "evidence_refs": [],
+                        "source_note_ids": [],
+                        "description": "whitespace ingress",
+                        "user_comment": "",
+                        "warnings": [],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    _install_seams(monkeypatch, database=database)
+
+    result = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+    assert result["status"] == "committed"
+
+    with sqlite3.connect(database) as connection:
+        keys = [
+            row[0]
+            for row in connection.execute(
+                "SELECT object_key FROM object_candidates "
+                "WHERE import_job_id = ?",
+                (job_id,),
+            ).fetchall()
+        ]
+    assert keys == ["mdm"]
+
+    active = generations.resolve_active_retrieval_generation(
+        data_dir=data_dir,
+        db_path=database,
+        verify_fingerprints=True,
+    )
+    active_db = vector_store_service.open_vector_store(active.vector_store_path)
+    rows = active_db.open_table(
+        vector_store_service.OBJECT_TABLE
+    ).search().limit(100).to_list()
+    assert len(rows) == 1
+    assert rows[0]["source_id"] == "object:mdm"
+
+    expected = vector_store_service.collect_affected_object_sources(
+        db_path=database,
+        object_keys=["MDM"],
+    )
+    assert len(expected) == 1
+    assert expected[0]["source_id"] == "object:mdm"
+    state = vector_store_service.inspect_affected_object_vector_state(
+        object_keys=["MDM"],
+        expected_sources=expected,
+        store_path=active.vector_store_path,
+    )
+    assert state["status"] == "ok"
+    assert state["missing_count"] == 0
+    assert state["identity_variant_count"] == 0
+
+
+def test_commit_objects_already_committed_is_true_no_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _versioned_fixture(tmp_path)
+    database = fixture["database"]
+    data_dir = fixture["data_dir"]
+    job_id = _new_job_id("job_commit_objects_nowrite")
+    _write_job_files(job_id)
+    _install_seams(monkeypatch, database=database)
+
+    first = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+    assert first["status"] == "committed"
+
+    session_class = mutations.ProductionGenerationMutationSession
+    instantiated: list[int] = []
+
+    def no_session_factory(**kwargs):
+        instantiated.append(1)
+        return session_class(**kwargs)
+
+    monkeypatch.setattr(
+        "app.services.commit_objects_service.retrieval_generation_mutation_service.ProductionGenerationMutationSession",
+        no_session_factory,
+    )
+
+    before_pointer = generations.read_active_pointer_bytes(data_dir=data_dir)
+    before_db = database.read_bytes()
+
+    second = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+
+    assert second["status"] == "already_committed"
+    assert second["core_db_write_performed"] is False
+    assert instantiated == []
+    assert generations.read_active_pointer_bytes(data_dir=data_dir) == before_pointer
+    assert database.read_bytes() == before_db
+    assert not generations.activation_state_path(data_dir).exists()
+
+
+def test_commit_objects_already_committed_requires_clean_active_vectors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _versioned_fixture(tmp_path)
+    database = fixture["database"]
+    data_dir = fixture["data_dir"]
+    job_id = _new_job_id("job_commit_objects_cleanactive")
+    _write_job_files(job_id)
+    _install_seams(monkeypatch, database=database)
+
+    first = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+    assert first["status"] == "committed"
+
+    active = generations.resolve_active_retrieval_generation(
+        data_dir=data_dir,
+        db_path=database,
+        verify_fingerprints=True,
+    )
+    active_db = vector_store_service.open_vector_store(active.vector_store_path)
+    active_db.open_table(vector_store_service.OBJECT_TABLE).delete(
+        "source_id = 'object:mdm'"
+    )
+
+    with pytest.raises(Exception) as error:
+        objects_commit.commit_objects_to_production_with_generation(
+            job_id,
+            db_path=database,
+            data_dir=data_dir,
+        )
+    assert "object_commit" in str(error.value)
+
+
 def test_commit_objects_cross_job_same_key_uses_canonical_snapshot_source(
     tmp_path: Path,
     monkeypatch,

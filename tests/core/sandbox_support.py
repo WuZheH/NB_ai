@@ -35,18 +35,26 @@ def _production_data_dir() -> Path | None:
     ``sandbox_support`` runs before ``SEARCH_DATA_DIR`` is redirected, so
     importing ``app.core.paths`` here would cache the ambient/real data
     directory for the whole test session.  The production data root is
-    therefore derived purely from the environment and the repository layout:
-    ``SEARCH_DATA_DIR`` when set, otherwise ``<repo root>/data``.
+    therefore derived purely from the environment and the repository layout,
+    replicating the real path priority:
+    ``SEARCH_DATA_DIR``, then ``NOTEBOOK_AI_DATA_PROJECT_ROOT / data``,
+    then ``<repo root>/data``.
     """
-    configured = os.environ.get("SEARCH_DATA_DIR", "").strip()
-    if configured and "\x00" not in configured:
-        candidate = Path(configured).expanduser()
+    repo_root = Path(__file__).resolve().parents[2]
+
+    def _resolve_relative(value: str) -> Path:
+        candidate = Path(value).expanduser()
         if candidate.is_absolute():
             return candidate.resolve(strict=False)
-        return (Path(__file__).resolve().parents[2] / candidate).resolve(
-            strict=False
-        )
-    return Path(__file__).resolve().parents[2] / "data"
+        return (repo_root / candidate).resolve(strict=False)
+
+    configured = os.environ.get("SEARCH_DATA_DIR", "").strip()
+    if configured and "\x00" not in configured:
+        return _resolve_relative(configured)
+    legacy_root = os.environ.get("NOTEBOOK_AI_DATA_PROJECT_ROOT", "").strip()
+    if legacy_root and "\x00" not in legacy_root:
+        return _resolve_relative(legacy_root) / "data"
+    return repo_root / "data"
 
 
 def _reject_unsafe_parent(parent: Path) -> None:

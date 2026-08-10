@@ -52,6 +52,19 @@ def test_parent_rejects_production_data_dir(monkeypatch: pytest.MonkeyPatch) -> 
         sandbox_parent()
 
 
+def test_parent_rejects_legacy_data_project_root_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "real-search-data-project"
+    data_root = project_root / "data"
+    monkeypatch.delenv("SEARCH_DATA_DIR", raising=False)
+    monkeypatch.setenv("NOTEBOOK_AI_DATA_PROJECT_ROOT", str(project_root))
+    monkeypatch.setenv("SEARCH_TEST_DATA_ROOT", str(data_root))
+    with pytest.raises(RuntimeError, match="production data"):
+        sandbox_parent()
+
+
 def test_owned_sandbox_has_sentinel_and_unique_child(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -146,3 +159,37 @@ def test_sandbox_redirect_happens_before_first_app_import(
     assert data_dir.name.startswith("search-core-test-")
     assert data_dir != (repo_root / "data").resolve()
     assert (data_dir / SENTINEL_NAME).is_file()
+
+
+def test_legacy_data_root_alias_guard_in_fresh_process(
+    tmp_path: Path,
+) -> None:
+    """Fresh-process proof that the legacy alias is rejected without app import."""
+    repo_root = Path(__file__).resolve().parents[2]
+    project_root = tmp_path / "real-search-data-project"
+    environment = os.environ.copy()
+    environment.pop("SEARCH_DATA_DIR", None)
+    environment["NOTEBOOK_AI_DATA_PROJECT_ROOT"] = str(project_root)
+    environment["SEARCH_TEST_DATA_ROOT"] = str(project_root / "data")
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from tests.core.sandbox_support import sandbox_parent\n"
+        "try:\n"
+        "    sandbox_parent()\n"
+        "    print('NOT_REJECTED')\n"
+        "except RuntimeError:\n"
+        "    print('REJECTED')\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", code, str(repo_root)],
+        cwd=str(repo_root),
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "REJECTED" in completed.stdout
+    assert not (project_root / "data").exists()

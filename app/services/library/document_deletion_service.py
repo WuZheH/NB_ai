@@ -512,6 +512,8 @@ def _strict_delete_scope_validation(
     native_note_vector_path: Path,
     expected_passage_sources: list[dict[str, Any]],
     expected_note_sources: list[dict[str, Any]],
+    object_keys: list[str],
+    expected_object_sources: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Strictly validate one document's absence across a generation copy."""
     if _sha256_file(db_path).lower() != expected_db_sha256.lower():
@@ -562,6 +564,26 @@ def _strict_delete_scope_validation(
     ):
         raise RuntimeError("deletion_generation_native_notes_remain")
 
+    object_state = vector_store_service.inspect_affected_object_vector_state(
+        object_keys=object_keys,
+        expected_sources=expected_object_sources,
+        store_path=vector_store_path,
+    )
+    variant_count = object_state.get("identity_variant_count")
+    variant_invalid = (
+        variant_count == "unavailable"
+        or int(variant_count or 0) != 0
+    )
+    if (
+        object_state.get("status") != "ok"
+        or int(object_state.get("missing_count") or 0) != 0
+        or int(object_state.get("duplicate_count") or 0) != 0
+        or int(object_state.get("stale_count") or 0) != 0
+        or int(object_state.get("removed_but_present_count") or 0) != 0
+        or variant_invalid
+    ):
+        raise RuntimeError("deletion_generation_object_vectors_invalid")
+
     with closing(_readonly_connection(db_path)) as connection:
         checks = {
             "document_rows": _count(
@@ -609,6 +631,7 @@ def _strict_delete_scope_validation(
         "fts_rows": fts_remaining,
         "passage_state": passage_state,
         "note_state": note_state,
+        "object_state": object_state,
         "native_state": native_state,
     }
 
@@ -763,7 +786,7 @@ def _delete_document_with_generation(
                 or vector_store_service.cleanup_document_vectors
             )(
                 passage_source_ids=list(plan.passage_source_ids),
-                affected_object_keys=list(plan.object_keys),
+                affected_object_keys=[],
                 store_path=candidate.vector_store_path,
                 manifest_path=candidate.vector_manifest_path,
             )
@@ -771,6 +794,29 @@ def _delete_document_with_generation(
                 passage_cleanup.get("full_rebuild_performed") is not False
             ):
                 raise RuntimeError("deletion_generation_passage_scope_invalid")
+
+            expected_object_sources = (
+                vector_store_service.collect_affected_object_sources(
+                    db_path=post_delete_snapshot,
+                    object_keys=list(plan.object_keys),
+                )
+            )
+            object_cleanup = (
+                vector_store_service.sync_affected_object_embeddings(
+                    list(plan.object_keys),
+                    dry_run=False,
+                    apply=True,
+                    store_path=candidate.vector_store_path,
+                    manifest_path=candidate.vector_manifest_path,
+                    sources=expected_object_sources,
+                )
+            )
+            if (
+                object_cleanup.get("scope") != "affected_object_keys_only"
+                or object_cleanup.get("full_rebuild_allowed") is not False
+                or object_cleanup.get("delete_orphans_allowed") is not False
+            ):
+                raise RuntimeError("deletion_generation_object_scope_invalid")
 
             native_cleanup = _sync_note_vectors_after_document_delete_generation(
                 plan,
@@ -817,6 +863,8 @@ def _delete_document_with_generation(
                     ),
                     expected_passage_sources=expected_passage_sources,
                     expected_note_sources=expected_note_sources,
+                    object_keys=list(plan.object_keys),
+                    expected_object_sources=expected_object_sources,
                 )
 
             mutation.validate_candidate(validate_candidate)
@@ -849,6 +897,8 @@ def _delete_document_with_generation(
                     ),
                     expected_passage_sources=expected_passage_sources,
                     expected_note_sources=expected_note_sources,
+                    object_keys=list(plan.object_keys),
+                    expected_object_sources=expected_object_sources,
                 )
                 verified_active = active_value
 
@@ -1883,6 +1933,48 @@ def _retry_incomplete_cleanup_generation(
             "stale_document_entries": 0,
         },
     )
+    try:
+        # A committed generation is clean by construction and immutable:
+        # the retry only re-validates the affected object vectors with the
+        # same scoped contract used pre-activation.  No active-generation
+        # writes happen here.
+        expected_object_sources = (
+            vector_store_service.collect_affected_object_sources(
+                db_path=runtime.db_path,
+                object_keys=list(plan.object_keys),
+            )
+        )
+        object_state = (
+            vector_store_service.inspect_affected_object_vector_state(
+                object_keys=list(plan.object_keys),
+                expected_sources=expected_object_sources,
+                store_path=active.vector_store_path,
+            )
+        )
+        variant_count = object_state.get("identity_variant_count")
+        variant_invalid = (
+            variant_count == "unavailable"
+            or int(variant_count or 0) != 0
+        )
+        if (
+            object_state.get("status") != "ok"
+            or int(object_state.get("missing_count") or 0) != 0
+            or int(object_state.get("duplicate_count") or 0) != 0
+            or int(object_state.get("stale_count") or 0) != 0
+            or int(object_state.get("removed_but_present_count") or 0) != 0
+            or variant_invalid
+        ):
+            raise RuntimeError(
+                "deletion_retry_object_vectors_invalid"
+            )
+        state.vectors = {
+            "status": "ok",
+            "deleted_passage_vectors": 0,
+            "object_state": object_state,
+        }
+    except Exception as exc:
+        state.errors.append(_cleanup_error("vector_cleanup_failed", exc))
+        state.vectors = {"status": "failed", "error_code": "vector_cleanup_failed"}
     try:
         state.files = _cleanup_files(plan)
     except Exception as exc:

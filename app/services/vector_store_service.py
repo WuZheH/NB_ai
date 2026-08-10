@@ -2003,7 +2003,7 @@ def collect_affected_object_sources(
         rows = connection.execute(
             "SELECT * FROM object_candidates "
             "WHERE status = 'candidate' "
-            f"AND lower(object_key) IN ({placeholders}) "
+            f"AND trim(lower(object_key)) IN ({placeholders}) "
             "ORDER BY "
             "CASE WHEN review_status IN ('accepted', 'edited') THEN 0 ELSE 1 END, "
             "updated_at DESC, id DESC",
@@ -2216,22 +2216,28 @@ def sync_affected_object_embeddings(
             for source in changed_sources
         ]
         records = [record for record in records if record]
+        variant_deleted = 0
         if table_exists:
             table = db.open_table(OBJECT_TABLE)
             if removed_ids:
                 _delete_source_or_vector_ids(table, removed_ids)
             if requested_keys:
-                # Remove any legacy rows whose object_key is a different case
-                # variant of an affected canonical key.  They represent the
-                # same semantic object under a non-canonical source identity.
+                # Remove any legacy rows whose object_key is a case variant
+                # of an affected canonical key.  They represent the same
+                # semantic object under a non-canonical source identity.
+                # (LanceDB filters support lower() but not trim(); new rows
+                # are canonical at ingress so only case variants can remain.)
                 lowered = ", ".join(_sql_quote(key) for key in requested_keys)
                 canonical_ids = ", ".join(
                     _sql_quote(source_id) for source_id in requested_ids
                 )
-                table.delete(
+                variant_where = (
                     f"lower(object_key) IN ({lowered}) "
                     f"AND source_id NOT IN ({canonical_ids})"
                 )
+                variant_deleted = int(table.count_rows(variant_where))
+                if variant_deleted:
+                    table.delete(variant_where)
             if records:
                 _delete_source_or_vector_ids(
                     table,
@@ -2279,7 +2285,10 @@ def sync_affected_object_embeddings(
         "items": items,
         "upserted_count": len(changed_sources) if apply else 0,
         "deleted_count": len(removed_ids) if apply else 0,
-        "lancedb_writes_performed": apply and bool(changed_sources or removed_ids),
+        "identity_variant_deleted_count": variant_deleted if apply else 0,
+        "lancedb_writes_performed": apply and bool(
+            changed_sources or removed_ids or variant_deleted
+        ),
     }
 
 
@@ -2337,18 +2346,13 @@ def inspect_affected_object_vector_state(
                 for source_id in requested_ids
                 if source_id in expected_by_id
             ]
-            removed_present = [
-                source_id
-                for source_id in requested_ids
-                if source_id not in expected_by_id
-            ]
             return _complete_strict_object_state(
                 requested_ids=requested_ids,
                 expected_ids=sorted(expected_by_id),
                 actual_ids=[],
                 duplicate_ids=[],
                 stale_ids=[],
-                removed_present_ids=removed_present,
+                removed_present_ids=[],
                 missing_ids=missing_ids,
             )
         table = db.open_table(OBJECT_TABLE)

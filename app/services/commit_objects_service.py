@@ -125,10 +125,22 @@ def commit_objects_from_staging(
             mechanism_tags = _extract_tag_names(obj.get("mechanism_tags"))
             inspiration_tags = _extract_tag_names(obj.get("inspiration_tags"))
 
+            # Canonical object identity: the semantic key is stored exactly as
+            # canonical_object_key() defines it so the DB, source IDs, vector
+            # sync, and strict validators all agree on one identity.
+            canonical_key = vector_store_service.canonical_object_key(
+                str(obj.get("object_key") or "")
+            )
+            if not canonical_key:
+                raise ImportPreviewError(
+                    "object_commit_object_key_required: "
+                    f"import_job_id={import_job_id} 的对象缺少 object_key。"
+                )
+
             candidate = ObjectCandidate(
                 document_id=document_id,
                 import_job_id=import_job_id,
-                object_key=str(obj.get("object_key") or "").strip(),
+                object_key=canonical_key,
                 object_name=str(obj.get("object_name") or "").strip(),
                 object_type=str(obj.get("object_type") or "unknown").strip(),
                 review_status=review_status,
@@ -476,10 +488,14 @@ def commit_reviewed_objects_from_remap(
     reviewed = _read_json(reviewed_path)
     remap_data = _read_json(remap_path)
 
-    # Build remap lookup: object_key -> remap result
+    # Build remap lookup: canonical object_key -> remap result
     remap_by_key: dict[str, dict[str, Any]] = {}
     for obj in remap_data.get("objects") or []:
-        remap_by_key[str(obj.get("object_key") or "")] = obj
+        canonical = vector_store_service.canonical_object_key(
+            str(obj.get("object_key") or "")
+        )
+        if canonical:
+            remap_by_key[canonical] = obj
 
     # Filter accepted/edited objects from reviewed package
     accepted_edited: list[dict[str, Any]] = []
@@ -487,8 +503,16 @@ def commit_reviewed_objects_from_remap(
     for obj in reviewed.get("objects") or []:
         rs = str(obj.get("review_status") or "").strip().lower()
         if rs in ("accepted", "edited"):
+            canonical = vector_store_service.canonical_object_key(
+                str(obj.get("object_key") or "")
+            )
+            if not canonical:
+                raise ImportPreviewError(
+                    "object_commit_object_key_required: "
+                    f"import_job_id={import_job_id} 的 reviewed 对象缺少 object_key。"
+                )
             accepted_edited.append(obj)
-            accepted_edited_keys.add(str(obj.get("object_key") or ""))
+            accepted_edited_keys.add(canonical)
 
     # Backup DB
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -508,7 +532,10 @@ def commit_reviewed_objects_from_remap(
 
         deprecated = 0
         for old in old_candidates:
-            if old.object_key not in accepted_edited_keys:
+            if (
+                vector_store_service.canonical_object_key(old.object_key)
+                not in accepted_edited_keys
+            ):
                 old.status = "deprecated"
                 old.updated_at = datetime.now(timezone.utc).replace(microsecond=0)
                 deprecated += 1
@@ -518,7 +545,9 @@ def commit_reviewed_objects_from_remap(
         updated = 0
 
         for obj in accepted_edited:
-            key = str(obj.get("object_key") or "")
+            key = vector_store_service.canonical_object_key(
+                str(obj.get("object_key") or "")
+            )
             review_status = str(obj.get("review_status") or "").strip().lower()
 
             # Get remap info
@@ -599,7 +628,9 @@ def commit_reviewed_objects_from_remap(
 
     mapping_stats: dict[str, int] = {}
     for obj in accepted_edited:
-        key = str(obj.get("object_key") or "")
+        key = vector_store_service.canonical_object_key(
+            str(obj.get("object_key") or "")
+        )
         ms = remap_by_key.get(key, {}).get("mapping_status", "not_mapped")
         mapping_stats[ms] = mapping_stats.get(ms, 0) + 1
 
@@ -828,13 +859,18 @@ def _strict_affected_object_validation(
         expected_sources=expected_sources,
         store_path=vector_store_path,
     )
+    variant_count = state.get("identity_variant_count")
+    variant_invalid = (
+        variant_count == "unavailable"
+        or int(variant_count or 0) != 0
+    )
     if (
         state.get("status") != "ok"
         or int(state.get("missing_count") or 0) != 0
         or int(state.get("duplicate_count") or 0) != 0
         or int(state.get("stale_count") or 0) != 0
         or int(state.get("removed_but_present_count") or 0) != 0
-        or int(state.get("identity_variant_count") or 0) != 0
+        or variant_invalid
     ):
         raise RuntimeError("object_commit_affected_vectors_invalid")
     return state
@@ -852,121 +888,163 @@ def _commit_objects_with_generation(
         if reviewed
         else commit_objects_from_staging
     )
-    # No terminal-success decision happens outside the generation writer
-    # lock.  The session enter resolves and verifies the active generation
-    # against the current database revision (fail-closed on mismatch, which
-    # also covers a process crash between the database body commit and the
-    # pointer switch), and the durable phase identity is then checked under
-    # the writer barrier.
+    # The idempotency decision is a true no-write path: under the production
+    # generation writer barrier the active generation is resolved and
+    # verified against the current database revision (fail-closed on
+    # mismatch, which covers a process crash between the database body
+    # commit and the pointer switch).  Only when the durable phase identity
+    # is absent is the mutation session created.  An already-committed
+    # request therefore never copies a candidate, never creates a database
+    # rollback snapshot, and never restores the database.
     post_write_snapshot: Path | None = None
     generation_id: str | None = None
     result: dict[str, Any] = {}
     try:
-        with retrieval_generation_mutation_service.ProductionGenerationMutationSession(
-            data_dir=data_dir,
-            db_path=db_path,
-        ) as mutation:
+        with retrieval_generation_service.production_write_generation(
+            data_dir=data_dir
+        ):
+            active = (
+                retrieval_generation_service
+                .resolve_active_retrieval_generation(
+                    data_dir=data_dir,
+                    db_path=db_path,
+                    verify_fingerprints=True,
+                )
+            )
+            retrieval_generation_service.verify_generation_database_revision(
+                active,
+                db_path,
+            )
             if _object_commit_durably_performed(
                 import_job_id,
                 reviewed=reviewed,
                 db_path=db_path,
             ):
-                raise _ObjectCommitAlreadyPerformed(
-                    _reconstructed_already_committed(
-                        import_job_id,
-                        reviewed=reviewed,
+                # Read-only strict validation of the affected object vectors
+                # in the already-active generation before confirming the
+                # terminal state.  Historical rows paired with stale or
+                # variant vector identities fail closed instead of being
+                # reported as a complete commit.
+                affected_keys = _affected_object_keys(
+                    db_path,
+                    import_job_id,
+                )
+                expected_sources = (
+                    vector_store_service.collect_affected_object_sources(
                         db_path=db_path,
+                        object_keys=affected_keys,
                     )
                 )
-
-            result = body_commit(import_job_id, persist_result=False)
-            mutation.mark_body_db_mutated()
-            after_db_sha256 = mutation.capture_post_write_database()
-            post_write_snapshot = _verified_post_write_snapshot(db_path)
-            if _file_sha256(post_write_snapshot).lower() != after_db_sha256:
-                raise RuntimeError("object_commit_post_write_snapshot_invalid")
-
-            affected_keys = _affected_object_keys(
-                post_write_snapshot,
-                import_job_id,
-            )
-            expected_sources = (
-                vector_store_service.collect_affected_object_sources(
-                    db_path=post_write_snapshot,
-                    object_keys=affected_keys,
-                )
-            )
-            candidate = mutation.candidate
-            if candidate is None:
-                raise RuntimeError("object_commit_generation_candidate_missing")
-
-            sync_result = (
-                vector_store_service.sync_affected_object_embeddings(
-                    affected_keys,
-                    dry_run=False,
-                    apply=True,
-                    store_path=candidate.vector_store_path,
-                    manifest_path=candidate.vector_manifest_path,
-                    sources=expected_sources,
-                )
-            )
-            if (
-                sync_result.get("scope") != "affected_object_keys_only"
-                or sync_result.get("full_rebuild_allowed") is not False
-                or sync_result.get("delete_orphans_allowed") is not False
-            ):
-                raise RuntimeError("object_commit_affected_scope_invalid")
-
-            mutation.mark_candidate_synced()
-
-            def validate_candidate(candidate_value, expected_sha: str) -> None:
                 _strict_affected_object_validation(
                     object_keys=affected_keys,
                     expected_sources=expected_sources,
-                    vector_store_path=candidate_value.vector_store_path,
-                    expected_db_sha256=expected_sha,
-                    db_path=post_write_snapshot,
+                    vector_store_path=active.vector_store_path,
+                    expected_db_sha256=active.production_db_sha256,
+                    db_path=db_path,
                 )
-
-            mutation.validate_candidate(validate_candidate)
-            finalized = mutation.finalize_candidate(
-                profile_versions={
-                    "object_profile": vector_store_service.OBJECT_PROFILE_VERSION,
-                }
-            )
-            mutation.begin_activation()
-            mutation.publish_active()
-
-            def validate_active(active_value) -> None:
-                if active_value.generation_id != finalized.generation_id:
-                    raise RuntimeError("object_commit_active_generation_mismatch")
-                _strict_affected_object_validation(
-                    object_keys=affected_keys,
-                    expected_sources=expected_sources,
-                    vector_store_path=active_value.vector_store_path,
-                    expected_db_sha256=after_db_sha256,
+                return _reconstructed_already_committed(
+                    import_job_id,
+                    reviewed=reviewed,
                     db_path=db_path,
                 )
 
-            mutation.verify_active(validate_active)
-            post_write_snapshot.unlink()
-            post_write_snapshot = None
-            mutation.clear_activation()
-            generation_id = finalized.generation_id
-            # The filesystem receipt is a convenience cache only; the durable
-            # commit identity is the database rows themselves (see
-            # _object_commit_durably_performed).  A failed cache write must
-            # never surface as a transaction error after the commit point.
-            try:
-                job_dir = _existing_job_dir(import_job_id)
-                marker_name = (
-                    COMMIT_REVIEWED_FILE if reviewed else COMMIT_OBJECTS_FILE
+            with retrieval_generation_mutation_service.ProductionGenerationMutationSession(
+                data_dir=data_dir,
+                db_path=db_path,
+            ) as mutation:
+                result = body_commit(import_job_id, persist_result=False)
+                mutation.mark_body_db_mutated()
+                after_db_sha256 = mutation.capture_post_write_database()
+                post_write_snapshot = _verified_post_write_snapshot(db_path)
+                if _file_sha256(post_write_snapshot).lower() != after_db_sha256:
+                    raise RuntimeError("object_commit_post_write_snapshot_invalid")
+
+                affected_keys = _affected_object_keys(
+                    post_write_snapshot,
+                    import_job_id,
                 )
-                _write_json(job_dir / marker_name, result)
-            except OSError:
-                pass
-    except _ObjectCommitAlreadyPerformed as exc:
-        return dict(exc.payload)
+                expected_sources = (
+                    vector_store_service.collect_affected_object_sources(
+                        db_path=post_write_snapshot,
+                        object_keys=affected_keys,
+                    )
+                )
+                candidate = mutation.candidate
+                if candidate is None:
+                    raise RuntimeError("object_commit_generation_candidate_missing")
+
+                sync_result = (
+                    vector_store_service.sync_affected_object_embeddings(
+                        affected_keys,
+                        dry_run=False,
+                        apply=True,
+                        store_path=candidate.vector_store_path,
+                        manifest_path=candidate.vector_manifest_path,
+                        sources=expected_sources,
+                    )
+                )
+                if (
+                    sync_result.get("scope") != "affected_object_keys_only"
+                    or sync_result.get("full_rebuild_allowed") is not False
+                    or sync_result.get("delete_orphans_allowed") is not False
+                ):
+                    raise RuntimeError("object_commit_affected_scope_invalid")
+
+                mutation.mark_candidate_synced()
+
+                def validate_candidate(
+                    candidate_value, expected_sha: str
+                ) -> None:
+                    _strict_affected_object_validation(
+                        object_keys=affected_keys,
+                        expected_sources=expected_sources,
+                        vector_store_path=candidate_value.vector_store_path,
+                        expected_db_sha256=expected_sha,
+                        db_path=post_write_snapshot,
+                    )
+
+                mutation.validate_candidate(validate_candidate)
+                finalized = mutation.finalize_candidate(
+                    profile_versions={
+                        "object_profile": (
+                            vector_store_service.OBJECT_PROFILE_VERSION
+                        ),
+                    }
+                )
+                mutation.begin_activation()
+                mutation.publish_active()
+
+                def validate_active(active_value) -> None:
+                    if active_value.generation_id != finalized.generation_id:
+                        raise RuntimeError(
+                            "object_commit_active_generation_mismatch"
+                        )
+                    _strict_affected_object_validation(
+                        object_keys=affected_keys,
+                        expected_sources=expected_sources,
+                        vector_store_path=active_value.vector_store_path,
+                        expected_db_sha256=after_db_sha256,
+                        db_path=db_path,
+                    )
+
+                mutation.verify_active(validate_active)
+                post_write_snapshot.unlink()
+                post_write_snapshot = None
+                mutation.clear_activation()
+                generation_id = finalized.generation_id
+                # The filesystem receipt is a convenience cache only; the
+                # durable commit identity is the database rows themselves (see
+                # _object_commit_durably_performed).  A failed cache write
+                # must never surface as a transaction error after the commit
+                # point.
+                try:
+                    job_dir = _existing_job_dir(import_job_id)
+                    marker_name = (
+                        COMMIT_REVIEWED_FILE if reviewed else COMMIT_OBJECTS_FILE
+                    )
+                    _write_json(job_dir / marker_name, result)
+                except OSError:
+                    pass
     except (
         retrieval_generation_mutation_service
         .ProductionGenerationRollbackError
