@@ -30,12 +30,23 @@ def _resolve_configured_parent() -> Path | None:
 
 
 def _production_data_dir() -> Path | None:
-    try:
-        from app.core.paths import DATA_DIR
+    """Derive the production data directory without importing any app module.
 
-        return Path(DATA_DIR).resolve(strict=False)
-    except Exception:
-        return None
+    ``sandbox_support`` runs before ``SEARCH_DATA_DIR`` is redirected, so
+    importing ``app.core.paths`` here would cache the ambient/real data
+    directory for the whole test session.  The production data root is
+    therefore derived purely from the environment and the repository layout:
+    ``SEARCH_DATA_DIR`` when set, otherwise ``<repo root>/data``.
+    """
+    configured = os.environ.get("SEARCH_DATA_DIR", "").strip()
+    if configured and "\x00" not in configured:
+        candidate = Path(configured).expanduser()
+        if candidate.is_absolute():
+            return candidate.resolve(strict=False)
+        return (Path(__file__).resolve().parents[2] / candidate).resolve(
+            strict=False
+        )
+    return Path(__file__).resolve().parents[2] / "data"
 
 
 def _reject_unsafe_parent(parent: Path) -> None:
@@ -51,11 +62,8 @@ def _reject_unsafe_parent(parent: Path) -> None:
         raise RuntimeError(
             "SEARCH_TEST_DATA_ROOT must not be the user home directory"
         )
-    try:
-        repo_root = Path(__file__).resolve().parents[2]
-    except OSError:
-        repo_root = None
-    if repo_root is not None and parent == repo_root:
+    repo_root = Path(__file__).resolve().parents[2]
+    if parent == repo_root:
         raise RuntimeError(
             "SEARCH_TEST_DATA_ROOT must not be the repository root"
         )

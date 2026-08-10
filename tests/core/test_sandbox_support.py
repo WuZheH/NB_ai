@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -98,3 +101,48 @@ def test_reject_unsafe_parent_direct() -> None:
 
     with pytest.raises(RuntimeError):
         _reject_unsafe_parent(Path(DATA_DIR))
+
+
+def test_sandbox_redirect_happens_before_first_app_import(
+    tmp_path: Path,
+) -> None:
+    """Fresh-process proof that conftest redirects SEARCH_DATA_DIR first.
+
+    With only SEARCH_TEST_DATA_ROOT set, importing the conftest must cause
+    app.core.paths to resolve DATA_DIR into the newly created sandbox child,
+    never the ambient/repository data directory.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    environment = os.environ.copy()
+    environment.pop("SEARCH_DATA_DIR", None)
+    environment["SEARCH_TEST_DATA_ROOT"] = str(tmp_path)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    code = (
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import tests.core.conftest as conftest\n"
+        "from app.core.paths import DATA_DIR\n"
+        "print(json.dumps({\n"
+        "    'data_dir': str(Path(DATA_DIR).resolve()),\n"
+        "    'sandbox': conftest.SANDBOX,\n"
+        "    'test_root': os.environ['SEARCH_TEST_DATA_ROOT'],\n"
+        "}))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", code, str(repo_root)],
+        cwd=str(repo_root),
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    data_dir = Path(payload["data_dir"])
+    sandbox = Path(payload["sandbox"])
+    assert data_dir == sandbox
+    assert data_dir.parent == Path(payload["test_root"]).resolve()
+    assert data_dir.name.startswith("search-core-test-")
+    assert data_dir != (repo_root / "data").resolve()
+    assert (data_dir / SENTINEL_NAME).is_file()

@@ -641,14 +641,6 @@ def _job_marker(
     return marker if marker.is_file() else None
 
 
-def _already_committed_payload(stored: dict[str, Any]) -> dict[str, Any]:
-    return {
-        **dict(stored),
-        "status": "already_committed",
-        "core_db_write_performed": False,
-    }
-
-
 def _job_document_id(import_job_id: str) -> int | None:
     job_dir = _existing_job_dir(import_job_id)
     commit_paper_path = job_dir / "commit_result.json"
@@ -670,9 +662,12 @@ def _object_commit_durably_performed(
     """Return whether the object commit is durably present in the database.
 
     The object rows themselves are the durable commit identity: the plain
-    phase inserts rows for the job, and the reviewed phase marks its rows
-    with ``source_import_manifest_path``.  This decision never depends on the
-    filesystem marker, which is only a convenience cache.
+    phase inserts rows for the job, and the reviewed phase either marks its
+    rows with ``source_import_manifest_path`` or deprecates the old rows.
+    This decision never depends on the filesystem marker, which is only a
+    convenience cache, and it is only ever consulted under the production
+    generation writer lock after the active generation has been verified
+    against the database revision.
     """
     database = Path(db_path).resolve(strict=False)
     if not database.is_file():
@@ -689,7 +684,8 @@ def _object_commit_durably_performed(
             row = connection.execute(
                 "SELECT 1 FROM object_candidates "
                 "WHERE import_job_id = ? "
-                "AND source_import_manifest_path IS NOT NULL LIMIT 1",
+                "AND (source_import_manifest_path IS NOT NULL "
+                "OR status = 'deprecated') LIMIT 1",
                 (import_job_id,),
             ).fetchone()
         else:
@@ -706,10 +702,7 @@ def _reconstructed_already_committed(
     *,
     reviewed: bool,
     db_path: Path,
-    marker_path: Path | None,
 ) -> dict[str, Any]:
-    if marker_path is not None:
-        return _already_committed_payload(_read_json(marker_path))
     database = Path(db_path).resolve(strict=False)
     candidate_count = 0
     deprecated_count = 0
@@ -841,6 +834,7 @@ def _strict_affected_object_validation(
         or int(state.get("duplicate_count") or 0) != 0
         or int(state.get("stale_count") or 0) != 0
         or int(state.get("removed_but_present_count") or 0) != 0
+        or int(state.get("identity_variant_count") or 0) != 0
     ):
         raise RuntimeError("object_commit_affected_vectors_invalid")
     return state
@@ -858,31 +852,12 @@ def _commit_objects_with_generation(
         if reviewed
         else commit_objects_from_staging
     )
-    marker_path = _job_marker(import_job_id, reviewed=reviewed)
-    if marker_path is not None or _object_commit_durably_performed(
-        import_job_id,
-        reviewed=reviewed,
-        db_path=db_path,
-    ):
-        return _reconstructed_already_committed(
-            import_job_id,
-            reviewed=reviewed,
-            db_path=db_path,
-            marker_path=marker_path,
-        )
-
-    active_before = (
-        retrieval_generation_service.resolve_active_retrieval_generation(
-            data_dir=data_dir,
-            db_path=db_path,
-            verify_fingerprints=True,
-        )
-    )
-    retrieval_generation_service.verify_generation_database_revision(
-        active_before,
-        db_path,
-    )
-
+    # No terminal-success decision happens outside the generation writer
+    # lock.  The session enter resolves and verifies the active generation
+    # against the current database revision (fail-closed on mismatch, which
+    # also covers a process crash between the database body commit and the
+    # pointer switch), and the durable phase identity is then checked under
+    # the writer barrier.
     post_write_snapshot: Path | None = None
     generation_id: str | None = None
     result: dict[str, Any] = {}
@@ -891,8 +866,7 @@ def _commit_objects_with_generation(
             data_dir=data_dir,
             db_path=db_path,
         ) as mutation:
-            locked_marker = _job_marker(import_job_id, reviewed=reviewed)
-            if locked_marker is not None or _object_commit_durably_performed(
+            if _object_commit_durably_performed(
                 import_job_id,
                 reviewed=reviewed,
                 db_path=db_path,
@@ -902,7 +876,6 @@ def _commit_objects_with_generation(
                         import_job_id,
                         reviewed=reviewed,
                         db_path=db_path,
-                        marker_path=locked_marker,
                     )
                 )
 
@@ -1021,8 +994,8 @@ def _commit_objects_with_generation(
             except OSError:
                 pass
         raise ImportPreviewError(
-            "object_commit_transaction_rolled_back: "
-            "对象提交失败，已完整回滚，未修改检索生成。"
+            "object_commit_failed: "
+            "对象提交未产生已提交结果；生产状态保持 fail-closed，请人工核查。"
         ) from exc
 
     return {

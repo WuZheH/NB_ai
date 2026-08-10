@@ -650,6 +650,108 @@ def test_commit_objects_duplicate_key_does_not_rollback_previous_rows(
     assert sorted(names) == ["MDM 机制", "Other"]
 
 
+def test_commit_objects_cross_job_case_variant_is_one_semantic_source(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_id = _new_job_id("job_commit_objects_case")
+    job_dir = _write_job_files(job_id)
+    (job_dir / "reviewed_object_tag_package.json").write_text(
+        json.dumps(
+            {
+                "objects": [
+                    {
+                        "object_key": "MDM",
+                        "object_name": "MDM 机制",
+                        "object_type": "mechanism",
+                        "review_status": "accepted",
+                        "confidence": "medium",
+                        "aliases": [],
+                        "topic_tags": [],
+                        "problem_tags": [],
+                        "mechanism_tags": [],
+                        "inspiration_tags": [],
+                        "evidence_refs": [],
+                        "source_note_ids": [],
+                        "description": "canonical mechanism description",
+                        "user_comment": "",
+                        "warnings": [],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def seed_job_a(database: Path) -> None:
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "INSERT INTO object_candidates (id, document_id, import_job_id, "
+                "object_key, object_name, object_type, review_status, status, "
+                "aliases_json, topic_tags_json, problem_tags_json, "
+                "mechanism_tags_json, inspiration_tags_json, evidence_refs_json, "
+                "note_refs_json, source_note_ids_json, mapping_status, "
+                "mapped_chunk_ids_json, warnings_json, created_by, created_at, "
+                "updated_at) VALUES (9, 1, 'job-A', 'mdm', 'MDM from job A', "
+                "'mechanism', 'accepted', 'candidate', '[]', '[]', '[]', '[]', "
+                "'[]', '[]', '[]', '[]', 'not_mapped', '[]', '[]', "
+                "'user_reviewed', '2026-08-01T00:00:00+00:00', "
+                "'2026-08-01T00:00:00+00:00')"
+            )
+            connection.commit()
+
+    fixture = _versioned_fixture(tmp_path, after_database=seed_job_a)
+    database = fixture["database"]
+    data_dir = fixture["data_dir"]
+    _install_seams(monkeypatch, database=database)
+
+    result = objects_commit.commit_objects_to_production_with_generation(
+        job_id,
+        db_path=database,
+        data_dir=data_dir,
+    )
+    assert result["status"] == "committed"
+
+    active = generations.resolve_active_retrieval_generation(
+        data_dir=data_dir,
+        db_path=database,
+        verify_fingerprints=True,
+    )
+    active_db = vector_store_service.open_vector_store(active.vector_store_path)
+    table = active_db.open_table(vector_store_service.OBJECT_TABLE)
+    rows = table.search().limit(100).to_list()
+    assert len(rows) == 1
+    assert rows[0]["source_id"] == "object:mdm"
+    assert rows[0]["vector_id"] == "object:mdm"
+
+    expected = vector_store_service.collect_affected_object_sources(
+        db_path=database,
+        object_keys=["MDM"],
+    )
+    assert len(expected) == 1
+    assert expected[0]["source_id"] == "object:mdm"
+    assert expected[0]["object"]["object_name"] == "MDM 机制"
+
+    state = vector_store_service.inspect_affected_object_vector_state(
+        object_keys=["MDM"],
+        expected_sources=expected,
+        store_path=active.vector_store_path,
+    )
+    assert state["status"] == "ok"
+    assert state["missing_count"] == 0
+    assert state["duplicate_count"] == 0
+    assert state["identity_variant_count"] == 0
+
+    global_objects = object_semantic_search_service._load_all_objects()
+    mdm = [
+        obj
+        for obj in global_objects
+        if str(obj.get("object_key") or "").lower() == "mdm"
+    ]
+    assert len(mdm) == 1
+    assert mdm[0]["object_name"] == "MDM 机制"
+
+
 def test_commit_objects_cross_job_same_key_uses_canonical_snapshot_source(
     tmp_path: Path,
     monkeypatch,
@@ -867,7 +969,7 @@ def test_commit_objects_failure_rolls_back_database_pointer_and_candidate(
     assert any(
         code in str(error.value)
         for code in (
-            "object_commit_transaction_rolled_back",
+            "object_commit_failed",
             "object_commit_generation_rollback_failed",
         )
     )

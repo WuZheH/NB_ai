@@ -502,12 +502,23 @@ def compute_source_hash(text: str) -> str:
     return _hash_text(text)
 
 
-def make_passage_source_id(document_id: int, chunk_id: int) -> str:
-    return f"chunk:{int(document_id)}:{int(chunk_id)}"
+def canonical_object_key(object_key: str) -> str:
+    """Canonical semantic identity for one global object.
+
+    object_key is only unique per import job and case is not constrained by
+    the schema, so every identity boundary (source_id, affected-key matching,
+    deduplication, lookup) must reduce keys to one canonical form.  This
+    mirrors the global object model's deduplication key.
+    """
+    return str(object_key or "").strip().lower()
 
 
 def make_object_source_id(object_key: str) -> str:
-    return f"object:{str(object_key).strip()}"
+    return f"object:{canonical_object_key(object_key)}"
+
+
+def make_passage_source_id(document_id: int, chunk_id: int) -> str:
+    return f"chunk:{int(document_id)}:{int(chunk_id)}"
 
 
 def make_note_source_id(note_id: int) -> str:
@@ -1978,6 +1989,7 @@ def collect_affected_object_sources(
     database = Path(db_path).resolve(strict=False)
     if not database.is_file():
         raise ValueError("db_path must identify an existing SQLite database")
+    requested_lower = {canonical_object_key(key) for key in requested_keys}
     with closing(
         connect_readonly_sqlite(
             database,
@@ -1987,15 +1999,15 @@ def collect_affected_object_sources(
             temp_store="MEMORY",
         )
     ) as connection:
-        placeholders = ",".join("?" for _ in requested_keys)
+        placeholders = ",".join("?" for _ in requested_lower)
         rows = connection.execute(
             "SELECT * FROM object_candidates "
             "WHERE status = 'candidate' "
-            f"AND object_key IN ({placeholders}) "
+            f"AND lower(object_key) IN ({placeholders}) "
             "ORDER BY "
             "CASE WHEN review_status IN ('accepted', 'edited') THEN 0 ELSE 1 END, "
             "updated_at DESC, id DESC",
-            tuple(requested_keys),
+            tuple(sorted(requested_lower)),
         ).fetchall()
         mapped_chunk_ids: set[int] = set()
         for row in rows:
@@ -2022,14 +2034,15 @@ def collect_affected_object_sources(
             ).fetchall()
             for chunk_row in chunk_rows:
                 chunks_by_id[int(chunk_row["id"])] = dict(chunk_row)
-                doc_id = chunk_row["document_id"]
-                if doc_id is not None and doc_id not in document_titles:
-                    document_titles[int(doc_id)] = ""
         doc_ids = {
             int(row["document_id"])
             for row in rows
             if row["document_id"] is not None
-        } | set(chunks_by_id)
+        } | {
+            int(chunk["document_id"])
+            for chunk in chunks_by_id.values()
+            if chunk.get("document_id") is not None
+        }
         if doc_ids:
             doc_rows = connection.execute(
                 "SELECT id, title FROM documents WHERE id IN ("
@@ -2044,9 +2057,10 @@ def collect_affected_object_sources(
     sources: list[dict[str, Any]] = []
     for row in rows:
         key = str(row["object_key"] or "").strip()
-        if not key or key.lower() in canonical_keys:
+        canonical = canonical_object_key(key)
+        if not key or canonical in canonical_keys:
             continue
-        canonical_keys.add(key.lower())
+        canonical_keys.add(canonical)
         candidate = build_db_candidate_from_snapshot(
             row,
             chunks_by_id=chunks_by_id,
@@ -2099,11 +2113,11 @@ def sync_affected_object_embeddings(
     for raw_key in object_keys:
         if isinstance(raw_key, bool) or not isinstance(raw_key, str):
             raise ValueError("affected object keys must be strings")
-        key = raw_key.strip()
-        if not key or key in seen_keys:
+        canonical = canonical_object_key(raw_key)
+        if not canonical or canonical in seen_keys:
             continue
-        seen_keys.add(key)
-        requested_keys.append(key)
+        seen_keys.add(canonical)
+        requested_keys.append(canonical)
     requested_ids = sorted(make_object_source_id(key) for key in requested_keys)
     if apply:
         if store_path is None or Path(store_path).resolve(strict=False) == Path(
@@ -2206,6 +2220,18 @@ def sync_affected_object_embeddings(
             table = db.open_table(OBJECT_TABLE)
             if removed_ids:
                 _delete_source_or_vector_ids(table, removed_ids)
+            if requested_keys:
+                # Remove any legacy rows whose object_key is a different case
+                # variant of an affected canonical key.  They represent the
+                # same semantic object under a non-canonical source identity.
+                lowered = ", ".join(_sql_quote(key) for key in requested_keys)
+                canonical_ids = ", ".join(
+                    _sql_quote(source_id) for source_id in requested_ids
+                )
+                table.delete(
+                    f"lower(object_key) IN ({lowered}) "
+                    f"AND source_id NOT IN ({canonical_ids})"
+                )
             if records:
                 _delete_source_or_vector_ids(
                     table,
@@ -2276,10 +2302,10 @@ def inspect_affected_object_vector_state(
     for raw_key in object_keys:
         if not isinstance(raw_key, str):
             raise ValueError("affected object keys must be strings")
-        key = raw_key.strip()
-        if key and key not in seen_keys:
-            seen_keys.add(key)
-            requested_keys.append(key)
+        canonical = canonical_object_key(raw_key)
+        if canonical and canonical not in seen_keys:
+            seen_keys.add(canonical)
+            requested_keys.append(canonical)
     requested_ids = sorted(make_object_source_id(key) for key in requested_keys)
 
     expected_by_id: dict[str, dict[str, Any]] = {}
@@ -2404,6 +2430,31 @@ def inspect_affected_object_vector_state(
         for source_id, rows in rows_by_id.items()
         if source_id not in expected_by_id and rows
     )
+    identity_variant_ids: list[str] = []
+    if requested_keys:
+        try:
+            lowered = ", ".join(_sql_quote(key) for key in requested_keys)
+            canonical_ids = ", ".join(
+                _sql_quote(source_id) for source_id in requested_ids
+            )
+            variant_rows = (
+                table.search()
+                .where(
+                    f"lower(object_key) IN ({lowered}) "
+                    f"AND source_id NOT IN ({canonical_ids})"
+                )
+                .limit(100)
+                .to_list()
+            )
+            identity_variant_ids = sorted(
+                {
+                    str(record.get("source_id") or "")
+                    for record in variant_rows
+                    if isinstance(record, dict)
+                }
+            )
+        except Exception:
+            identity_variant_ids = ["unavailable"]
     return _complete_strict_object_state(
         requested_ids=requested_ids,
         expected_ids=sorted(expected_by_id),
@@ -2416,6 +2467,7 @@ def inspect_affected_object_vector_state(
         stale_ids=stale_ids,
         removed_present_ids=removed_present_ids,
         missing_ids=missing_ids,
+        identity_variant_ids=identity_variant_ids,
     )
 
 
@@ -2428,7 +2480,9 @@ def _complete_strict_object_state(
     stale_ids: list[str],
     removed_present_ids: list[str],
     missing_ids: list[str],
+    identity_variant_ids: list[str] | None = None,
 ) -> dict[str, Any]:
+    variants = sorted(identity_variant_ids or [])
     return {
         "status": "ok",
         "reason": None,
@@ -2442,11 +2496,15 @@ def _complete_strict_object_state(
         "duplicate_source_ids": sorted(duplicate_ids),
         "stale_source_ids": sorted(stale_ids),
         "removed_but_present_source_ids": sorted(removed_present_ids),
+        "identity_variant_source_ids": variants,
         "missing_count": len(missing_ids),
         "orphan_count": 0,
         "duplicate_count": len(duplicate_ids),
         "stale_count": len(stale_ids),
         "removed_but_present_count": len(removed_present_ids),
+        "identity_variant_count": (
+            len(variants) if variants != ["unavailable"] else "unavailable"
+        ),
     }
 
 

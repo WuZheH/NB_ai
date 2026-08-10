@@ -506,6 +506,58 @@ def test_delete_strict_validation_blocks_dangling_zotero_notes(
         ).fetchone()[0] == 1
 
 
+@pytest.mark.parametrize(
+    ("row_sql", "params"),
+    [
+        ("(61, 1, NULL, '[]', '[]', 'matched', 'aligned')", ()),
+        ("(61, NULL, 101, '[]', '[]', 'matched', 'aligned')", ()),
+        ("(61, NULL, NULL, '[101]', '[]', 'matched', 'aligned')", ()),
+        ("(61, NULL, NULL, '[]', '[31]', 'matched', 'aligned')", ()),
+    ],
+)
+def test_delete_strict_validation_blocks_each_dangling_zotero_dimension(
+    tmp_path: Path,
+    monkeypatch,
+    row_sql: str,
+    params: tuple,
+) -> None:
+    fixture = _versioned_fixture(tmp_path)
+    runtime = fixture["runtime"]
+    database = fixture["database"]
+    data_dir = runtime.data_dir
+    _install_delete_seams(monkeypatch)
+    runtime = replace(runtime, cleanup_fts=_test_cleanup_fts)
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM zotero_inspiration_notes")
+        connection.execute(
+            "INSERT INTO zotero_inspiration_notes (id, matched_document_id, "
+            "matched_chunk_id, matched_chunk_ids_json, matched_object_ids_json, "
+            "match_status, evidence_alignment_status) VALUES " + row_sql,
+            params,
+        )
+        connection.commit()
+
+    before_db = database.read_bytes()
+    before_pointer = generations.read_active_pointer_bytes(data_dir=data_dir)
+    generation_root = data_dir / generations.GENERATION_ROOT_NAME
+    before_generations = generations.tree_fingerprint(generation_root)
+
+    monkeypatch.setattr(
+        deletion,
+        "_detach_zotero_notes",
+        lambda _connection, _plan: 0,
+    )
+
+    with pytest.raises(deletion.DeletionError):
+        _preview_and_delete(runtime)
+
+    assert database.read_bytes() == before_db
+    assert generations.read_active_pointer_bytes(data_dir=data_dir) == before_pointer
+    assert generations.tree_fingerprint(generation_root) == before_generations
+    assert not generations.activation_state_path(data_dir).exists()
+
+
 def test_explicit_production_delete_uses_generation_runtime(tmp_path: Path) -> None:
     runtime = deletion.DeletionRuntime(
         db_path=tmp_path / "data" / "db" / "research_memory.db",

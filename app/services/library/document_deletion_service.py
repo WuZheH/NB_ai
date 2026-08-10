@@ -501,6 +501,7 @@ def _require_strict_delete_vector_state(
 
 def _strict_delete_scope_validation(
     *,
+    plan: InternalDeletionPlan,
     document_id: int,
     db_path: Path,
     data_dir: Path,
@@ -581,19 +582,12 @@ def _strict_delete_scope_validation(
             ),
         }
         if _table_exists(connection, "zotero_inspiration_notes"):
-            checks["dangling_zotero_notes"] = sum(
-                1
-                for row in connection.execute(
-                    "SELECT matched_document_id, matched_chunk_id, "
-                    "matched_chunk_ids_json, matched_object_ids_json "
-                    "FROM zotero_inspiration_notes"
-                )
-                if _zotero_row_matches_scope(
-                    row,
-                    document_id=document_id,
-                    chunk_ids=tuple(),
-                    object_ids=tuple(),
-                )
+            # Full four-dimension scope: matched_document_id,
+            # matched_chunk_id, matched_chunk_ids_json, and
+            # matched_object_ids_json must all be detached before activation.
+            checks["dangling_zotero_notes"] = _dangling_zotero_note_count(
+                connection,
+                plan,
             )
         if (
             checks["document_rows"]
@@ -810,6 +804,7 @@ def _delete_document_with_generation(
                 expected_sha: str,
             ) -> None:
                 _strict_delete_scope_validation(
+                    plan=plan,
                     document_id=plan.document_id,
                     db_path=post_delete_snapshot,
                     data_dir=runtime.data_dir,
@@ -841,6 +836,7 @@ def _delete_document_with_generation(
                         "deletion_generation_active_mismatch"
                     )
                 _strict_delete_scope_validation(
+                    plan=plan,
                     document_id=plan.document_id,
                     db_path=runtime.db_path,
                     data_dir=runtime.data_dir,
