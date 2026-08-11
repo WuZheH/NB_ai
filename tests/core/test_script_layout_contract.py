@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_ROOT = PROJECT_ROOT / "scripts"
 SCRIPT_IMPLEMENTATION_HASHES = {
     ("runtime", "check_notebook_ai_dev_status.py"): "d8a7545bf1c91204df5a8ac276adaa3bb6aa7c038ffd1ead6615edf3a7da3b9b",
-    ("runtime", "run_chaptered_import_job_worker.py"): "3a888e205bdf53ea431ae8ee52b3bd740f47a737064445fce444b5eb9df12264",
+    ("runtime", "run_chaptered_import_job_worker.py"): "7af026d1345d69dc30d4de9d8db101f989996c166577e153be573d2052a01ebc",
     ("runtime", "start_notebook_ai_dev.bat"): "fce859b7b36031f3fd776e78ee3b5113f7af066d941ce7f4fb9554675ac96474",
     ("importing", "import_book_ocr_layout_first.py"): "91d1e02d51c00bab33f211b39ab550a7f6d754bd8b14811413db25eca0fa6117",
     ("importing", "plan_chapter_ocr_first_promote.py"): "71549adcc39cce306dd7246787d854087907cda9c3daa9c2d68d1ff7d255067a",

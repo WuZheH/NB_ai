@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.core.paths import DEFAULT_DB_PATH
+from app.core.paths import DATA_DIR, DEFAULT_DB_PATH
 from app.services.book_import_service import (
     MARKER_SURYA_PAGE_BLOCKS_BACKEND,
     apply_prepared_book_import,
@@ -30,6 +30,9 @@ from app.services.pdf_import_job_process_service import (
     read_status_file,
     utcnow,
     write_status_atomic,
+)
+from app.services.production_write_surface_guard import (
+    require_proven_legacy_for_legacy_write_surface,
 )
 from app.services import zotero_native_annotation_import_service
 
@@ -80,6 +83,7 @@ def run_worker(
     status_file: Path,
     worker_log: Path,
 ) -> None:
+    _require_legacy_job_worker_surface()
     pdf_path = str(payload.get("pdf_path") or "")
     document_type = str(payload.get("document_type") or "book")
     backend = str(payload.get("backend") or MARKER_SURYA_PAGE_BLOCKS_BACKEND)
@@ -185,6 +189,7 @@ def run_worker(
     if not safety.get("auto_apply_eligible"):
         raise ValueError("book import is not safe to apply: " + "; ".join(safety.get("reasons") or []))
 
+    _require_legacy_job_worker_surface()
     _set_stage(
         status_file,
         "writing_db",
@@ -215,6 +220,18 @@ def run_worker(
     _set_stage(status_file, "verifying", "正在校验导入结果。", cancel_allowed=False)
     _complete_status(status_file, result=result, document_id=document_id)
     _append_worker_log(worker_log, f"job {job_id} completed\n")
+
+
+def _require_legacy_job_worker_surface() -> None:
+    require_proven_legacy_for_legacy_write_surface(
+        error_code="chaptered_import_job_versioned_frozen",
+        message=(
+            "后台 chaptered PDF import worker 在 versioned production 中已冻结；"
+            "本次 worker 未执行任何 production mutation。"
+        ),
+        db_path=DEFAULT_DB_PATH,
+        data_dir=DATA_DIR,
+    )
 
 
 def _set_stage(

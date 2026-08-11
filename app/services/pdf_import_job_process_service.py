@@ -18,8 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.paths import RUNTIME_PROJECT_ROOT, RUNTIME_STATE_DIR
+from app.core.paths import DATA_DIR, DEFAULT_DB_PATH, RUNTIME_PROJECT_ROOT, RUNTIME_STATE_DIR
 from app.services.pdf_parser_backends import MARKER_SURYA_PAGE_BLOCKS_BACKEND, probe_runtime
+from app.services.production_write_surface_guard import (
+    require_proven_legacy_for_legacy_write_surface,
+)
 
 
 STAGES: dict[str, int] = {
@@ -60,6 +63,15 @@ def create_chaptered_import_job_process(payload: dict[str, Any]) -> dict[str, An
     If the same normalized PDF path already has a live queued/running worker,
     the existing job snapshot is returned with duplicate flags.
     """
+    require_proven_legacy_for_legacy_write_surface(
+        error_code="chaptered_import_job_versioned_frozen",
+        message=(
+            "后台 chaptered PDF import job 在 versioned production 中已冻结；"
+            "本次请求未创建 job artifact，也未启动 worker。"
+        ),
+        db_path=DEFAULT_DB_PATH,
+        data_dir=DATA_DIR,
+    )
     object_import_mode = str(payload.get("object_import_mode") or "")
     if object_import_mode != "chaptered":
         raise ValueError("Only chaptered imports are supported via job endpoint.")

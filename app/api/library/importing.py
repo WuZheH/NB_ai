@@ -186,6 +186,8 @@ def create_chaptered_import_job(request: ChapteredPdfImportJobRequest) -> dict[s
         raise HTTPException(status_code=400, detail="Only chaptered imports are supported via job endpoint.")
     try:
         job = pdf_import_job_process_service.create_chaptered_import_job_process(request.model_dump())
+    except ProductionWriteSurfaceFrozenError as exc:
+        return JSONResponse(status_code=exc.status_code, content=exc.detail())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
