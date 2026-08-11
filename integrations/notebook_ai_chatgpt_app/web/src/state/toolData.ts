@@ -18,7 +18,7 @@ export function searchViewModel(envelope: ToolEnvelope | null): SearchViewModel 
   const warnings = Array.isArray(structured.warnings)
     ? structured.warnings.map(formatWarning)
     : [];
-  const error = envelope.isError || structured.status === "error" ? String(structured.message ?? "Search failed.") : undefined;
+  const error = envelope.isError || structured.status === "error" ? String(structured.message ?? "READ failed.") : undefined;
   return {
     status: String(structured.status ?? (error ? "error" : "ok")),
     query: String(structured.query ?? window.openai?.toolInput?.query ?? ""),
@@ -34,7 +34,7 @@ function formatWarning(value: unknown): string {
     return value;
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return "Search returned a warning.";
+    return "READ returned a warning.";
   }
   const warning = value as Record<string, unknown>;
   const ids = Array.isArray(warning.document_ids)
@@ -52,7 +52,7 @@ function formatWarning(value: unknown): string {
   }
   return typeof warning.code === "string"
     ? warning.code.replaceAll("_", " ")
-    : "Search returned a warning.";
+    : "READ returned a warning.";
 }
 
 export function fetchedFragment(envelope: ToolEnvelope): FragmentDetail | null {

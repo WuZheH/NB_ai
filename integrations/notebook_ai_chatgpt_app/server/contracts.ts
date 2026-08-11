@@ -273,6 +273,7 @@ export interface ImportPreviewResponse {
     version: number | string | null;
   }>;
   annotation_count: number | null;
+  annotation_comment_count: number | null;
   child_note_count: number | null;
   note_count?: number;
   note_files?: string[];

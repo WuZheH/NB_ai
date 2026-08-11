@@ -33,7 +33,7 @@ export async function stageChatPdf(
   const stagingDirectory = String(environment.SEARCH_IMPORT_INBOX ?? "").trim();
   if (!stagingDirectory || !isAbsolute(stagingDirectory)) {
     throw new NotebookBackendError(
-      "Search attachment staging is not configured.",
+      "READ attachment staging is not configured.",
       503,
       "IMPORT_STAGING_NOT_CONFIGURED",
     );

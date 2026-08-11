@@ -49,9 +49,9 @@ export function registerDeletePreviewTool(server: McpServer, client: NotebookCli
   server.registerTool(
     "delete_preview",
     {
-      title: "Preview safe deletion of a Search document",
+      title: "Preview safe deletion of a READ document",
       description:
-        "Read-only safety preview. Call only after resolving exactly one document_id. Explain that Search data will be removed while the original PDF and protected notes are preserved, then ask the user to confirm.",
+        "Read-only safety preview. Call only after resolving exactly one document_id. Explain that READ data will be removed while the original PDF and protected notes are preserved, then ask the user to confirm.",
       inputSchema: deletePreviewInputShape,
       outputSchema: deletePreviewOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,

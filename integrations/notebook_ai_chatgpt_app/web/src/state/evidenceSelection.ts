@@ -20,14 +20,14 @@ export function selectedEvidence(results: SearchResult[], selected: string[]): S
 export function selectionContext(results: SearchResult[], selected: string[]): string {
   const evidence = selectedEvidence(results, selected);
   if (!evidence.length) {
-    return "No Search evidence is currently selected in the widget.";
+    return "No READ evidence is currently selected in the widget.";
   }
   const lines = evidence.map(
     (result) =>
       `- ${result.fragment_id} | ${result.source_type} | ${result.document_title ?? "Untitled"}` +
       `${result.page_label ?? result.pdf_page ? ` | page ${result.page_label ?? result.pdf_page}` : ""}`,
   );
-  return `The user selected these Search evidence fragments:\n${lines.join("\n")}`;
+  return `The user selected these READ evidence fragments:\n${lines.join("\n")}`;
 }
 
 export function pinnedEvidence(results: SearchResult[], selected: string[]): PinnedEvidence[] {

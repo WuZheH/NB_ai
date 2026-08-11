@@ -13,7 +13,7 @@ import {
 } from "./shared.js";
 
 export const integrityReportInputShape = {
-  document_id: z.number().int().positive().describe("Exact Search document_id to inspect."),
+  document_id: z.number().int().positive().describe("Exact READ document_id to inspect."),
 };
 export const integrityReportInputSchema = z.object(integrityReportInputShape);
 
@@ -118,7 +118,7 @@ export function registerIntegrityReportTool(server: McpServer, client: NotebookC
     {
       title: "Inspect document integrity",
       description:
-        "Read a path-free integrity report for one exact Search document_id across database, FTS, and vector state. Never writes or replays historical events.",
+        "Read a path-free integrity report for one exact READ document_id across database, FTS, and vector state. Never writes or replays historical events.",
       inputSchema: integrityReportInputShape,
       outputSchema: integrityReportOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,

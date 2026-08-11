@@ -15,7 +15,7 @@ import {
 } from "./shared.js";
 
 export const fetchInputShape = {
-  fragment_id: z.string().trim().min(1).max(500).describe("Stable fragment_id returned by Search."),
+  fragment_id: z.string().trim().min(1).max(500).describe("Stable fragment_id returned by READ search."),
 };
 
 export const fetchInputSchema = z.object(fetchInputShape);
@@ -47,7 +47,7 @@ export function registerFetchTool(server: McpServer, client: NotebookClient): vo
   server.registerTool(
     "fetch",
     {
-      title: "Fetch a Search evidence fragment",
+      title: "Fetch a READ evidence fragment",
       description:
         "Fetch one search result by fragment_id when the full PDF passage, Zotero user note, selected source text, surrounding context, or provenance is needed. This is read-only.",
       inputSchema: fetchInputShape,

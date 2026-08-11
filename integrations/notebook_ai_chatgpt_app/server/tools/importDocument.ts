@@ -119,9 +119,9 @@ export function registerImportDocumentTool(server: McpServer, client: NotebookCl
   server.registerTool(
     "import_document",
     {
-      title: "Import a confirmed PDF into Search",
+      title: "Import a confirmed PDF into READ",
       description:
-        "Write action. Use only after import_preview and an explicit user confirmation in the current conversation. Never infer confirmation from vague intent.",
+        "Write action. Use only after import_preview and an explicit user confirmation for that fresh preview in the current conversation. Never infer confirmation from vague intent. Call at most once. If the response times out or is unknown, do not retry; use the preview's operation_id with import_status.",
       inputSchema: importDocumentInputShape,
       outputSchema: importDocumentOutputShape,
       annotations: WRITE_ANNOTATIONS,

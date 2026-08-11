@@ -8,7 +8,7 @@ import { WIDGET_RESOURCE_URI } from "./tools/shared.js";
 
 export { RESOURCE_MIME_TYPE };
 
-export const WIDGET_DOMAIN = "https://cread-search-widget.openaiusercontent.com";
+export const WIDGET_DOMAIN = "https://read-library-widget.openaiusercontent.com";
 
 export interface WidgetResourceOptions {
   html?: string;
@@ -18,12 +18,12 @@ export interface WidgetResourceOptions {
 export function registerWidgetResource(server: McpServer, options: WidgetResourceOptions = {}): void {
   const htmlPath = options.htmlPath ?? resolve(process.cwd(), "web", "dist", "widget.html");
   server.registerResource(
-    "notebook-ai-research-search-widget",
+    "read-research-evidence-widget",
     WIDGET_RESOURCE_URI,
     {
-      title: "Search",
+      title: "READ",
       description:
-        "Interactive PDF and Zotero reading-note evidence results from the user's Search collection.",
+        "Interactive PDF and Zotero reading-note evidence from the user's READ library.",
       mimeType: RESOURCE_MIME_TYPE,
     },
     async () => {
@@ -44,7 +44,7 @@ export function registerWidgetResource(server: McpServer, options: WidgetResourc
               ui,
               "notebookAi/widgetDomainMode": "configured",
               "openai/widgetDescription":
-                "Shows Search PDF passages and the user's Zotero reading notes with preview, fragment ID copy, evidence selection, and export controls.",
+                "Shows READ PDF passages and the user's Zotero reading notes with preview, fragment ID copy, evidence selection, and export controls.",
               "openai/widgetPrefersBorder": true,
               "openai/widgetCSP": { connect_domains: [], resource_domains: [] },
               "openai/widgetDomain": WIDGET_DOMAIN,

@@ -9,6 +9,7 @@ import {
   type NotebookSearchInput,
 } from "./contracts.js";
 import { NotebookBackendError, NotebookClient } from "./notebookClient.js";
+import { READ_PRODUCT_DESCRIPTION, READ_PRODUCT_NAME } from "./productIdentity.js";
 import { releaseStagedImportForOperation } from "./fileTransfer.js";
 import { errorPayload } from "./tools/shared.js";
 
@@ -49,7 +50,7 @@ export function actionsOpenApiDocument(
           },
           responses: {
             "200": {
-              description: "Search tool result",
+              description: "READ tool result",
               content: { "application/json": { schema: { type: "object" } } },
             },
             "4XX": {
@@ -69,10 +70,10 @@ export function actionsOpenApiDocument(
   return {
     openapi: "3.1.0",
     info: {
-      title: "Search private research tools",
+      title: `${READ_PRODUCT_NAME} private reading tools`,
       version: "0.1.0",
       description:
-        "Thin authenticated adapter over the local Search Core. Import and deletion require preview plus explicit confirmation.",
+        `${READ_PRODUCT_DESCRIPTION} Import and deletion require preview plus explicit confirmation.`,
     },
     paths,
     ...(publicBaseUrl ? { servers: [{ url: publicBaseUrl }] } : {}),
@@ -108,7 +109,7 @@ export async function handleActionsHttpRequest(
   }
   const action = url.pathname.slice(ACTIONS_PREFIX.length);
   if (!ACTION_NAMES.has(action)) {
-    sendJson(response, 404, actionError("ACTIONS_TOOL_NOT_FOUND", "Search action was not found."));
+    sendJson(response, 404, actionError("ACTIONS_TOOL_NOT_FOUND", "READ action was not found."));
     return true;
   }
   const environment = options.env ?? process.env;
@@ -253,7 +254,7 @@ export async function dispatchAction(
       confirmed: true,
     });
   }
-  throw new ActionRequestError("ACTIONS_TOOL_NOT_FOUND", "Search action was not found.", 404);
+  throw new ActionRequestError("ACTIONS_TOOL_NOT_FOUND", "READ action was not found.", 404);
 }
 
 export function authenticateActions(
@@ -265,7 +266,7 @@ export function authenticateActions(
     return {
       status: 503,
       errorCode: "ACTIONS_AUTH_NOT_CONFIGURED",
-      message: "Search Actions authentication is not configured.",
+      message: "READ Actions authentication is not configured.",
     };
   }
   const supplied = String(authorization ?? "").replace(/^Bearer\s+/i, "").trim();
@@ -273,7 +274,7 @@ export function authenticateActions(
     return {
       status: 401,
       errorCode: "ACTIONS_AUTHENTICATION_FAILED",
-      message: "Search Actions authentication failed.",
+      message: "READ Actions authentication failed.",
     };
   }
   return null;
@@ -318,17 +319,17 @@ function mapActionError(
       return {
         status: error.status >= 400 && error.status <= 599 ? error.status : 502,
         errorCode: typeof errorCode === "string" ? errorCode : "ACTIONS_BACKEND_ERROR",
-        message: typeof message === "string" ? message : "Search backend request failed.",
+        message: typeof message === "string" ? message : "READ backend request failed.",
         details,
       };
     }
     return {
       status: error.status >= 400 && error.status <= 599 ? error.status : 502,
       errorCode: /^[A-Za-z0-9_.-]{1,96}$/.test(error.code) ? error.code : "ACTIONS_BACKEND_ERROR",
-      message: "Search backend request failed.",
+      message: "READ backend request failed.",
     };
   }
-  return { status: 500, errorCode: "ACTIONS_INTERNAL_ERROR", message: "Search action failed." };
+  return { status: 500, errorCode: "ACTIONS_INTERNAL_ERROR", message: "READ action failed." };
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
@@ -451,7 +452,7 @@ function actionDescription(name: string): string {
   if (name === "import_status") {
     return "Read-only durable import status. Use the operation_id returned by import_preview or import_document after a timeout or connection loss; this never retries the write.";
   }
-  return `Search ${name.replaceAll("_", " ")} tool.`;
+  return `READ ${name.replaceAll("_", " ")} tool.`;
 }
 
 function actionInputSchema(name: string): Record<string, unknown> {

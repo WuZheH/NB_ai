@@ -158,9 +158,9 @@ export function registerExportEvidenceTool(server: McpServer, client: NotebookCl
   server.registerTool(
     "export_evidence",
     {
-      title: "Export selected Search evidence",
+      title: "Export selected READ evidence",
       description:
-        "Use this when the user asks to organize, copy, or export selected Search evidence. It returns Markdown, JSONL, or JSON without writing files or changing the collection.",
+        "Use this when the user asks to organize, copy, or export selected READ evidence. It returns Markdown, JSONL, or JSON without writing files or changing the library.",
       inputSchema: exportEvidenceInputShape,
       outputSchema: exportEvidenceOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,

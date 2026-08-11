@@ -88,6 +88,7 @@ export const importPreviewOutputShape = {
     version: z.union([z.number(), z.string()]).nullable(),
   })),
   annotation_count: z.number().int().nonnegative().nullable(),
+  annotation_comment_count: z.number().int().nonnegative().nullable(),
   child_note_count: z.number().int().nonnegative().nullable(),
   note_count: z.number().int().nonnegative().optional(),
   note_files: z.array(z.string()).optional(),
@@ -125,6 +126,7 @@ export async function runImportPreviewTool(
       pdf_sha256: backendResponse.pdf_sha256 ?? null,
       attachment_choices: backendResponse.attachment_choices ?? [],
       annotation_count: backendResponse.annotation_count ?? null,
+      annotation_comment_count: backendResponse.annotation_comment_count ?? null,
       child_note_count: backendResponse.child_note_count ?? null,
     };
     if (stagedPath && response.confirmation_token) {
@@ -157,9 +159,9 @@ export function registerImportPreviewTool(server: McpServer, client: NotebookCli
   server.registerTool(
     "import_preview",
     {
-      title: "Preview a local PDF or selected Zotero book",
+      title: "Preview a local PDF or selected Zotero book for READ",
       description:
-        "Inspect a local PDF or selected Zotero book without adding it to the library. Call this before import_document and show title, duplicate status, type, and warnings to the user.",
+        "Read-only. Inspect a local PDF or selected Zotero book without adding it to READ. Before asking for confirmation, show the title, item type, selected attachment, page and chunk estimates, chapter count when available, annotation count, annotation-comment count, child-note count, duplicate status, warnings, blockers, and confirmation expiry. Never call import_document from this preview alone.",
       inputSchema: importPreviewInputShape,
       outputSchema: importPreviewOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,

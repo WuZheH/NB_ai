@@ -74,6 +74,7 @@ function previewResponse(): ImportPreviewResponse & { operation_id: string } {
     confirmation_expires_in_seconds: 600,
     attachment_choices: [],
     annotation_count: 0,
+    annotation_comment_count: 0,
     child_note_count: 0,
   };
 }

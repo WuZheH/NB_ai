@@ -23,6 +23,7 @@ function zoteroResponse() {
     confirmation_expires_in_seconds: 600,
     attachment_choices: [],
     annotation_count: 4,
+    annotation_comment_count: 2,
     child_note_count: 2,
   };
 }

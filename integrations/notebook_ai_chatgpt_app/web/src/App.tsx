@@ -180,7 +180,7 @@ export default function App() {
     <main className="app-shell search-host-theme-aware">
       <header className="app-header">
         <div>
-          <p className="eyebrow">Search · 高质量资料搜索</p>
+          <p className="eyebrow">READ · 我的已读资料</p>
           <h1>研究资料检索</h1>
         </div>
       </header>
@@ -192,7 +192,7 @@ export default function App() {
       </section>
 
       <SourceFilters active={activeSources} onToggle={toggleSource} />
-      <div className="widget-scroll-region search-scroll-region" role="region" aria-label="Search 检索结果">
+      <div className="widget-scroll-region search-scroll-region" role="region" aria-label="READ 检索结果">
         {view.warnings.length > 0 && (
           <div className="warnings" role="status">{view.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>
         )}

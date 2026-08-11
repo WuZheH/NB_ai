@@ -21,7 +21,7 @@ Search 采用本地优先设计：基础检索不要求把论文、数据库或�
 - 证据可按 Markdown、JSON 或 JSONL 导出，并保留来源和稳定 fragment ID。
 - Search 桌面端可静默拉起本地 FastAPI `8000` 和 MCP `8787`，自动化测试使用隐藏窗口模式。
 - 无生产数据时应用仍可启动，并显示“资料库为空”及导入/配置提示。
-- MCP 暴露只读工具 `search`、`fetch`、`export_evidence`。
+- READ MCP 保持 10 个兼容工具：`search`、`fetch`、`export_evidence`、`list_library`、`integrity_report`、`import_preview`、`import_document`、`import_status`、`delete_preview`、`delete_document`。正式 import/delete 均要求 preview 和当前对话中的明确确认。
 
 高质量检索需要本地模型、向量索引和可选模型依赖。缺失时会明确报告不可用，不会静默伪装为同等质量的关键词结果。
 
@@ -161,12 +161,24 @@ http://127.0.0.1:8787/mcp
 
 Codex 与 Zotero 都使用本地 8000/8787 链路，不需要 Cloudflare Tunnel。
 
-## 8. ChatGPT App
+## 8. READ ChatGPT App
+
+The only formal ChatGPT plugin name for this repository is **READ**:
+
+> READ searches and imports the user's own reading library.
+
+READ has two daily workflows. For questions about material the user may have
+already read, ChatGPT should call `search` and, when needed, `fetch` before
+answering; PDF evidence, user-authored Zotero notes, and model interpretation
+must remain distinct. For imports, ChatGPT must call `import_preview`, show what
+will be imported, and wait for explicit confirmation before one
+`import_document` call. A timeout or unknown result must not be retried: query
+the same `operation_id` with `import_status`.
 
 ChatGPT 无法直接访问 `127.0.0.1`，因此需要以下外部链路：
 
 ```text
-ChatGPT → HTTPS Tunnel → 127.0.0.1:8787/mcp
+ChatGPT → READ → HTTPS Tunnel → 127.0.0.1:8787/mcp
 ```
 
 Search 管理本地 FastAPI 8000 和 MCP 8787 的进程生命周期；对外部 Tunnel 只做状态诊断，不负责启动、暂停、恢复或配置。
@@ -179,9 +191,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_quick_tunnel
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_quick_tunnel.ps1
 ```
 
-脚本会隐藏启动 cloudflared，并且只有公网健康检查通过后才输出形如 `https://<随机子域>.trycloudflare.com/mcp` 的精确 URL。它不会修改 ChatGPT App，也不会把凭据写入 Git。Quick Tunnel URL 会变化，旧 URL 失效时 `@search` 可能返回 `mcp_network_error`。
+脚本会隐藏启动 cloudflared，并且只有公网健康检查通过后才输出形如 `https://<随机子域>.trycloudflare.com/mcp` 的精确 URL。它不会修改 ChatGPT App，也不会把凭据写入 Git。Quick Tunnel URL 会变化，旧 URL 失效时 READ 可能返回 `mcp_network_error`。
 
-在 ChatGPT App 的 MCP 配置中手动粘贴脚本输出的 `/mcp` URL。固定地址需要 Cloudflare 账户、域名、named tunnel、credentials 和公网认证方案，并在 Search 外部由用户配置和管理；匿名开发 MCP 不应直接作为长期公网服务。credentials、`cert.pem` 和本地配置均被 `.gitignore` 排除。
+在 ChatGPT App 的 MCP 配置中创建名为 **READ** 的 app，并手动粘贴脚本输出的 `/mcp` URL。固定地址需要 Cloudflare 账户、域名、named tunnel、credentials 和公网认证方案，并在 Search 外部由用户配置和管理；匿名开发 MCP 不应直接作为长期公网服务。credentials、`cert.pem` 和本地配置均被 `.gitignore` 排除。
 
 当前源码发布状态为：
 
@@ -189,7 +201,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_quick_tunnel
 PENDING_CHATGPT_TUNNEL_CONFIGURATION
 ```
 
-只有在 ChatGPT 中真实执行 `search`、`fetch`、`export_evidence` 三项均成功后，才能改为“ChatGPT App 验证通过”。本地 MCP 通过不能替代这项外部验证。
+只有在 ChatGPT 中真实验证 READ 的搜索、fetch、preview、显式确认导入与 `import_status` 恢复流程后，才能改为“ChatGPT App 验证通过”。本地 MCP 通过不能替代这项外部验证。旧账号侧插件只在 READ 正式部署并通过 E2E 后清理，本仓库任务不会删除账号侧插件。
 
 ## 9. 配置
 

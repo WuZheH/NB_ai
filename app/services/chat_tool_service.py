@@ -509,6 +509,7 @@ def import_preview(
         "confirmation_expires_in_seconds": IMPORT_CONFIRMATION_TTL_SECONDS if token else None,
         "attachment_choices": [],
         "annotation_count": None,
+        "annotation_comment_count": None,
         "child_note_count": None,
         "note_count": len(record.note_sources) if token else len(chat_import_catalog_service.note_sources(pdf=source, inbox_root=inbox_root)),
         "note_files": [item["relative_path"] for item in (record.note_sources if token else chat_import_catalog_service.note_sources(pdf=source, inbox_root=inbox_root))],
@@ -616,6 +617,7 @@ def _import_zotero_selected_book_preview(
         "confirmation_expires_in_seconds": None,
         "attachment_choices": safe_choices,
         "annotation_count": preview.get("annotation_count"),
+        "annotation_comment_count": preview.get("annotation_comment_count"),
         "child_note_count": preview.get("child_note_count"),
     }
 

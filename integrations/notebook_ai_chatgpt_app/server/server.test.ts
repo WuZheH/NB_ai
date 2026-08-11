@@ -375,7 +375,7 @@ test("tools/list exposes ten annotated tools and widget resource", async () => {
     assert.deepEqual(resourceMeta?.ui?.permissions, { clipboardWrite: {} });
     assert.deepEqual(resourceMeta?.ui?.csp, { connectDomains: [], resourceDomains: [] });
     assert.deepEqual(resourceMeta?.["openai/widgetCSP"], { connect_domains: [], resource_domains: [] });
-    assert.equal(resourceMeta?.ui?.domain, "https://cread-search-widget.openaiusercontent.com");
+    assert.equal(resourceMeta?.ui?.domain, "https://read-library-widget.openaiusercontent.com");
     assert.equal(resourceMeta?.["notebookAi/widgetDomainMode"], "configured");
   } finally {
     await client.close();
@@ -398,8 +398,8 @@ test("widget domain and CSP are fixed to the unique production contract", async 
     const meta = resource.contents[0]?._meta as
       | { ui?: { domain?: string }; "openai/widgetDomain"?: string; "notebookAi/widgetDomainMode"?: string }
       | undefined;
-    assert.equal(meta?.ui?.domain, "https://cread-search-widget.openaiusercontent.com");
-    assert.equal(meta?.["openai/widgetDomain"], "https://cread-search-widget.openaiusercontent.com");
+    assert.equal(meta?.ui?.domain, "https://read-library-widget.openaiusercontent.com");
+    assert.equal(meta?.["openai/widgetDomain"], "https://read-library-widget.openaiusercontent.com");
     assert.equal(meta?.["notebookAi/widgetDomainMode"], "configured");
   } finally {
     await client.close();
@@ -796,7 +796,7 @@ test("machine configuration failures remain structured and path-free", () => {
   assert.equal(payload.error_code, "config_missing");
   assert.equal(
     payload.message,
-    "Search high-quality search configuration is unavailable.",
+    "READ high-quality search configuration is unavailable.",
   );
   assert.doesNotMatch(JSON.stringify(result), /D:\\\\private/);
 });
@@ -978,7 +978,7 @@ test("read-only backend timeouts remain retryable", () => {
   const payload = JSON.parse(result.content[0].text);
   assert.equal(payload.retryable, true);
   assert.equal(payload.writes_performed, false);
-  assert.equal(payload.message, "Search backend request timed out.");
+  assert.equal(payload.message, "READ backend request timed out.");
 });
 
 async function callImportDocumentAction(

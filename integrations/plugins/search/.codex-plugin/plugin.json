@@ -1,23 +1,23 @@
 {
-  "name": "search",
+  "name": "read",
   "version": "0.1.0",
-  "description": "Chat-first access to the user's private local Search research library.",
+  "description": "READ searches and imports the user's own reading library.",
   "author": {
     "name": "WuZheH"
   },
   "repository": "https://github.com/WuZheH/NB_ai",
   "skills": "./skills/",
   "interface": {
-    "displayName": "Search",
-    "shortDescription": "Search private local research evidence.",
-    "longDescription": "Search queries, opens, and exports evidence from the local research library. Import and permanent deletion always require preview and explicit user confirmation.",
+    "displayName": "READ",
+    "shortDescription": "Search and import my own reading library.",
+    "longDescription": "READ retrieves evidence from imported PDFs and Zotero notes. New material is previewed first and imported only after explicit user confirmation.",
     "developerName": "WuZheH",
     "category": "Productivity",
     "capabilities": ["Interactive", "Read", "Write"],
     "defaultPrompt": [
-      "Search my library for motion diffusion evidence.",
-      "List the papers in my local Search library.",
-      "Preview an import from my Search Import Inbox."
+      "Search my READ library for motion diffusion evidence.",
+      "List the papers in my READ library.",
+      "Preview an import into READ without committing it."
     ]
   },
   "mcpServers": "./.mcp.json",

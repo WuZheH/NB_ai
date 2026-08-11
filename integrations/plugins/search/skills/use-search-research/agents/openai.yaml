@@ -1,4 +1,4 @@
 interface:
-  display_name: "Use Search research"
+  display_name: "Use READ research"
   short_description: "Query local research evidence safely"
-  default_prompt: "Use Search to answer from my local research library."
+  default_prompt: "Use READ to answer from my own reading library."

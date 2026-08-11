@@ -141,7 +141,7 @@ test("NotebookClient makes backend-relative open targets absolute without rewrit
   assert.equal(search.results[0].open_target?.can_open_pdf, false);
   assert.equal(
     search.results[0].open_target?.pdf_disabled_reason,
-    "PDF opening is available in Search Desktop.",
+    "PDF opening is available in the local desktop app.",
   );
 
   const fetched = await client.fetchFragment("fragment-1");
@@ -185,7 +185,7 @@ test("NotebookClient normalizes export open targets to the same public URL", asy
   assert.equal(parsed.results[0].open_target.can_open_pdf, false);
   assert.equal(
     parsed.results[0].open_target.pdf_disabled_reason,
-    "PDF opening is available in Search Desktop.",
+    "PDF opening is available in the local desktop app.",
   );
 });
 

@@ -1505,6 +1505,7 @@ def _public_chat_zotero_ready_preview(
             "page_count": 12,
         },
         "annotation_count": 4,
+        "annotation_comment_count": 3,
         "child_note_count": 2,
         "duplicate_check": {
             "duplicate_found": duplicate,
@@ -1648,6 +1649,9 @@ def test_public_chat_zotero_temp_preview_registers_chat_confirmation(
     assert result["confirmation_expires_in_seconds"] == 600
     assert result["estimated_pages"] == 12
     assert result["estimated_chunks"] == 4
+    assert result["annotation_count"] == 4
+    assert result["annotation_comment_count"] == 3
+    assert result["child_note_count"] == 2
     assert "chunk_count_not_precomputed_by_preview" not in result["warnings"]
 
 

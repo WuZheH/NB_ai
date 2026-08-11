@@ -108,10 +108,10 @@ export function errorPayload(
     writeStateUncertain
       ? code === "BACKEND_TIMEOUT"
         ? "The write request timed out before its final state was known. Do not retry automatically; verify the durable operation state first."
-        : "The connection to Search was lost before the write's final state was known. Do not retry automatically; verify the durable operation state first."
+        : "The connection to READ was lost before the write's final state was known. Do not retry automatically; verify the durable operation state first."
     : PUBLIC_ERROR_MESSAGES[code]
     ?? (code === "BACKEND_TIMEOUT"
-      ? "Search backend request timed out."
+      ? "READ backend request timed out."
       : code === "zotero_direction_b_body_import_failed"
         ? "Selected-book body extraction failed and the import was rolled back."
       : code.endsWith("_index_sync_failed") || code.endsWith("_index_publish_failed")
@@ -125,7 +125,7 @@ export function errorPayload(
           "model_path_not_found",
           "model_structure_invalid",
         ].includes(code)
-        ? "Search high-quality search configuration is unavailable."
+        ? "READ high-quality search configuration is unavailable."
       : [
           "model_load_failed",
           "embedding_model_load_failed",
@@ -135,8 +135,8 @@ export function errorPayload(
           "reranker_model_self_check_failed",
           "reranker_model_inference_failed",
         ].includes(code)
-        ? "Search high-quality retrieval model is unavailable."
-      : "Search request failed.");
+        ? "READ high-quality retrieval model is unavailable."
+      : "READ request failed.");
 
   // Preserve backend details when available (NotebookBackendError carries
   // the full structured error dict from the Python API).

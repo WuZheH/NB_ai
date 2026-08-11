@@ -25,7 +25,7 @@ class McpAppsBridge {
     }
 
     const app = new App(
-      { name: "Search", version: "0.1.0" },
+      { name: "READ", version: "0.1.0" },
       {},
       { autoResize: true, strict: true },
     );

@@ -47,13 +47,13 @@ export function registerDeleteDocumentTool(server: McpServer, client: NotebookCl
   server.registerTool(
     "delete_document",
     {
-      title: "Permanently delete confirmed Search document data",
+      title: "Permanently delete confirmed READ document data",
       description:
         "Destructive write action. Call only after delete_preview and a separate explicit user confirmation in the current conversation. Never call from vague intent, never choose a document by fuzzy title, and never reuse an old confirmation.",
       inputSchema: deleteDocumentInputShape,
       outputSchema: deleteDocumentOutputShape,
       annotations: DESTRUCTIVE_ANNOTATIONS,
-      _meta: toolMetadata("Deleting the confirmed Search data…", "Deletion finished"),
+      _meta: toolMetadata("Deleting the confirmed READ data…", "Deletion finished"),
     },
     async (input) => runDeleteDocumentTool(client, input),
   );

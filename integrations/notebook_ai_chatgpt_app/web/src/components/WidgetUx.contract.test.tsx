@@ -74,7 +74,7 @@ test("selected evidence basket keeps count, pin, copy, and export controls", () 
 test("waiting state appears exactly once", () => {
   const html = renderToStaticMarkup(<WaitingState />);
   assert.equal(
-    html.match(/等待 Search 检索结果/g)?.length,
+    html.match(/等待 READ 检索结果/g)?.length,
     1,
   );
   const appSource = readFileSync(

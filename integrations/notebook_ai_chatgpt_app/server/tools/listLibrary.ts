@@ -100,13 +100,13 @@ export function registerListLibraryTool(server: McpServer, client: NotebookClien
   server.registerTool(
     "list_library",
     {
-      title: "List the private Search library",
+      title: "List the private READ library",
       description:
-        "List imported Search documents, the controlled import catalog, or Zotero candidates. Each item includes a non-path source label and never exposes absolute paths.",
+        "List imported READ documents, the controlled import catalog, or Zotero candidates. Each item includes a non-path source label and never exposes absolute paths.",
       inputSchema: listLibraryInputShape,
       outputSchema: listLibraryOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,
-      _meta: toolMetadata("Reading the Search library…", "Library ready"),
+      _meta: toolMetadata("Reading the READ library…", "Library ready"),
     },
     async (input) => runListLibraryTool(client, input),
   );

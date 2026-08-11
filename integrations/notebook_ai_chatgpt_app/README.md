@@ -1,21 +1,34 @@
-# Search for ChatGPT
+# READ for ChatGPT
 
-This local Developer Mode app exposes the Chat-first Search surface: research
+READ searches and imports the user's own reading library. This local Developer
+Mode app exposes the Chat-first READ surface: research
 search, exact evidence fetch, evidence export, compact library listing, PDF
 import preview/commit, and safe book deletion preview/commit. The MCP server is
 a thin adapter; ranking, importing, deletion, recovery, database, FTS, and
-vector behavior remain in the Search Python backend.
+vector behavior remain in the local Python backend.
 
-Node and the widget never access SQLite. Read tools cannot mutate Search.
+Node and the widget never access SQLite. Read tools cannot mutate READ.
 `import_document` and `delete_document` are explicit write tools and require a
 fresh preview token plus current-conversation confirmation.
+
+For questions about papers, books, PDFs, or notes the user may already have
+read, ChatGPT should call `search` without requiring the user to name READ or a
+tool. It should call `fetch` when fuller context is needed, distinguish PDF
+source text from the user's Zotero comments and notes, and label its own
+interpretation. No result is not permission to fabricate evidence.
+
+For imports, ChatGPT must call `import_preview`, explain what will be imported,
+and wait for explicit confirmation before one `import_document` call. A timeout
+or unknown response must never trigger another import call: use the preview's
+same `operation_id` with `import_status`, then use `integrity_report` when a
+committed document needs verification.
 
 ## Architecture
 
 ```text
 ChatGPT / Codex
   -> Secure MCP Tunnel -> MCP Streamable HTTP /mcp (loopback-only Node server)
-  -> Search FastAPI on 127.0.0.1
+  -> READ local FastAPI on 127.0.0.1
   -> existing Qwen3 embedding + semantic recall + Qwen3 reranker + final ranking
 ```
 
@@ -33,8 +46,9 @@ The stable tool surface is:
 - `export_evidence`: at most 50 fragment ids in `markdown`, `jsonl`, or `json` format.
 - `list_library`: compact active/archived library results.
 - `integrity_report`: read-only DB/FTS/vector verdict for one exact document id.
-- `import_preview`: ChatGPT PDF attachment or Search Import Inbox preview.
+- `import_preview`: ChatGPT PDF attachment, READ Import Inbox, or selected Zotero item preview.
 - `import_document`: confirmed import through the existing Core pipeline.
+- `import_status`: read-only durable status recovery after timeout or connection loss.
 - `delete_preview`: compact Candidate10 deletion preview.
 - `delete_document`: confirmed destructive deletion through the existing Core
   transaction and recovery service.
@@ -44,13 +58,13 @@ never configured in the same GPT.
 
 ## Requirements
 
-- Search backend dependencies in the existing project conda environment.
+- READ backend dependencies in the existing project conda environment.
 - Node.js 20.19 or newer.
 - OpenAI Secure MCP Tunnel access for the private connection.
 - ChatGPT Developer Mode access.
 
 Tunnel provisioning uses a Platform tunnel runtime key managed outside this
-repository. Search itself does not call an OpenAI model API.
+repository. READ itself does not call an OpenAI model API.
 
 ## Install and build
 
@@ -63,7 +77,7 @@ npm run check
 
 `npm ci` uses the committed lockfile. The build produces `web/dist/widget.html` and `dist/server/index.js`; neither `node_modules` nor local `.env` files belong in Git. MCP Inspector is kept outside the app dependency tree because it is a separate interactive testing application, not a runtime dependency.
 
-## Start Search
+## Start the READ backend
 
 From the repository root, use the project conda interpreter (do not use an unverified system Python):
 
@@ -140,7 +154,7 @@ In Inspector:
 4. Confirm all ten tools and their read/write/destructive annotations.
 
 The results widget uses the dedicated
-`https://cread-search-widget.openaiusercontent.com` origin with an empty,
+`https://read-library-widget.openaiusercontent.com` origin with an empty,
 least-privilege network/resource CSP because the packaged widget is
 self-contained.
 5. Call `search`, `fetch`, `export_evidence`, and `list_library`. Use only
@@ -151,7 +165,7 @@ The repository tests use the official MCP SDK in-memory transport and a real Str
 
 ## Secure MCP Tunnel
 
-Local Search keeps 8000 and 8787 on loopback. The formal ChatGPT connection
+Local READ keeps 8000 and 8787 on loopback. The formal ChatGPT connection
 uses the official outbound-only Secure MCP Tunnel. Do not use Quick Tunnel,
 public raw ports, or an unauthenticated public URL. Tunnel ID, runtime API key,
 and profile live outside Git and logs.
@@ -161,18 +175,22 @@ and profile live outside Git and logs.
 1. In ChatGPT open **Settings → Security and login → Developer mode** and enable Developer Mode.
 2. Open **Settings → Plugins** (or `chatgpt.com/plugins`).
 3. Select **Create** / the plus button for a new developer-mode app.
-4. Name it **Search**.
+4. Name it **READ**.
 5. Use this description:
 
-   > Searches my private Search collection for relevant PDF passages and Zotero reading notes before answering research and literature questions.
+   > READ searches and imports my own reading library. It retrieves evidence from imported PDFs and Zotero notes before answering, and imports only after preview plus explicit confirmation.
 
 6. Select the configured Secure MCP Tunnel.
 7. Finish creating the app and enable it for a new chat.
 8. After changing tool or widget metadata, return to the app in **Settings → Plugins** and use **Refresh** before testing again.
 
-First test prompt:
+First search test prompt:
 
 > 请在我的资料中搜索“避免动作生成中的脚步滑动”，分别列出 PDF 原文和我的 Zotero 笔记，并标注页码和 fragment_id。
+
+First import test prompt:
+
+> 把 Zotero 里当前选中的书导入 READ。请先展示 preview；在我明确确认前不要调用 import_document。如果调用状态不确定，请用同一个 operation_id 查询 import_status，不要重试导入。
 
 Creating and enabling the app is a manual account action. Until all four read
 workflows succeed in a real chat, the truthful status is

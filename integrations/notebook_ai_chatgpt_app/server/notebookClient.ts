@@ -108,7 +108,7 @@ export class NotebookClient {
       || response.results.some((result) => !isNotebookFragment(result))
     ) {
       throw new NotebookBackendError(
-        "Search backend returned an invalid response.",
+        "READ backend returned an invalid response.",
         502,
         "BACKEND_RESPONSE_INVALID",
       );
@@ -316,14 +316,14 @@ export class NotebookClient {
         throw error;
       }
       if (error instanceof Error && error.name === "AbortError") {
-        throw new NotebookBackendError("Search backend request timed out.", 504, "BACKEND_TIMEOUT");
+        throw new NotebookBackendError("READ backend request timed out.", 504, "BACKEND_TIMEOUT");
       }
       if (error instanceof SyntaxError) {
         throw invalidBackendResponse();
       }
       if (error instanceof TypeError) {
         throw new NotebookBackendError(
-          "Search backend is unavailable.",
+          "READ backend is unavailable.",
           503,
           "BACKEND_UNAVAILABLE",
         );
@@ -416,7 +416,7 @@ export class NotebookClient {
     const pdfUrl = openTarget.pdf_url;
     if (typeof pdfUrl === "string" && isLoopbackHttpUrl(pdfUrl)) {
       openTarget.can_open_pdf = false;
-      openTarget.pdf_disabled_reason = "PDF opening is available in Search Desktop.";
+      openTarget.pdf_disabled_reason = "PDF opening is available in the local desktop app.";
     }
     return openTarget;
   }
@@ -448,7 +448,7 @@ function isNotebookFragment(value: unknown): value is NotebookFragment {
 
 function invalidBackendResponse(): NotebookBackendError {
   return new NotebookBackendError(
-    "Search backend returned an invalid response.",
+    "READ backend returned an invalid response.",
     502,
     "BACKEND_RESPONSE_INVALID",
   );
