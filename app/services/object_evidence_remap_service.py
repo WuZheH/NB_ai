@@ -19,6 +19,10 @@ from app.services.import_preview_service import (
     _relative,
     _safety_response,
 )
+from app.services.object_commit_identity_service import (
+    freeze_object_commit_input,
+    reviewed_input_fingerprint,
+)
 
 REVIEWED_FILE = "reviewed_object_tag_package.json"
 REMAP_PREVIEW_FILE = "object_evidence_remap_preview.json"
@@ -46,7 +50,34 @@ def remap_reviewed_objects_preview(import_job_id: str) -> dict[str, Any]:
         raise ImportPreviewError("commit_result.json has no document_id.")
 
     reviewed = _read_json(reviewed_path)
+    reviewed_job_id = reviewed.get("import_job_id")
+    if reviewed_job_id is not None and str(reviewed_job_id) != import_job_id:
+        raise ImportPreviewError(
+            "object_remap_preview_job_mismatch: "
+            "reviewed package 与当前 import job 不一致。"
+        )
+    reviewed_document_id = reviewed.get("document_id")
+    if reviewed_document_id is not None:
+        if isinstance(reviewed_document_id, bool) or not isinstance(
+            reviewed_document_id, int
+        ):
+            raise ImportPreviewError(
+                "object_remap_preview_document_mismatch: "
+                "reviewed package document_id 无效。"
+            )
+        if reviewed_document_id != int(document_id):
+            raise ImportPreviewError(
+                "object_remap_preview_document_mismatch: "
+                "reviewed package 与 committed document 不一致。"
+            )
     all_objects = reviewed.get("objects") or []
+    frozen_reviewed = freeze_object_commit_input(
+        import_job_id=import_job_id,
+        phase="commit_reviewed_objects",
+        document_id=int(document_id),
+        reviewed_objects=all_objects,
+    )
+    source_fingerprint = reviewed_input_fingerprint(frozen_reviewed)
 
     # Filter: only accepted / edited
     processable = [
@@ -97,6 +128,7 @@ def remap_reviewed_objects_preview(import_job_id: str) -> dict[str, Any]:
         "status": "ok",
         "import_job_id": import_job_id,
         "document_id": document_id,
+        "reviewed_input_fingerprint": source_fingerprint,
         "object_count": len(object_results),
         "processable_count": len(processable),
         "chunk_index_size": len(chunk_index),

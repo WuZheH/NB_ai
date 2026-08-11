@@ -151,7 +151,7 @@ def compute_retrieval_projection_sha256(
     return digest.hexdigest()
 
 
-def rebind_retrieval_fts_after_schema_only_migration(
+def _rebind_retrieval_fts_manifest_after_unchanged_projection(
     *,
     expected_before_db_sha256: str,
     expected_after_db_sha256: str,
@@ -160,6 +160,7 @@ def rebind_retrieval_fts_after_schema_only_migration(
     manifest_path: str | Path = DEFAULT_MANIFEST_PATH,
     production_db_path: str | Path = DEFAULT_DB_PATH,
     registry: RetrievalSourceRegistry | None = None,
+    audit_prefix: str,
 ) -> dict[str, Any]:
     before_hash = _normalized_sha256(
         expected_before_db_sha256,
@@ -239,13 +240,15 @@ def rebind_retrieval_fts_after_schema_only_migration(
         f".{target_manifest.name}.{token}.backup"
     )
     updated_manifest = dict(manifest)
+    if not re.fullmatch(r"[a-z0-9_]+", audit_prefix):
+        raise ValueError("invalid retrieval manifest rebind audit prefix")
     updated_manifest.update(
         {
             "production_db_sha256": after_hash,
-            "last_schema_only_rebind_at": datetime.now(timezone.utc).isoformat(),
-            "last_schema_only_rebind_from_db_sha256": before_hash,
-            "last_schema_only_rebind_to_db_sha256": after_hash,
-            "last_schema_only_rebind_projection_sha256": projection_hash,
+            f"{audit_prefix}_at": datetime.now(timezone.utc).isoformat(),
+            f"{audit_prefix}_from_db_sha256": before_hash,
+            f"{audit_prefix}_to_db_sha256": after_hash,
+            f"{audit_prefix}_projection_sha256": projection_hash,
         }
     )
     published = False
@@ -304,6 +307,52 @@ def rebind_retrieval_fts_after_schema_only_migration(
         "vector_write_performed": False,
         "llm_called": False,
     }
+
+
+def rebind_retrieval_fts_after_schema_only_migration(
+    *,
+    expected_before_db_sha256: str,
+    expected_after_db_sha256: str,
+    expected_projection_sha256: str,
+    index_path: str | Path = DEFAULT_INDEX_PATH,
+    manifest_path: str | Path = DEFAULT_MANIFEST_PATH,
+    production_db_path: str | Path = DEFAULT_DB_PATH,
+    registry: RetrievalSourceRegistry | None = None,
+) -> dict[str, Any]:
+    return _rebind_retrieval_fts_manifest_after_unchanged_projection(
+        expected_before_db_sha256=expected_before_db_sha256,
+        expected_after_db_sha256=expected_after_db_sha256,
+        expected_projection_sha256=expected_projection_sha256,
+        index_path=index_path,
+        manifest_path=manifest_path,
+        production_db_path=production_db_path,
+        registry=registry,
+        audit_prefix="last_schema_only_rebind",
+    )
+
+
+def rebind_retrieval_fts_after_proven_unchanged_projection(
+    *,
+    expected_before_db_sha256: str,
+    expected_after_db_sha256: str,
+    expected_projection_sha256: str,
+    index_path: str | Path,
+    manifest_path: str | Path,
+    production_db_path: str | Path,
+    registry: RetrievalSourceRegistry,
+) -> dict[str, Any]:
+    """Rebind one owned candidate after an unchanged retrieval projection."""
+
+    return _rebind_retrieval_fts_manifest_after_unchanged_projection(
+        expected_before_db_sha256=expected_before_db_sha256,
+        expected_after_db_sha256=expected_after_db_sha256,
+        expected_projection_sha256=expected_projection_sha256,
+        index_path=index_path,
+        manifest_path=manifest_path,
+        production_db_path=production_db_path,
+        registry=registry,
+        audit_prefix="last_object_commit_rebind",
+    )
 
 
 def build_retrieval_fts(

@@ -622,10 +622,9 @@ def test_plain_rows_do_not_block_first_reviewed_commit(
     def seed(database: Path) -> None:
         _seed_legacy_object_row(database, job_id=job_id)
 
-    fixture = _delete_versioned_fixture(tmp_path, after_database=seed)
+    fixture = _versioned_fixture(tmp_path, after_database=seed)
     database = fixture["database"]
-    runtime = fixture["runtime"]
-    data_dir = runtime.data_dir
+    data_dir = fixture["data_dir"]
     job_dir = _write_job_files(job_id, reviewed=True)
     _overwrite_package(job_dir, description="input A")
     _overwrite_remap(job_dir, mapped_chunk_ids=[101])

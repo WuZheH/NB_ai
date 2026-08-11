@@ -24,38 +24,73 @@ def _overwrite_package(
     description: str,
     review_status: str = "accepted",
 ) -> None:
+    package = {
+        "objects": [
+            {
+                "object_key": object_key,
+                "object_name": "MDM 机制",
+                "object_type": "mechanism",
+                "review_status": review_status,
+                "confidence": "medium",
+                "aliases": [],
+                "topic_tags": [],
+                "problem_tags": [],
+                "mechanism_tags": [],
+                "inspiration_tags": [],
+                "evidence_refs": [],
+                "source_note_ids": [],
+                "description": description,
+                "user_comment": "",
+                "warnings": [],
+            }
+        ]
+    }
     (job_dir / "reviewed_object_tag_package.json").write_text(
         json.dumps(
-            {
-                "objects": [
-                    {
-                        "object_key": object_key,
-                        "object_name": "MDM 机制",
-                        "object_type": "mechanism",
-                        "review_status": review_status,
-                        "confidence": "medium",
-                        "aliases": [],
-                        "topic_tags": [],
-                        "problem_tags": [],
-                        "mechanism_tags": [],
-                        "inspiration_tags": [],
-                        "evidence_refs": [],
-                        "source_note_ids": [],
-                        "description": description,
-                        "user_comment": "",
-                        "warnings": [],
-                    }
-                ]
-            }
+            package
         ),
         encoding="utf-8",
     )
+    remap_path = job_dir / "object_evidence_remap_preview.json"
+    if remap_path.is_file():
+        remap = json.loads(remap_path.read_text(encoding="utf-8"))
+        job_id = job_dir.name
+        frozen = objects_commit._freeze_commit_input(
+            import_job_id=job_id,
+            phase=objects_commit.PHASE_COMMIT_REVIEWED_OBJECTS,
+            document_id=1,
+            reviewed_objects=package["objects"],
+        )
+        remap.update(
+            {
+                "import_job_id": job_id,
+                "document_id": 1,
+                "reviewed_input_fingerprint": (
+                    objects_commit._reviewed_input_fingerprint(frozen)
+                ),
+            }
+        )
+        remap_path.write_text(json.dumps(remap), encoding="utf-8")
 
 
 def _overwrite_remap(job_dir: Path, *, mapped_chunk_ids: list[int]) -> None:
-    (job_dir / "object_evidence_remap_preview.json").write_text(
+    remap_path = job_dir / "object_evidence_remap_preview.json"
+    identity = {}
+    if remap_path.is_file():
+        existing = json.loads(remap_path.read_text(encoding="utf-8"))
+        identity = {
+            key: existing.get(key)
+            for key in (
+                "import_job_id",
+                "document_id",
+                "reviewed_input_fingerprint",
+            )
+            if key in existing
+        }
+    remap_path.write_text(
         json.dumps(
             {
+                **identity,
                 "objects": [
                     {
                         "object_key": "mdm",

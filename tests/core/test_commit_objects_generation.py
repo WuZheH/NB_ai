@@ -22,6 +22,8 @@ from app.services import retrieval_generation_mutation_service as mutations
 from app.services import vector_store_service
 from app.services import commit_objects_service as objects_commit
 from app.services.retrieval import fts_index_service
+from app.services.retrieval import fts_status_service
+from app.services.retrieval.source_registry import RetrievalSourceRegistry
 
 
 @pytest.fixture(autouse=True)
@@ -192,16 +194,20 @@ def _versioned_fixture(
     vectors = legacy / generations.VECTOR_STORE_NAME
     vector_manifest = legacy / generations.VECTOR_MANIFEST_NAME
     native = legacy / generations.NATIVE_NOTE_VECTOR_NAME
-    fts_index_service._build_database(fts, [_retrieval_fragment(1)])
-    fts_manifest.write_text(
-        json.dumps(
-            {
-                "production_db_sha256": generations.sha256_file(database),
-                "fragment_count": 1,
-                "index_content_hash": generations.sha256_file(fts),
-            }
-        ),
-        encoding="utf-8",
+    notes_root = data / "notes"
+    notes_root.mkdir(parents=True)
+    zotero_snapshot = data / "zotero" / "snapshot" / "zotero.sqlite"
+    registry = RetrievalSourceRegistry(
+        research_db_path=database,
+        zotero_snapshot_path=zotero_snapshot,
+        notes_root=notes_root,
+        project_root=tmp_path,
+    )
+    fts_index_service.build_retrieval_fts(
+        index_path=fts,
+        manifest_path=fts_manifest,
+        registry=registry,
+        target_root=tmp_path,
     )
     vectors.mkdir(parents=True)
     store = vector_store_service.open_vector_store(vectors)
@@ -258,36 +264,45 @@ def _write_job_files(job_id: str, *, reviewed: bool = False) -> Path:
         json.dumps({"document_id": 1, "title": "Book 1"}),
         encoding="utf-8",
     )
-    (job_dir / "reviewed_object_tag_package.json").write_text(
-        json.dumps(
+    reviewed_payload = {
+        "objects": [
             {
-                "objects": [
-                    {
-                        "object_key": "mdm",
-                        "object_name": "MDM 机制",
-                        "object_type": "mechanism",
-                        "review_status": "accepted",
-                        "confidence": "medium",
-                        "aliases": ["MDM"],
-                        "topic_tags": [],
-                        "problem_tags": [],
-                        "mechanism_tags": [],
-                        "inspiration_tags": [],
-                        "evidence_refs": [],
-                        "source_note_ids": [],
-                        "description": "mechanism description",
-                        "user_comment": "",
-                        "warnings": [],
-                    }
-                ]
+                "object_key": "mdm",
+                "object_name": "MDM 机制",
+                "object_type": "mechanism",
+                "review_status": "accepted",
+                "confidence": "medium",
+                "aliases": ["MDM"],
+                "topic_tags": [],
+                "problem_tags": [],
+                "mechanism_tags": [],
+                "inspiration_tags": [],
+                "evidence_refs": [],
+                "source_note_ids": [],
+                "description": "mechanism description",
+                "user_comment": "",
+                "warnings": [],
             }
-        ),
-        encoding="utf-8",
+        ]
+    }
+    (job_dir / "reviewed_object_tag_package.json").write_text(
+        json.dumps(reviewed_payload), encoding="utf-8"
     )
     if reviewed:
+        frozen = objects_commit._freeze_commit_input(
+            import_job_id=job_id,
+            phase=objects_commit.PHASE_COMMIT_REVIEWED_OBJECTS,
+            document_id=1,
+            reviewed_objects=reviewed_payload["objects"],
+        )
         (job_dir / "object_evidence_remap_preview.json").write_text(
             json.dumps(
                 {
+                    "import_job_id": job_id,
+                    "document_id": 1,
+                    "reviewed_input_fingerprint": (
+                        objects_commit._reviewed_input_fingerprint(frozen)
+                    ),
                     "objects": [
                         {
                             "object_key": "mdm",
@@ -398,6 +413,9 @@ def test_commit_objects_uses_generation_and_preserves_unrelated_drift(
     before_previous_generation = generations.tree_fingerprint(
         previous.generation_dir
     )
+    before_fts_index = previous.fts_index_path.read_bytes()
+    before_fts_manifest = previous.fts_manifest_path.read_bytes()
+    before_db_sha = generations.sha256_file(database)
 
     result = objects_commit.commit_objects_to_production_with_generation(job_id, db_path=database, data_dir=data_dir)
 
@@ -418,6 +436,23 @@ def test_commit_objects_uses_generation_and_preserves_unrelated_drift(
         verify_fingerprints=True,
     )
     assert active.generation_id == result["generation_id"]
+    after_db_sha = generations.sha256_file(database)
+    assert after_db_sha != before_db_sha
+    assert active.fts_index_path.read_bytes() == before_fts_index
+    assert previous.fts_manifest_path.read_bytes() == before_fts_manifest
+    active_fts_manifest = json.loads(
+        active.fts_manifest_path.read_text(encoding="utf-8")
+    )
+    assert active_fts_manifest["production_db_sha256"] == after_db_sha
+    fts_status = fts_status_service.get_index_status(
+        index_path=active.fts_index_path,
+        manifest_path=active.fts_manifest_path,
+        production_db_path=database,
+        zotero_snapshot_path=data_dir / "zotero" / "snapshot" / "zotero.sqlite",
+        notes_root=data_dir / "notes",
+    )
+    assert fts_status["status"] == "ready"
+    assert fts_status["ready"] is True
     state = vector_store_service.inspect_affected_object_vector_state(
         object_keys=["mdm"],
         expected_sources=[
@@ -1034,6 +1069,13 @@ def test_commit_reviewed_objects_deprecates_affected_and_keeps_unrelated(
     _install_seams(monkeypatch, database=database)
 
     before_legacy = generations.tree_fingerprint(legacy)
+    previous = generations.resolve_active_retrieval_generation(
+        data_dir=data_dir,
+        db_path=database,
+        verify_fingerprints=True,
+    )
+    previous_fts_manifest = previous.fts_manifest_path.read_bytes()
+    previous_fts_index = previous.fts_index_path.read_bytes()
     result = objects_commit.commit_reviewed_objects_to_production_with_generation(
         job_id,
         db_path=database,
@@ -1050,6 +1092,17 @@ def test_commit_reviewed_objects_deprecates_affected_and_keeps_unrelated(
         db_path=database,
         verify_fingerprints=True,
     )
+    assert previous.fts_manifest_path.read_bytes() == previous_fts_manifest
+    assert active.fts_index_path.read_bytes() == previous_fts_index
+    active_fts = fts_status_service.get_index_status(
+        index_path=active.fts_index_path,
+        manifest_path=active.fts_manifest_path,
+        production_db_path=database,
+        zotero_snapshot_path=data_dir / "zotero" / "snapshot" / "zotero.sqlite",
+        notes_root=data_dir / "notes",
+    )
+    assert active_fts["status"] == "ready"
+    assert active_fts["ready"] is True
     expected = [
         source
         for source in vector_store_service.collect_object_sources()

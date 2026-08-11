@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections import Counter
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -95,9 +95,13 @@ class RetrievalSourceRegistry:
         )
 
         with ExitStack() as stack:
-            research_conn = stack.enter_context(connect_readonly_sqlite(self.research_db_path))
+            research_conn = stack.enter_context(
+                closing(connect_readonly_sqlite(self.research_db_path))
+            )
             zotero_conn = (
-                stack.enter_context(connect_readonly_sqlite(self.zotero_snapshot_path))
+                stack.enter_context(
+                    closing(connect_readonly_sqlite(self.zotero_snapshot_path))
+                )
                 if self.zotero_snapshot_path.is_file()
                 else None
             )

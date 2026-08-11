@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -8,7 +7,6 @@ import shutil
 import sqlite3
 import tempfile
 from contextlib import closing
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +27,14 @@ from app.services import (
     retrieval_generation_service,
     vector_store_service,
 )
+from app.services.object_commit_identity_service import (
+    ObjectCommitFrozenInput,
+    freeze_object_commit_input as _freeze_commit_input,
+    phase_input_fingerprint as _phase_input_fingerprint,
+    reviewed_input_fingerprint as _reviewed_input_fingerprint,
+)
+from app.services.retrieval import fts_index_service, fts_status_service
+from app.services.retrieval.source_registry import RetrievalSourceRegistry
 from app.services.import_preview_service import (
     ImportPreviewError, _existing_job_dir, _read_json, _write_json, _relative,
 )
@@ -52,165 +58,6 @@ _RECEIPT_TABLE_DDL = (
     "PRIMARY KEY (import_job_id, phase)"
     ")"
 )
-
-
-@dataclass(frozen=True)
-class ObjectCommitFrozenInput:
-    """Immutable authoritative commit input for one phase.
-
-    The production wrapper reads the staging files exactly once, under the
-    generation writer barrier, and projects them into this frozen structure.
-    The semantic fingerprint is computed from it, and the body mutation
-    consumes exactly this same in-memory snapshot — the body never re-reads
-    staging files, so the receipt can never describe a different input than
-    the one that was committed (TOCTOU closed).
-    """
-
-    import_job_id: str
-    phase: str
-    document_id: int
-    reviewed_objects: tuple[dict[str, Any], ...]
-    remap_objects: tuple[dict[str, Any], ...] = ()
-
-
-_REVIEWED_OBJECT_COMMIT_FIELDS = (
-    "object_key",
-    "object_name",
-    "object_type",
-    "review_status",
-    "confidence",
-    "description",
-    "user_comment",
-    "source_origin",
-    "necessity_judgment",
-    "importance_score",
-    "aliases",
-    "topic_tags",
-    "problem_tags",
-    "mechanism_tags",
-    "inspiration_tags",
-    "evidence_refs",
-    "source_note_ids",
-    "warnings",
-)
-
-_REMAP_COMMIT_FIELDS = (
-    "object_key",
-    "mapped_chunk_ids",
-    "mapping_status",
-    "warnings",
-)
-
-
-def _canonical_package_value(value: Any, *, depth: int = 0) -> Any:
-    """Deterministically canonicalize nested package content.
-
-    Mapping keys are sorted and list order is preserved (the commit services
-    consume the lists in order).  object_key values are reduced to their
-    canonical semantic identity.
-    """
-    if depth > 10:
-        raise ImportPreviewError(
-            "object_commit_fingerprint_depth: 对象包嵌套过深。"
-        )
-    if isinstance(value, dict):
-        normalized: dict[str, Any] = {}
-        for key in sorted(value):
-            item = value[key]
-            if key == "object_key" and isinstance(item, str):
-                item = vector_store_service.canonical_object_key(item)
-            normalized[key] = _canonical_package_value(item, depth=depth + 1)
-        return normalized
-    if isinstance(value, list):
-        return [
-            _canonical_package_value(item, depth=depth + 1)
-            for item in value
-        ]
-    if isinstance(value, bool) or value is None or isinstance(
-        value, (int, float, str)
-    ):
-        return value
-    return str(value)
-
-
-def _project_object_for_commit(obj: Any) -> dict[str, Any]:
-    """Allowlist projection of the fields the plain body actually mutates.
-
-    Only fields that reach the ObjectCandidate row, the mapping status, or
-    the vector profile are included.  Volatile upload metadata
-    (``reviewed_at``, ``reviewed_by``, ``status``, ``safety``) is excluded by
-    construction — this is an allowlist, not a blacklist.
-    """
-    if not isinstance(obj, dict):
-        raise ImportPreviewError(
-            "object_commit_fingerprint_input: 对象包条目必须为对象。"
-        )
-    projected: dict[str, Any] = {}
-    for field in _REVIEWED_OBJECT_COMMIT_FIELDS:
-        value = obj.get(field)
-        if field == "object_key":
-            value = vector_store_service.canonical_object_key(str(value or ""))
-        projected[field] = _canonical_package_value(value)
-    return projected
-
-
-def _project_remap_for_commit(obj: Any) -> dict[str, Any]:
-    """Allowlist projection of one remap preview entry."""
-    if not isinstance(obj, dict):
-        raise ImportPreviewError(
-            "object_commit_fingerprint_input: remap 预览条目必须为对象。"
-        )
-    projected: dict[str, Any] = {}
-    for field in _REMAP_COMMIT_FIELDS:
-        value = obj.get(field)
-        if field == "object_key":
-            value = vector_store_service.canonical_object_key(str(value or ""))
-        projected[field] = _canonical_package_value(value)
-    return projected
-
-
-def _freeze_commit_input(
-    *,
-    import_job_id: str,
-    phase: str,
-    document_id: int,
-    reviewed_objects: list[Any],
-    remap_objects: list[Any] | None = None,
-) -> ObjectCommitFrozenInput:
-    return ObjectCommitFrozenInput(
-        import_job_id=import_job_id,
-        phase=phase,
-        document_id=document_id,
-        reviewed_objects=tuple(
-            _project_object_for_commit(obj) for obj in reviewed_objects
-        ),
-        remap_objects=tuple(
-            _project_remap_for_commit(obj) for obj in (remap_objects or [])
-        ),
-    )
-
-
-def _phase_input_fingerprint(frozen: ObjectCommitFrozenInput) -> str:
-    """SHA-256 of the frozen commit-semantic input.
-
-    The payload is exactly the frozen snapshot the body will mutate from, so
-    fingerprint input and mutation input are the same in-memory object.
-    """
-    payload = {
-        "phase": frozen.phase,
-        "import_job_id": frozen.import_job_id,
-        "document_id": frozen.document_id,
-        "reviewed_objects": list(frozen.reviewed_objects),
-        "remap_objects": list(frozen.remap_objects),
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _ensure_receipt_table(connection: Any) -> None:
@@ -1210,6 +1057,87 @@ def _strict_affected_object_validation(
     return state
 
 
+def _object_commit_retrieval_registry(
+    *,
+    database_path: Path,
+    data_dir: Path,
+) -> RetrievalSourceRegistry:
+    return RetrievalSourceRegistry(
+        research_db_path=database_path,
+        zotero_snapshot_path=data_dir / "zotero" / "snapshot" / "zotero.sqlite",
+        notes_root=data_dir / "notes",
+        project_root=data_dir.parent,
+    )
+
+
+def _strict_object_commit_fts_ready(
+    *,
+    generation: Any,
+    database_path: Path,
+    data_dir: Path,
+    expected_db_sha256: str,
+) -> dict[str, Any]:
+    status = fts_status_service.get_index_status(
+        index_path=generation.fts_index_path,
+        manifest_path=generation.fts_manifest_path,
+        production_db_path=database_path,
+        zotero_snapshot_path=data_dir / "zotero" / "snapshot" / "zotero.sqlite",
+        notes_root=data_dir / "notes",
+    )
+    if status.get("status") != "ready" or status.get("ready") is not True:
+        raise RuntimeError("object_commit_fts_not_ready")
+    expected_sha = str(expected_db_sha256 or "").lower()
+    manifest_sha = str(
+        (status.get("manifest") or {}).get("production_db_sha256") or ""
+    ).lower()
+    if (
+        manifest_sha != expected_sha
+        or _file_sha256(database_path).lower() != expected_sha
+    ):
+        raise RuntimeError("object_commit_fts_database_revision_mismatch")
+    return status
+
+
+def _validate_reviewed_remap_source(
+    *,
+    remap_payload: dict[str, Any],
+    frozen: ObjectCommitFrozenInput,
+) -> None:
+    raw_fingerprint = remap_payload.get("reviewed_input_fingerprint")
+    if raw_fingerprint is None:
+        raise ImportPreviewError(
+            "object_remap_preview_legacy_requires_regeneration: "
+            "旧版 remap preview 缺少 reviewed source identity；请重新生成。"
+        )
+    fingerprint = str(raw_fingerprint)
+    if not _RECEIPT_FINGERPRINT_RE.fullmatch(fingerprint):
+        raise ImportPreviewError(
+            "object_remap_preview_fingerprint_invalid: "
+            "remap preview 的 reviewed source fingerprint 无效。"
+        )
+    if remap_payload.get("import_job_id") != frozen.import_job_id:
+        raise ImportPreviewError(
+            "object_remap_preview_job_mismatch: "
+            "remap preview 与当前 import job 不一致。"
+        )
+    raw_document_id = remap_payload.get("document_id")
+    if isinstance(raw_document_id, bool) or not isinstance(raw_document_id, int):
+        raise ImportPreviewError(
+            "object_remap_preview_document_mismatch: "
+            "remap preview 的 document_id 无效。"
+        )
+    if raw_document_id != frozen.document_id:
+        raise ImportPreviewError(
+            "object_remap_preview_document_mismatch: "
+            "remap preview 与当前 committed document 不一致。"
+        )
+    if fingerprint != _reviewed_input_fingerprint(frozen):
+        raise ImportPreviewError(
+            "object_remap_preview_stale: "
+            "reviewed package 已发生语义变化；请重新生成 remap preview。"
+        )
+
+
 def _dispose_production_engine() -> None:
     """Drop pooled ORM connections after a file-level database restore.
 
@@ -1282,20 +1210,17 @@ def _commit_objects_with_generation(
                 raise ImportPreviewError(
                     "commit_result.json has an invalid document_id."
                 ) from exc
-            reviewed_objects = (
-                _read_json(job_dir / "reviewed_object_tag_package.json").get(
-                    "objects"
-                )
-                or []
+            reviewed_payload = _read_json(
+                job_dir / "reviewed_object_tag_package.json"
             )
+            reviewed_objects = reviewed_payload.get("objects") or []
             remap_objects = None
+            remap_payload = None
             if reviewed:
-                remap_objects = (
-                    _read_json(
-                        job_dir / "object_evidence_remap_preview.json"
-                    ).get("objects")
-                    or []
+                remap_payload = _read_json(
+                    job_dir / "object_evidence_remap_preview.json"
                 )
+                remap_objects = remap_payload.get("objects") or []
 
             # Freeze the authoritative input exactly once, under the writer
             # barrier.  The fingerprint and the body mutation consume this
@@ -1308,6 +1233,16 @@ def _commit_objects_with_generation(
                 remap_objects=remap_objects,
             )
             current_fingerprint = _phase_input_fingerprint(frozen)
+            if reviewed:
+                if remap_payload is None:
+                    raise ImportPreviewError(
+                        "object_remap_preview_legacy_requires_regeneration: "
+                        "remap preview 缺少 strong source identity；请重新生成。"
+                    )
+                _validate_reviewed_remap_source(
+                    remap_payload=remap_payload,
+                    frozen=frozen,
+                )
 
             if not _production_document_exists(document_id, db_path=db_path):
                 # The commit source document no longer exists (deleted).  The
@@ -1366,6 +1301,12 @@ def _commit_objects_with_generation(
                     expected_db_sha256=active.production_db_sha256,
                     db_path=db_path,
                 )
+                _strict_object_commit_fts_ready(
+                    generation=active,
+                    database_path=db_path,
+                    data_dir=data_dir,
+                    expected_db_sha256=active.production_db_sha256,
+                )
                 return _reconstructed_already_committed(
                     import_job_id,
                     reviewed=reviewed,
@@ -1397,6 +1338,21 @@ def _commit_objects_with_generation(
                 data_dir=data_dir,
                 db_path=db_path,
             ) as mutation:
+                if mutation.rollback_snapshot is None or mutation.candidate is None:
+                    raise RuntimeError("object_commit_generation_prepare_incomplete")
+                before_db_sha256 = mutation.rollback_snapshot.sha256.lower()
+                before_registry = _object_commit_retrieval_registry(
+                    database_path=mutation.rollback_snapshot.path,
+                    data_dir=data_dir,
+                )
+                before_projection = (
+                    fts_index_service.compute_retrieval_projection_sha256(
+                        registry=before_registry
+                    )
+                )
+                candidate_fts_index_sha256 = _file_sha256(
+                    mutation.candidate.fts_index_path
+                ).lower()
                 result = body_commit(
                     import_job_id,
                     persist_result=False,
@@ -1422,6 +1378,40 @@ def _commit_objects_with_generation(
                 candidate = mutation.candidate
                 if candidate is None:
                     raise RuntimeError("object_commit_generation_candidate_missing")
+
+                after_registry = _object_commit_retrieval_registry(
+                    database_path=post_write_snapshot,
+                    data_dir=data_dir,
+                )
+                after_projection = (
+                    fts_index_service.compute_retrieval_projection_sha256(
+                        registry=after_registry
+                    )
+                )
+                if after_projection != before_projection:
+                    raise ImportPreviewError(
+                        "object_commit_fts_projection_changed: "
+                        "对象提交意外改变 retrieval projection，已 fail-closed。"
+                    )
+                rebind_result = (
+                    fts_index_service
+                    .rebind_retrieval_fts_after_proven_unchanged_projection(
+                        expected_before_db_sha256=before_db_sha256,
+                        expected_after_db_sha256=after_db_sha256,
+                        expected_projection_sha256=before_projection,
+                        index_path=candidate.fts_index_path,
+                        manifest_path=candidate.fts_manifest_path,
+                        production_db_path=post_write_snapshot,
+                        registry=after_registry,
+                    )
+                )
+                if (
+                    rebind_result.get("index_write_performed") is not False
+                    or rebind_result.get("full_rebuild_performed") is not False
+                    or _file_sha256(candidate.fts_index_path).lower()
+                    != candidate_fts_index_sha256
+                ):
+                    raise RuntimeError("object_commit_fts_index_changed")
 
                 sync_result = (
                     vector_store_service.sync_affected_object_embeddings(
@@ -1452,6 +1442,12 @@ def _commit_objects_with_generation(
                         expected_db_sha256=expected_sha,
                         db_path=post_write_snapshot,
                     )
+                    _strict_object_commit_fts_ready(
+                        generation=candidate_value,
+                        database_path=post_write_snapshot,
+                        data_dir=data_dir,
+                        expected_db_sha256=expected_sha,
+                    )
 
                 mutation.validate_candidate(validate_candidate)
                 finalized = mutation.finalize_candidate(
@@ -1475,6 +1471,12 @@ def _commit_objects_with_generation(
                         vector_store_path=active_value.vector_store_path,
                         expected_db_sha256=after_db_sha256,
                         db_path=db_path,
+                    )
+                    _strict_object_commit_fts_ready(
+                        generation=active_value,
+                        database_path=db_path,
+                        data_dir=data_dir,
+                        expected_db_sha256=after_db_sha256,
                     )
 
                 mutation.verify_active(validate_active)
