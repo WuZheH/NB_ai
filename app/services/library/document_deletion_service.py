@@ -86,6 +86,7 @@ KNOWN_REFERENCE_TABLES = {
     "object_candidate_human_review_items",
     "object_candidate_human_reviews",
     "object_candidates",
+    "object_commit_receipts",
     "ocr_first_candidate_corrections",
     "ocr_first_chunk_candidates",
     "ocr_first_promote_snapshots",
@@ -611,10 +612,20 @@ def _strict_delete_scope_validation(
                 connection,
                 plan,
             )
+        if _table_exists(connection, "object_commit_receipts"):
+            # Receipt rows must be tombstoned (document_id = NULL), never
+            # left dangling against the deleted document.
+            checks["dangling_commit_receipts"] = _count(
+                connection,
+                "object_commit_receipts",
+                "document_id = ?",
+                (document_id,),
+            )
         if (
             checks["document_rows"]
             or checks["dangling_personal_notes"]
             or checks.get("dangling_zotero_notes", 0)
+            or checks.get("dangling_commit_receipts", 0)
         ):
             raise RuntimeError("deletion_generation_database_rows_remain")
 
@@ -1880,6 +1891,16 @@ def _execute_database_transaction(plan: InternalDeletionPlan, *, runtime: Deleti
             "DELETE FROM documents WHERE id = ?",
             (plan.document_id,),
         )
+        if _table_exists(connection, "object_commit_receipts"):
+            # Receipts are durable history: detach the document reference
+            # (tombstone) instead of deleting the rows, so a deleted source
+            # can never re-enter the object commit flow.
+            counts["object_commit_receipts_detached"] = _execute_count(
+                connection,
+                "UPDATE object_commit_receipts SET document_id = NULL "
+                "WHERE document_id = ?",
+                (plan.document_id,),
+            )
         foreign_key_issues = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
         if foreign_key_issues:
             raise DeletionError(
@@ -2389,6 +2410,12 @@ def _collect_recovery_rows(connection: sqlite3.Connection, plan: InternalDeletio
         collected[table] = _rows(connection, f"SELECT * FROM {table} WHERE {column} = ?", (plan.document_id,))
     if _table_exists(connection, "library_archive_states"):
         collected["library_archive_states"] = _rows(connection, "SELECT * FROM library_archive_states WHERE document_id = ?", (plan.document_id,))
+    if _table_exists(connection, "object_commit_receipts"):
+        collected["object_commit_receipts"] = _rows(
+            connection,
+            "SELECT * FROM object_commit_receipts WHERE document_id = ?",
+            (plan.document_id,),
+        )
     if plan.chunk_ids:
         placeholders = _placeholders(plan.chunk_ids)
         for table, condition in (
@@ -2728,6 +2755,12 @@ def _database_impact_fingerprint(
             payload["library_archive_states"] = _rows(
                 connection,
                 "SELECT * FROM library_archive_states WHERE document_id = ?",
+                (document_id,),
+            )
+        if _table_exists(connection, "object_commit_receipts"):
+            payload["object_commit_receipts"] = _rows(
+                connection,
+                "SELECT * FROM object_commit_receipts WHERE document_id = ?",
                 (document_id,),
             )
         if chunk_ids:

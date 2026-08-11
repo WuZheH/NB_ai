@@ -287,11 +287,14 @@ def _passage_record(document_id: int, chunk_id: int) -> dict:
 def _versioned_fixture(
     tmp_path: Path,
     after_legacy_store: object | None = None,
+    after_database: object | None = None,
 ) -> dict[str, Path]:
     data = tmp_path / "data"
     data.mkdir()
     database = data / "research_memory.db"
     _database(database)
+    if callable(after_database):
+        after_database(database)
 
     legacy = tmp_path / "fixed-legacy"
     legacy.mkdir(parents=True)

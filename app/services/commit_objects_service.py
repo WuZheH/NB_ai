@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import tempfile
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -53,13 +54,60 @@ _RECEIPT_TABLE_DDL = (
 )
 
 
-def _canonical_package_value(value: Any, *, depth: int = 0) -> Any:
-    """Deterministically canonicalize reviewed-package content.
+@dataclass(frozen=True)
+class ObjectCommitFrozenInput:
+    """Immutable authoritative commit input for one phase.
 
-    object_key values are reduced to their canonical semantic identity,
-    mapping keys are sorted, and list order is preserved (the commit services
-    consume the lists in order).  Nothing volatile (paths, timestamps,
-    markers) belongs in the packages, so no stripping is required.
+    The production wrapper reads the staging files exactly once, under the
+    generation writer barrier, and projects them into this frozen structure.
+    The semantic fingerprint is computed from it, and the body mutation
+    consumes exactly this same in-memory snapshot — the body never re-reads
+    staging files, so the receipt can never describe a different input than
+    the one that was committed (TOCTOU closed).
+    """
+
+    import_job_id: str
+    phase: str
+    document_id: int
+    reviewed_objects: tuple[dict[str, Any], ...]
+    remap_objects: tuple[dict[str, Any], ...] = ()
+
+
+_REVIEWED_OBJECT_COMMIT_FIELDS = (
+    "object_key",
+    "object_name",
+    "object_type",
+    "review_status",
+    "confidence",
+    "description",
+    "user_comment",
+    "source_origin",
+    "necessity_judgment",
+    "importance_score",
+    "aliases",
+    "topic_tags",
+    "problem_tags",
+    "mechanism_tags",
+    "inspiration_tags",
+    "evidence_refs",
+    "source_note_ids",
+    "warnings",
+)
+
+_REMAP_COMMIT_FIELDS = (
+    "object_key",
+    "mapped_chunk_ids",
+    "mapping_status",
+    "warnings",
+)
+
+
+def _canonical_package_value(value: Any, *, depth: int = 0) -> Any:
+    """Deterministically canonicalize nested package content.
+
+    Mapping keys are sorted and list order is preserved (the commit services
+    consume the lists in order).  object_key values are reduced to their
+    canonical semantic identity.
     """
     if depth > 10:
         raise ImportPreviewError(
@@ -85,24 +133,76 @@ def _canonical_package_value(value: Any, *, depth: int = 0) -> Any:
     return str(value)
 
 
-def _phase_input_fingerprint(
+def _project_object_for_commit(obj: Any) -> dict[str, Any]:
+    """Allowlist projection of the fields the plain body actually mutates.
+
+    Only fields that reach the ObjectCandidate row, the mapping status, or
+    the vector profile are included.  Volatile upload metadata
+    (``reviewed_at``, ``reviewed_by``, ``status``, ``safety``) is excluded by
+    construction — this is an allowlist, not a blacklist.
+    """
+    if not isinstance(obj, dict):
+        raise ImportPreviewError(
+            "object_commit_fingerprint_input: 对象包条目必须为对象。"
+        )
+    projected: dict[str, Any] = {}
+    for field in _REVIEWED_OBJECT_COMMIT_FIELDS:
+        value = obj.get(field)
+        if field == "object_key":
+            value = vector_store_service.canonical_object_key(str(value or ""))
+        projected[field] = _canonical_package_value(value)
+    return projected
+
+
+def _project_remap_for_commit(obj: Any) -> dict[str, Any]:
+    """Allowlist projection of one remap preview entry."""
+    if not isinstance(obj, dict):
+        raise ImportPreviewError(
+            "object_commit_fingerprint_input: remap 预览条目必须为对象。"
+        )
+    projected: dict[str, Any] = {}
+    for field in _REMAP_COMMIT_FIELDS:
+        value = obj.get(field)
+        if field == "object_key":
+            value = vector_store_service.canonical_object_key(str(value or ""))
+        projected[field] = _canonical_package_value(value)
+    return projected
+
+
+def _freeze_commit_input(
     *,
     import_job_id: str,
-    document_id: int | None,
-    reviewed_package: Any,
-    remap_preview: Any | None = None,
     phase: str,
-) -> str:
+    document_id: int,
+    reviewed_objects: list[Any],
+    remap_objects: list[Any] | None = None,
+) -> ObjectCommitFrozenInput:
+    return ObjectCommitFrozenInput(
+        import_job_id=import_job_id,
+        phase=phase,
+        document_id=document_id,
+        reviewed_objects=tuple(
+            _project_object_for_commit(obj) for obj in reviewed_objects
+        ),
+        remap_objects=tuple(
+            _project_remap_for_commit(obj) for obj in (remap_objects or [])
+        ),
+    )
+
+
+def _phase_input_fingerprint(frozen: ObjectCommitFrozenInput) -> str:
+    """SHA-256 of the frozen commit-semantic input.
+
+    The payload is exactly the frozen snapshot the body will mutate from, so
+    fingerprint input and mutation input are the same in-memory object.
+    """
     payload = {
-        "phase": phase,
-        "import_job_id": import_job_id,
-        "document_id": document_id,
-        "reviewed_object_package": _canonical_package_value(reviewed_package),
+        "phase": frozen.phase,
+        "import_job_id": frozen.import_job_id,
+        "document_id": frozen.document_id,
+        "reviewed_objects": list(frozen.reviewed_objects),
+        "remap_objects": list(frozen.remap_objects),
     }
-    if remap_preview is not None:
-        payload["object_evidence_remap_preview"] = _canonical_package_value(
-            remap_preview
-        )
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -146,6 +246,72 @@ def _insert_receipt_row(
             "committed_at": datetime.now(timezone.utc).isoformat(),
         },
     )
+
+
+def _production_document_exists(document_id: int, *, db_path: Path) -> bool:
+    """Return whether the commit source document still exists."""
+    database = Path(db_path).resolve(strict=False)
+    if not database.is_file():
+        return False
+    with closing(
+        sqlite3.connect(
+            f"file:{database.as_posix()}?mode=ro",
+            uri=True,
+        )
+    ) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        row = connection.execute(
+            "SELECT 1 FROM documents WHERE id = ? LIMIT 1",
+            (document_id,),
+        ).fetchone()
+    return row is not None
+
+
+def _legacy_object_mutation_evidence(
+    import_job_id: str,
+    *,
+    reviewed: bool,
+    db_path: Path,
+) -> bool:
+    """Return whether a pre-receipt commit may already have mutated the DB.
+
+    Phase-specific: plain-phase evidence is any object row for the job;
+    reviewed-phase evidence is rows that only the reviewed commit can have
+    produced (source_import_manifest_path set, or deprecated status).  Plain
+    rows alone never imply the reviewed phase happened.  The filesystem
+    result markers also count as conservative evidence: they must never be
+    interpreted as a strong identity, only as a reason to block.
+    """
+    database = Path(db_path).resolve(strict=False)
+    if database.is_file():
+        with closing(
+            sqlite3.connect(
+                f"file:{database.as_posix()}?mode=ro",
+                uri=True,
+            )
+        ) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            if reviewed:
+                row = connection.execute(
+                    "SELECT 1 FROM object_candidates "
+                    "WHERE import_job_id = ? "
+                    "AND (source_import_manifest_path IS NOT NULL "
+                    "OR status = 'deprecated') LIMIT 1",
+                    (import_job_id,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT 1 FROM object_candidates "
+                    "WHERE import_job_id = ? LIMIT 1",
+                    (import_job_id,),
+                ).fetchone()
+            if row is not None:
+                return True
+    job_dir = _existing_job_dir(import_job_id)
+    marker_name = COMMIT_REVIEWED_FILE if reviewed else COMMIT_OBJECTS_FILE
+    return (job_dir / marker_name).is_file()
 
 
 def _read_object_commit_receipt(
@@ -204,6 +370,7 @@ def commit_objects_from_staging(
     *,
     persist_result: bool = True,
     receipt: dict[str, Any] | None = None,
+    frozen_input: ObjectCommitFrozenInput | None = None,
 ) -> dict[str, Any]:
     job_dir = _existing_job_dir(import_job_id)
 
@@ -212,18 +379,32 @@ def commit_objects_from_staging(
     source_trace_path = job_dir / "source_trace.json"
     commit_objects_path = job_dir / COMMIT_OBJECTS_FILE
 
-    if not commit_paper_path.is_file():
-        raise ImportPreviewError("Paper not committed. Run commit-paper first.")
-    if not reviewed_path.is_file():
-        raise ImportPreviewError("reviewed_object_tag_package.json not found.")
+    if frozen_input is not None:
+        # Production path: the authoritative input is the frozen in-memory
+        # snapshot captured by the wrapper under the writer barrier.  The
+        # staging files are never re-read for mutation content, so the
+        # fingerprint and the mutation are the same object.
+        document_id = int(frozen_input.document_id)
+        objects = list(frozen_input.reviewed_objects)
+        source_trace = {}
+    else:
+        if not commit_paper_path.is_file():
+            raise ImportPreviewError("Paper not committed. Run commit-paper first.")
+        if not reviewed_path.is_file():
+            raise ImportPreviewError("reviewed_object_tag_package.json not found.")
 
-    commit_paper = _read_json(commit_paper_path)
-    document_id = commit_paper.get("document_id")
-    if document_id is None:
-        raise ImportPreviewError("commit_result.json has no document_id.")
+        commit_paper = _read_json(commit_paper_path)
+        document_id = commit_paper.get("document_id")
+        if document_id is None:
+            raise ImportPreviewError("commit_result.json has no document_id.")
 
-    reviewed = _read_json(reviewed_path)
-    source_trace = _read_json(source_trace_path) if source_trace_path.is_file() else {}
+        reviewed = _read_json(reviewed_path)
+        source_trace = (
+            _read_json(source_trace_path)
+            if source_trace_path.is_file()
+            else {}
+        )
+        objects = reviewed.get("objects") or []
 
     # Idempotency: the filesystem marker is only a convenience cache.  It may
     # only gate correctness when persisting (legacy non-production callers);
@@ -252,8 +433,6 @@ def commit_objects_from_staging(
     # Build chunk index for mapping
     chunk_index = _build_chunk_index(document_id)
 
-    # Filter and validate objects
-    objects = reviewed.get("objects") or []
     inserted = 0
     skipped_rejected = 0
     skipped_suggested = 0
@@ -617,12 +796,15 @@ def commit_reviewed_objects_from_remap(
     *,
     persist_result: bool = True,
     receipt: dict[str, Any] | None = None,
+    frozen_input: ObjectCommitFrozenInput | None = None,
 ) -> dict[str, Any]:
     """Commit reviewed objects using pre-computed remap preview.
 
     Reads reviewed_object_tag_package.json + object_evidence_remap_preview.json,
     deprecates old objects for this job not in the latest accepted/edited set,
     then upserts new objects.  Only accepted/edited objects are written.
+    With ``frozen_input`` the authoritative content is the frozen in-memory
+    snapshot; the staging files are not re-read for mutation content.
     """
     job_dir = _existing_job_dir(import_job_id)
 
@@ -631,20 +813,27 @@ def commit_reviewed_objects_from_remap(
     remap_path = job_dir / "object_evidence_remap_preview.json"
     result_path = job_dir / COMMIT_REVIEWED_FILE
 
-    if not commit_paper_path.is_file():
-        raise ImportPreviewError("Paper not committed. Run commit-paper first.")
-    if not reviewed_path.is_file():
-        raise ImportPreviewError("reviewed_object_tag_package.json not found.")
-    if not remap_path.is_file():
-        raise ImportPreviewError(
-            "object_evidence_remap_preview.json not found. "
-            "Run remap-reviewed-objects-preview first."
-        )
+    if frozen_input is not None:
+        document_id = int(frozen_input.document_id)
+        reviewed_objects = list(frozen_input.reviewed_objects)
+        remap_objects = list(frozen_input.remap_objects)
+    else:
+        if not commit_paper_path.is_file():
+            raise ImportPreviewError("Paper not committed. Run commit-paper first.")
+        if not reviewed_path.is_file():
+            raise ImportPreviewError("reviewed_object_tag_package.json not found.")
+        if not remap_path.is_file():
+            raise ImportPreviewError(
+                "object_evidence_remap_preview.json not found. "
+                "Run remap-reviewed-objects-preview first."
+            )
 
-    commit_paper = _read_json(commit_paper_path)
-    document_id = commit_paper.get("document_id")
-    if document_id is None:
-        raise ImportPreviewError("commit_result.json has no document_id.")
+        commit_paper = _read_json(commit_paper_path)
+        document_id = commit_paper.get("document_id")
+        if document_id is None:
+            raise ImportPreviewError("commit_result.json has no document_id.")
+        reviewed_objects = (_read_json(reviewed_path).get("objects") or [])
+        remap_objects = (_read_json(remap_path).get("objects") or [])
 
     # Idempotency: the filesystem marker is only a convenience cache.  It may
     # only gate correctness when persisting (legacy non-production callers);
@@ -667,12 +856,9 @@ def commit_reviewed_objects_from_remap(
             "external_llm_called": False,
         }
 
-    reviewed = _read_json(reviewed_path)
-    remap_data = _read_json(remap_path)
-
     # Build remap lookup: canonical object_key -> remap result
     remap_by_key: dict[str, dict[str, Any]] = {}
-    for obj in remap_data.get("objects") or []:
+    for obj in remap_objects:
         canonical = vector_store_service.canonical_object_key(
             str(obj.get("object_key") or "")
         )
@@ -682,7 +868,7 @@ def commit_reviewed_objects_from_remap(
     # Filter accepted/edited objects from reviewed package
     accepted_edited: list[dict[str, Any]] = []
     accepted_edited_keys: set[str] = set()
-    for obj in reviewed.get("objects") or []:
+    for obj in reviewed_objects:
         rs = str(obj.get("review_status") or "").strip().lower()
         if rs in ("accepted", "edited"):
             canonical = vector_store_service.canonical_object_key(
@@ -1090,27 +1276,65 @@ def _commit_objects_with_generation(
                 raise ImportPreviewError(
                     "commit_result.json has no document_id."
                 )
-            reviewed_package = _read_json(
-                job_dir / "reviewed_object_tag_package.json"
-            )
-            remap_preview = None
-            if reviewed:
-                remap_preview = _read_json(
-                    job_dir / "object_evidence_remap_preview.json"
+            try:
+                document_id = int(document_id)
+            except (TypeError, ValueError) as exc:
+                raise ImportPreviewError(
+                    "commit_result.json has an invalid document_id."
+                ) from exc
+            reviewed_objects = (
+                _read_json(job_dir / "reviewed_object_tag_package.json").get(
+                    "objects"
                 )
-            current_fingerprint = _phase_input_fingerprint(
-                import_job_id=import_job_id,
-                document_id=document_id,
-                reviewed_package=reviewed_package,
-                remap_preview=remap_preview,
-                phase=phase,
+                or []
             )
+            remap_objects = None
+            if reviewed:
+                remap_objects = (
+                    _read_json(
+                        job_dir / "object_evidence_remap_preview.json"
+                    ).get("objects")
+                    or []
+                )
+
+            # Freeze the authoritative input exactly once, under the writer
+            # barrier.  The fingerprint and the body mutation consume this
+            # same in-memory snapshot; the body never re-reads staging files.
+            frozen = _freeze_commit_input(
+                import_job_id=import_job_id,
+                phase=phase,
+                document_id=document_id,
+                reviewed_objects=reviewed_objects,
+                remap_objects=remap_objects,
+            )
+            current_fingerprint = _phase_input_fingerprint(frozen)
+
+            if not _production_document_exists(document_id, db_path=db_path):
+                # The commit source document no longer exists (deleted).  The
+                # old job must never recreate its objects.
+                raise ImportPreviewError(
+                    "object_commit_source_document_deleted: "
+                    "本次对象提交的源文档已不存在，fail-closed。"
+                )
+
             receipt = _read_object_commit_receipt(
                 import_job_id=import_job_id,
                 phase=phase,
                 db_path=db_path,
             )
             if receipt is not None:
+                if receipt["document_id"] is None:
+                    # Tombstoned by a document deletion: the historical phase
+                    # must not be re-executed or reported complete.
+                    raise ImportPreviewError(
+                        "object_commit_source_document_deleted: "
+                        "本次对象提交的源文档已被删除，fail-closed。"
+                    )
+                if receipt["document_id"] != document_id:
+                    raise ImportPreviewError(
+                        "object_commit_receipt_document_mismatch: "
+                        "对象提交 receipt 的 document 与当前输入不一致，fail-closed。"
+                    )
                 if receipt["input_fingerprint"] != current_fingerprint:
                     # The same phase input changed after the commit: never
                     # report success, never overwrite the old commit, never
@@ -1148,6 +1372,20 @@ def _commit_objects_with_generation(
                     db_path=db_path,
                 )
 
+            if _legacy_object_mutation_evidence(
+                import_job_id,
+                reviewed=reviewed,
+                db_path=db_path,
+            ):
+                # A pre-FIX6 job already mutated the database without a
+                # durable receipt.  Never auto-commit, never reconstruct a
+                # receipt, never report already_committed.
+                raise ImportPreviewError(
+                    "object_commit_legacy_state_requires_reconciliation: "
+                    "该 import job 存在无 receipt 的历史对象提交痕迹，"
+                    "需要人工核对，fail-closed。"
+                )
+
             receipt_payload = {
                 "import_job_id": import_job_id,
                 "phase": phase,
@@ -1163,6 +1401,7 @@ def _commit_objects_with_generation(
                     import_job_id,
                     persist_result=False,
                     receipt=receipt_payload,
+                    frozen_input=frozen,
                 )
                 mutation.mark_body_db_mutated()
                 after_db_sha256 = mutation.capture_post_write_database()

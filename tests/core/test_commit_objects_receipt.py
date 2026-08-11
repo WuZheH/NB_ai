@@ -445,16 +445,16 @@ def test_successful_commit_persists_durable_receipt(
     assert phase == "commit_objects"
     assert len(fingerprint) == 64
     assert fingerprint == fingerprint.lower()
-    expected = objects_commit._phase_input_fingerprint(
-        import_job_id=job_id,
-        document_id=1,
-        reviewed_package=json.loads(
-            (job_dir / "reviewed_object_tag_package.json").read_text(
-                encoding="utf-8"
-            )
-        ),
-        phase="commit_objects",
+    package = json.loads(
+        (job_dir / "reviewed_object_tag_package.json").read_text(encoding="utf-8")
     )
+    frozen = objects_commit._freeze_commit_input(
+        import_job_id=job_id,
+        phase="commit_objects",
+        document_id=1,
+        reviewed_objects=package.get("objects") or [],
+    )
+    expected = objects_commit._phase_input_fingerprint(frozen)
     assert fingerprint == expected
 
 
