@@ -59,6 +59,9 @@ from app.services import (
     zotero_selected_book_preview_service,
     zotero_source_cache_service,
 )
+from app.services.production_write_surface_guard import (
+    ProductionWriteSurfaceFrozenError,
+)
 
 
 router = APIRouter(prefix="/api/v1/zotero")
@@ -286,6 +289,8 @@ def get_mechanism_draft_candidate_tempdb_connection() -> Iterator[sqlite3.Connec
 def refresh_snapshot() -> dict[str, Any]:
     try:
         return zotero_source_cache_service.refresh_snapshot()
+    except ProductionWriteSurfaceFrozenError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -294,6 +299,8 @@ def refresh_snapshot() -> dict[str, Any]:
 def sync_pdf_sources() -> dict[str, Any]:
     try:
         return zotero_source_cache_service.sync_pdf_sources()
+    except ProductionWriteSurfaceFrozenError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -378,6 +385,8 @@ def upsert_inspiration_note(
             connection,
             _request_dict(request),
         )
+    except ProductionWriteSurfaceFrozenError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from exc
     except zotero_inspiration_note_service.InspirationPayloadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -395,6 +404,8 @@ def batch_upsert_inspiration_notes(
             connection,
             [_request_dict(note) for note in request.notes],
         )
+    except ProductionWriteSurfaceFrozenError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from exc
     except zotero_inspiration_note_service.InspirationPayloadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

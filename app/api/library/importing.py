@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from app.api.library.read_common import *  # noqa: F401,F403
+from app.services.production_write_surface_guard import (
+    ProductionWriteSurfaceFrozenError,
+)
 
 
 router = APIRouter()
@@ -38,6 +41,8 @@ def classify_pdf_import(request: PdfImportClassifyRequest) -> dict[str, Any]:
 def commit_pdf_import(request: PdfImportCommitRequest) -> dict[str, Any]:
     try:
         payload = pdf_import_classifier_service.commit_pdf_import(request.model_dump())
+    except ProductionWriteSurfaceFrozenError as exc:
+        return JSONResponse(status_code=exc.status_code, content=exc.detail())
     except PdfBackendUnavailableError as exc:
         return _pdf_backend_unavailable_response(exc, source_path=request.pdf_path)
     except pdf_import_classifier_service.PdfImportClassificationError as exc:

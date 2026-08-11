@@ -8,12 +8,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import inspect, or_, select
 
 from app.core.paths import DATA_PROJECT_ROOT, ZOTERO_DIR
 from app.db.session import Base, SessionLocal, engine
 from app.models import Document, DocumentSource, ZoteroPdfSource
 from app.services import import_duplicate_check_service
+from app.services.production_write_surface_guard import (
+    require_proven_legacy_for_legacy_write_surface,
+)
 
 
 CONFIG_PATH = ZOTERO_DIR / "zotero_source_config.json"
@@ -22,6 +25,13 @@ ZOTERO_OPEN_PDF_URI = "zotero://open-pdf/library/items/{attachment_key}"
 
 
 def refresh_snapshot() -> dict[str, Any]:
+    require_proven_legacy_for_legacy_write_surface(
+        error_code="zotero_snapshot_refresh_versioned_frozen",
+        message=(
+            "Zotero snapshot refresh 在 versioned production 中已冻结；"
+            "snapshot 与 active generation 均未修改。"
+        ),
+    )
     config = _load_config()
     source_db = Path(config["zotero_data_dir"]) / "zotero.sqlite"
     snapshot_path = _project_path(config["zotero_db_snapshot"])
@@ -56,6 +66,13 @@ def refresh_snapshot() -> dict[str, Any]:
 
 
 def sync_pdf_sources() -> dict[str, Any]:
+    require_proven_legacy_for_legacy_write_surface(
+        error_code="zotero_pdf_source_sync_versioned_frozen",
+        message=(
+            "Zotero PDF source sync 在 versioned production 中已冻结；"
+            "本次请求未执行任何数据库写入。"
+        ),
+    )
     _ensure_tables()
     config = _load_config()
     snapshot_path = _project_path(config["zotero_db_snapshot"])
@@ -99,7 +116,7 @@ def sync_pdf_sources() -> dict[str, Any]:
 
 
 def list_pdf_sources(q: str = "", status: str | None = "available") -> dict[str, Any]:
-    _ensure_tables()
+    _require_tables_for_read()
     query = (q or "").strip().casefold()
     with SessionLocal() as session:
         stmt = select(ZoteroPdfSource).order_by(ZoteroPdfSource.title, ZoteroPdfSource.zotero_attachment_key)
@@ -187,7 +204,7 @@ def enrich_zotero_sources_with_import_status(
 
 
 def get_pdf_source(source_id: int) -> ZoteroPdfSource:
-    _ensure_tables()
+    _require_tables_for_read()
     with SessionLocal() as session:
         source = session.get(ZoteroPdfSource, source_id)
         if source is None:
@@ -518,6 +535,19 @@ def _project_path(value: str) -> Path:
 
 def _ensure_tables() -> None:
     Base.metadata.create_all(bind=engine, tables=[ZoteroPdfSource.__table__, DocumentSource.__table__])
+
+
+def _require_tables_for_read() -> None:
+    inspector = inspect(engine)
+    missing = [
+        table.name
+        for table in (ZoteroPdfSource.__table__, DocumentSource.__table__)
+        if not inspector.has_table(table.name)
+    ]
+    if missing:
+        raise ValueError(
+            "Zotero source cache schema is unavailable; read requests do not create production tables."
+        )
 
 
 def _creator_name(first: Any, last: Any, field_mode: Any) -> str:

@@ -6,7 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from app.core.paths import DEFAULT_DB_PATH
+from app.core.paths import DATA_DIR, DEFAULT_DB_PATH
+from app.services.production_write_surface_guard import (
+    ProductionWriteSurfaceFrozenError,
+    require_proven_legacy_for_legacy_write_surface,
+)
 
 
 ARCHIVE_STATUS = "archived"
@@ -24,10 +28,38 @@ CREATE TABLE IF NOT EXISTS library_archive_states (
 
 
 class ArchiveError(RuntimeError):
-    def __init__(self, error_code: str, message: str, *, status_code: int = 409) -> None:
+    def __init__(
+        self,
+        error_code: str,
+        message: str,
+        *,
+        status_code: int = 409,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
         self.status_code = status_code
+        self.details = details or {}
+
+
+def _require_legacy_archive_surface(db_path: str | Path) -> None:
+    try:
+        require_proven_legacy_for_legacy_write_surface(
+            error_code="library_archive_versioned_frozen",
+            message=(
+                "资料库归档/恢复在 versioned production 中已冻结；"
+                "本次请求未执行任何写入。"
+            ),
+            db_path=db_path,
+            data_dir=DATA_DIR,
+        )
+    except ProductionWriteSurfaceFrozenError as exc:
+        raise ArchiveError(
+            exc.error_code,
+            str(exc),
+            status_code=exc.status_code,
+            details=exc.detail(),
+        ) from exc
 
 
 def archive_documents(
@@ -35,6 +67,7 @@ def archive_documents(
     *,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
+    _require_legacy_archive_surface(db_path)
     ids = _validated_ids(document_ids)
     with _write_connection(db_path) as connection:
         try:
@@ -85,6 +118,7 @@ def restore_documents(
     *,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
+    _require_legacy_archive_surface(db_path)
     ids = _validated_ids(document_ids)
     with _write_connection(db_path) as connection:
         try:

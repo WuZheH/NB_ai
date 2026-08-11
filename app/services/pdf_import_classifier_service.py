@@ -17,6 +17,9 @@ from app.services.book_import_service import (
 )
 from app.services.pdf_backend_service import PdfBackendUnavailableError, load_fitz_backend
 from app.services.pdf_parser_backends import DEFAULT_PDF_PARSER_BACKEND, MARKER_SURYA_PAGE_BLOCKS_BACKEND
+from app.services.production_write_surface_guard import (
+    require_proven_legacy_for_legacy_write_surface,
+)
 
 
 DOCUMENT_TYPES = {"paper", "book", "thesis", "report", "other"}
@@ -191,6 +194,13 @@ def apply_user_override(
 
 
 def commit_pdf_import(request: dict[str, Any]) -> dict[str, Any]:
+    require_proven_legacy_for_legacy_write_surface(
+        error_code="legacy_pdf_commit_versioned_frozen",
+        message=(
+            "旧 PDF commit 在 versioned production 中已冻结；"
+            "请使用 generation-safe Local PDF / Chat import。"
+        ),
+    )
     document_type = str(request.get("document_type") or "")
     object_import_mode = str(request.get("object_import_mode") or "")
     if document_type not in DOCUMENT_TYPES:

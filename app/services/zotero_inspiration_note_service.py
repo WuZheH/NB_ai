@@ -6,8 +6,13 @@ import re
 import sqlite3
 import unicodedata
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping
 
+from app.core.paths import DATA_DIR
+from app.services.production_write_surface_guard import (
+    require_proven_legacy_for_legacy_write_surface,
+)
 from app.services.unit_note_object_processing_service import (
     apply_note_processing_fields,
     note_processing_fields,
@@ -74,6 +79,28 @@ class InspirationPayloadError(ValueError):
 
 class InspirationSchemaUnavailable(RuntimeError):
     pass
+
+
+def _main_database_path(conn: sqlite3.Connection) -> Path | None:
+    for _sequence, name, path in conn.execute("PRAGMA database_list").fetchall():
+        if name == "main" and path:
+            return Path(path).resolve(strict=False)
+    return None
+
+
+def _require_legacy_inspiration_write(conn: sqlite3.Connection) -> None:
+    database = _main_database_path(conn)
+    if database is None:
+        return
+    require_proven_legacy_for_legacy_write_surface(
+        error_code="zotero_inspiration_note_write_versioned_frozen",
+        message=(
+            "Zotero inspiration-note 写入在 versioned production 中已冻结；"
+            "本次请求未执行任何数据库写入。"
+        ),
+        db_path=database,
+        data_dir=DATA_DIR,
+    )
 
 
 def ensure_zotero_inspiration_note_schema(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -198,6 +225,7 @@ def upsert_inspiration_note(
     *,
     commit: bool = True,
 ) -> dict[str, Any]:
+    _require_legacy_inspiration_write(conn)
     _require_schema(conn)
     warnings = validate_inspiration_payload(payload)
     received_at = datetime.now(timezone.utc).isoformat()
@@ -266,6 +294,7 @@ def batch_upsert_inspiration_notes(
     conn: sqlite3.Connection,
     payloads: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    _require_legacy_inspiration_write(conn)
     results = [upsert_inspiration_note(conn, payload, commit=False) for payload in payloads]
     conn.commit()
     return {
