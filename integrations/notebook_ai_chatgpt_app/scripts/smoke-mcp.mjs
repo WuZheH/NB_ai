@@ -1,6 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
+import { FORMAL_MCP_TOOL_NAMES } from "./formal-mcp-tool-contract.mjs";
+
 const endpoint = new URL(process.argv[2] ?? "http://127.0.0.1:8787/mcp");
 const query = process.argv[3] ?? "避免脚步滑动";
 const sourceTypes = (
@@ -19,7 +21,7 @@ try {
   await client.connect(transport);
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name).sort();
-  if (names.join(",") !== "delete_document,delete_preview,export_evidence,fetch,import_document,import_preview,integrity_report,list_library,search") {
+  if (names.join(",") !== FORMAL_MCP_TOOL_NAMES.join(",")) {
     throw new Error(`Unexpected MCP tools: ${names.join(", ")}`);
   }
 

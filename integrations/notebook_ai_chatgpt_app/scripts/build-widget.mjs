@@ -33,7 +33,7 @@ const html = `<!doctype html>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Search</title>
+    <title>READ</title>
     <style>${stylesheet?.text ?? ""}</style>
   </head>
   <body>
