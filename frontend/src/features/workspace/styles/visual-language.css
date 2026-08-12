@@ -1,0 +1,407 @@
+/* ============================================================
+   PHASE8B-FIX9 NOTEBOOK-STYLE VISUAL LANGUAGE
+   Low-noise product shell tokens and default hierarchy overrides.
+   ============================================================ */
+.notebookWorkspaceShell,
+.notebookLmInspiredWorkspace,
+.notebookHomePage {
+  --nb-bg: #0d1016;
+  --nb-panel: rgba(20, 24, 31, 0.92);
+  --nb-panel-soft: rgba(255, 255, 255, 0.055);
+  --nb-panel-hover: rgba(151, 180, 214, 0.12);
+  --nb-border: rgba(232, 238, 246, 0.1);
+  --nb-border-strong: rgba(184, 207, 235, 0.26);
+  --nb-text: #eef3f8;
+  --nb-muted: #aeb8c4;
+  --nb-subtle: #7e8997;
+  --nb-accent: #9bb8d7;
+  --nb-accent-soft: rgba(155, 184, 215, 0.14);
+  --nb-success: #93cfa7;
+  --nb-success-soft: rgba(112, 178, 134, 0.14);
+  --nb-warning: #d6b66f;
+  --nb-warning-soft: rgba(214, 182, 111, 0.14);
+  --nb-danger: #df9494;
+  --nb-danger-soft: rgba(223, 148, 148, 0.14);
+  --nb-radius-lg: 24px;
+  --nb-radius-md: 18px;
+  --nb-radius-pill: 999px;
+  --nb-shadow-soft: 0 16px 40px rgba(0, 0, 0, 0.24);
+  --text: var(--nb-text);
+  --text-muted: var(--nb-muted);
+  --text-soft: var(--nb-subtle);
+  --text-subtle: var(--nb-subtle);
+  --accent-strong: var(--nb-accent);
+  --warning: var(--nb-warning);
+}
+
+.notebookWorkspaceShell {
+  background:
+    radial-gradient(circle at 50% -10%, rgba(155, 184, 215, 0.12), transparent 34%),
+    radial-gradient(circle at 92% 10%, rgba(147, 207, 167, 0.055), transparent 30%),
+    var(--nb-bg);
+}
+
+.researchWorkspaceTopbar,
+.researchWorkspaceColumn,
+.notebookHomeTopbar,
+.notebookHomeSection {
+  border-color: var(--nb-border);
+  background: var(--nb-panel);
+  box-shadow: var(--nb-shadow-soft);
+}
+
+.workspaceSourceCard,
+.workspaceGateCard,
+.workspaceSearchNotice,
+.workspaceLayerCard,
+.workspaceStudioDetail,
+.workspaceStructuredOverview,
+.workspaceStructuredSection,
+.workspaceLegacyLayerStatus,
+.workspaceSearchResultsShell,
+.workspaceSearchLayerSection,
+.workspaceSearchResultCard,
+.workspaceSearchGateCard,
+.workspaceSearchNoQuery,
+.workspacePdfViewportCard,
+.sourceEvidenceCard,
+.developerEvidenceDetails,
+.workspaceSourceSampleCard,
+.mechanismGraphDetail,
+.chapterWorkflowBanner,
+.workspaceDisclosure,
+.advancedWorkflowDrawerCard,
+.workspaceStudioCard {
+  border-color: var(--nb-border);
+  border-radius: var(--nb-radius-md);
+  background: var(--nb-panel-soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.workspacePillButton,
+.quietButton,
+.notebookHomeTabs button,
+.notebookCardAction {
+  border-radius: var(--nb-radius-pill);
+  border: 1px solid var(--nb-border);
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--nb-text);
+  box-shadow: none;
+}
+
+.workspacePillButton:hover:not(.disabled),
+.quietButton:hover:not(:disabled),
+.notebookHomeTabs button:hover {
+  border-color: var(--nb-border-strong);
+  background: var(--nb-accent-soft);
+  color: var(--nb-text);
+}
+
+.workspaceSearchBox {
+  border-color: var(--nb-border-strong);
+  border-radius: 28px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.04)),
+    rgba(6, 9, 13, 0.42);
+}
+
+.workspaceSearchBox input {
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.072);
+  font-size: 14px;
+}
+
+.workspaceSearchBox button {
+  border-radius: var(--nb-radius-pill);
+  border-color: var(--nb-border-strong);
+  background: rgba(155, 184, 215, 0.18);
+  color: var(--nb-text);
+}
+
+.workspaceSearchBox button:hover {
+  background: rgba(155, 184, 215, 0.26);
+}
+
+.workspaceStatusPill {
+  min-height: 23px;
+  padding: 0 8px;
+  border-color: var(--nb-border);
+  border-radius: var(--nb-radius-pill);
+  background: rgba(255, 255, 255, 0.052);
+  color: var(--nb-muted);
+  font-size: 10.5px;
+}
+
+.workspaceStatusPill.available,
+.workspaceStatusPill.saved,
+.workspaceStatusPill.reviewed,
+.workspaceStatusPill.success {
+  border-color: rgba(147, 207, 167, 0.3);
+  color: var(--nb-success);
+  background: var(--nb-success-soft);
+}
+
+.workspaceStatusPill.locked,
+.workspaceStatusPill.blocked,
+.workspaceStatusPill.planned,
+.workspaceStatusPill.not_saved,
+.workspaceStatusPill.info,
+.workspaceStatusPill.read_only,
+.workspaceStatusPill.disabled {
+  border-color: rgba(155, 184, 215, 0.28);
+  color: var(--nb-accent);
+  background: var(--nb-accent-soft);
+}
+
+.workspaceStatusPill.partial_saved,
+.workspaceStatusPill.raw_unreviewed,
+.workspaceStatusPill.warning {
+  border-color: rgba(214, 182, 111, 0.32);
+  color: var(--nb-warning);
+  background: var(--nb-warning-soft);
+}
+
+.workspaceStatusPill.unavailable,
+.workspaceStatusPill.danger,
+.workspaceStatusPill.error {
+  border-color: rgba(223, 148, 148, 0.34);
+  color: var(--nb-danger);
+  background: var(--nb-danger-soft);
+}
+
+.chapterWorkflowBanner {
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: var(--nb-radius-lg);
+  background:
+    linear-gradient(90deg, rgba(155, 184, 215, 0.11), rgba(255, 255, 255, 0.04)),
+    var(--nb-panel-soft);
+}
+
+.chapterWorkflowBannerMain {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.chapterWorkflowBanner h2 {
+  font-size: 13px;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+.chapterWorkflowBanner p {
+  margin: 0;
+  color: var(--nb-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.chapterWorkflowBannerActions {
+  align-items: center;
+}
+
+.chapterWorkflowBannerActions .workspacePillButton {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  color: var(--nb-muted);
+}
+
+.workspaceDisclosure {
+  display: grid;
+  gap: 10px;
+  padding: 9px 10px;
+}
+
+.workspaceDisclosure summary {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  color: var(--nb-muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+  list-style-position: inside;
+}
+
+.workspaceDisclosure[open] {
+  border-color: var(--nb-border-strong);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sourceDetailsDisclosure .workspacePipelineFacts,
+.searchLayerDisclosure .workspaceLayerList,
+.sourceSampleDisclosure .workspaceSourceSamples,
+.structuredDebugDisclosure .workspaceStructuredOverview,
+.structuredDebugDisclosure .workspaceLegacyLayerStatus,
+.approvedObjectDisclosure .workspaceStructuredSection,
+.graphWorkflowDisclosure .workspaceStudioDetail {
+  margin-top: 8px;
+}
+
+.workspaceSearchNotice {
+  padding: 10px 12px;
+  border-radius: var(--nb-radius-lg);
+}
+
+.workspaceStructuredGateGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workspaceSearchGateCard {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.workspaceSearchResultMeta span {
+  background: rgba(255, 255, 255, 0.052);
+  color: var(--nb-subtle);
+}
+
+.workspaceSearchEvidenceFields section,
+.workspaceStudioDetailFacts div,
+.workspaceStudioDetailList,
+.workspaceStudioSafetyBoundary {
+  border-color: var(--nb-border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.mechanismGraphChipRow {
+  gap: 7px;
+}
+
+.mechanismGraphViewport {
+  border-color: var(--nb-border);
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    radial-gradient(circle at 52% 46%, rgba(155, 184, 215, 0.12), transparent 35%),
+    rgba(8, 11, 16, 0.74);
+  background-size: 34px 34px, 34px 34px, auto, auto;
+}
+
+.mechanismGraphEdges line {
+  stroke: rgba(174, 184, 196, 0.26);
+}
+
+.mechanismGraphEdges line.focused {
+  stroke: rgba(147, 207, 167, 0.7);
+}
+
+.mechanismGraphNode {
+  border-color: var(--nb-border-strong);
+  background: rgba(28, 34, 43, 0.94);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
+}
+
+.mechanismGraphNode.focused {
+  border-color: rgba(238, 243, 248, 0.72);
+  background: rgba(50, 62, 78, 0.98);
+  box-shadow: 0 0 0 5px rgba(155, 184, 215, 0.11), 0 14px 34px rgba(0, 0, 0, 0.26);
+}
+
+.workspacePdfHeroShell {
+  border-color: var(--nb-border);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.workspacePdfPaperPreview {
+  border: 1px solid rgba(92, 101, 112, 0.14);
+  border-radius: 22px;
+  background: linear-gradient(180deg, #f8f1e5 0%, #efe5d4 100%);
+}
+
+.notebookHomePage {
+  background:
+    radial-gradient(circle at 16% 0%, rgba(155, 184, 215, 0.12), transparent 30%),
+    radial-gradient(circle at 82% 12%, rgba(147, 207, 167, 0.075), transparent 34%),
+    var(--nb-bg);
+}
+
+.notebookHomeToolbar span,
+.notebookHomeSearchShell,
+.notebookHomeTabs button {
+  border-color: var(--nb-border);
+  background: rgba(255, 255, 255, 0.052);
+  color: var(--nb-muted);
+}
+
+.notebookHomeToolbar .workspacePillButton {
+  border-color: rgba(255, 255, 255, 0.82);
+  background: rgba(242, 245, 248, 0.92);
+  color: #111820;
+}
+
+.notebookCardGrid.featured {
+  grid-template-columns: minmax(300px, 420px);
+}
+
+.notebookCard {
+  grid-template-columns: 1fr;
+  gap: 14px;
+  min-height: 250px;
+  padding: 13px;
+  border-color: var(--nb-border);
+  border-radius: var(--nb-radius-lg);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.035)),
+    var(--nb-panel);
+  box-shadow: var(--nb-shadow-soft);
+  transition: border-color 0.16s, background 0.16s, transform 0.16s;
+}
+
+.notebookCard.featured {
+  min-height: 276px;
+}
+
+.notebookCard:hover,
+.notebookCard.selected {
+  transform: translateY(-2px);
+  border-color: var(--nb-border-strong);
+  background:
+    linear-gradient(180deg, rgba(155, 184, 215, 0.11), rgba(255, 255, 255, 0.04)),
+    var(--nb-panel);
+}
+
+.notebookCardCover {
+  position: relative;
+  height: 132px;
+  overflow: hidden;
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 25% 28%, rgba(255, 255, 255, 0.18), transparent 24%),
+    linear-gradient(135deg, #40566f, #1c2734);
+}
+
+.notebookCardCover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 0.42;
+}
+
+.notebookCardCover span {
+  position: relative;
+  z-index: 1;
+  font-size: 24px;
+}
+
+.notebookCardBody strong {
+  font-size: 17px;
+}
+
+.notebookCardAction {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  padding: 0 12px;
+  color: var(--nb-text);
+  font-size: 12px;
+  font-weight: 800;
+}

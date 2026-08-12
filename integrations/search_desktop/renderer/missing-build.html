@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Search · renderer_build_missing</title>
+    <link rel="stylesheet" href="/__search_design__/tokens.css" />
+    <link rel="stylesheet" href="/__search_design__/base.css" />
+    <link rel="stylesheet" href="/__search_design__/components.css" />
+    <link rel="stylesheet" href="/__search_desktop__/missing-build.css" />
+  </head>
+  <body>
+    <main role="alert">
+      <div class="brand">Search</div>
+      <h1>界面构建产物尚未准备</h1>
+      <p>后台 Runtime 可以独立启动；Search 不会在每次启动时自动安装依赖或重建前端。</p>
+      <code>renderer_build_missing · npm --prefix frontend run build</code>
+    </main>
+  </body>
+</html>

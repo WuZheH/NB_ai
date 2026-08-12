@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use READ research"
+  short_description: "Query local research evidence safely"
+  default_prompt: "Use READ to answer from my own reading library."

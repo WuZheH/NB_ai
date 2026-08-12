@@ -1,0 +1,1996 @@
+/* ============================================================
+   RESEARCH WORKSPACE SHELL
+   NotebookLM-inspired three-panel layout, Search branded.
+   ============================================================ */
+.workspaceShellMode {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspaceShellMode .mainPanel {
+  padding: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(124,163,213,0.11), transparent 34%),
+    #0d0f14;
+}
+
+.notebookWorkspaceShell {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% -8%, rgba(124,163,213,0.14), transparent 34%),
+    linear-gradient(135deg, rgba(79,114,154,0.09), transparent 42%),
+    #0d0f14;
+  color: var(--text);
+}
+
+.notebookWorkspaceSurface {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.researchWorkspacePage {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  padding: 14px;
+}
+
+.researchWorkspaceTopbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 72px;
+  padding: 14px 18px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 24px;
+  background: rgba(22,27,34,0.88);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.28);
+}
+
+.researchWorkspaceTopbar h2 {
+  margin: 2px 0 4px;
+  color: var(--text);
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+
+.researchWorkspaceTopbar span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.workspaceKicker {
+  margin: 0;
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.researchWorkspaceTopActions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.researchWorkspaceTopActions span,
+.workspaceStatusPill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.045);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.workspaceStatusPill.available,
+.workspaceStatusPill.saved,
+.workspaceStatusPill.reviewed,
+.workspaceStatusPill.success {
+  border-color: rgba(86,156,107,0.42);
+  color: #87c999;
+  background: rgba(86,156,107,0.12);
+}
+
+.workspaceStatusPill.locked,
+.workspaceStatusPill.blocked,
+.workspaceStatusPill.planned,
+.workspaceStatusPill.not_saved,
+.workspaceStatusPill.info,
+.workspaceStatusPill.read_only,
+.workspaceStatusPill.disabled {
+  border-color: rgba(124,163,213,0.34);
+  color: #a9c7ed;
+  background: rgba(124,163,213,0.11);
+}
+
+.workspaceStatusPill.partial_saved,
+.workspaceStatusPill.raw_unreviewed,
+.workspaceStatusPill.warning {
+  border-color: rgba(179,146,86,0.42);
+  color: #d8bd80;
+  background: rgba(179,146,86,0.12);
+}
+
+.workspaceStatusPill.unavailable,
+.workspaceStatusPill.danger,
+.workspaceStatusPill.error {
+  border-color: rgba(201,112,112,0.38);
+  color: #e09a9a;
+  background: rgba(201,112,112,0.12);
+}
+
+.researchWorkspaceLayout {
+  display: grid;
+  grid-template-columns: minmax(300px, 30%) minmax(420px, 44%) minmax(300px, 26%);
+  gap: 12px;
+  min-height: 0;
+}
+
+.researchWorkspaceColumn {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 26px;
+  background: rgba(18,22,29,0.9);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 18px 42px rgba(0,0,0,0.24);
+}
+
+.workbenchColumn {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  background:
+    linear-gradient(180deg, rgba(124,163,213,0.08), transparent 22%),
+    rgba(18,22,29,0.92);
+}
+
+.workspacePanelStack {
+  display: grid;
+  gap: 12px;
+}
+
+.workspacePanelHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workspacePanelHeader h3 {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.workspaceSourceCard,
+.workspaceGateCard,
+.workspaceSearchNotice,
+.workspaceLayerCard,
+.workspaceStudioDetail,
+.chapterWorkflowBanner {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px;
+  background: rgba(255,255,255,0.045);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
+}
+
+.workspaceSourceCard {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px;
+}
+
+.workspaceSourceIcon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(124,163,213,0.24), rgba(124,163,213,0.08));
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.workspaceSourceCard h4,
+.workspaceLayerCard h4 {
+  margin: 0;
+  color: var(--text);
+}
+
+.workspaceSourceCard p,
+.workspaceSourceCard small,
+.workspaceGateCard p,
+.workspaceLayerCard p,
+.workspaceStudioCard small,
+.workspaceStudioDetail p,
+.chapterWorkflowBanner p,
+.workspaceSearchNotice span {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  line-height: 1.45;
+  font-size: 12px;
+}
+
+.workspaceMetricGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.workspacePipelineFacts {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 16px;
+  background: rgba(0,0,0,0.14);
+}
+
+.workspacePipelineFacts span {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.workspaceMetric {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 16px;
+  background: rgba(0,0,0,0.14);
+}
+
+.workspaceMetric em {
+  color: var(--text-subtle);
+  font-size: 10px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.workspaceMetric strong {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.workspaceGateCard {
+  display: grid;
+  gap: 8px;
+  padding: 13px;
+}
+
+.workspaceGateCard.blocked,
+.workspaceGateCard.locked {
+  border-color: rgba(124,163,213,0.2);
+  background: rgba(124,163,213,0.075);
+}
+
+.workspaceGateTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.workspaceGateCard code,
+.workspaceStudioDetail code {
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 9px;
+  border-radius: 12px;
+  color: #d8bd80;
+  background: rgba(0,0,0,0.18);
+  font-size: 11px;
+}
+
+.workspacePillButton {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 15px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+  text-decoration: none;
+  transition: background 0.14s, border-color 0.14s, transform 0.14s;
+}
+
+.workspacePillButton:hover:not(.disabled) {
+  border-color: rgba(150,188,232,0.52);
+  background: rgba(124,163,213,0.2);
+  transform: translateY(-1px);
+}
+
+.workspacePillButton.disabled {
+  opacity: 0.48;
+  pointer-events: none;
+}
+
+.workspacePillButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.workspacePillButton.selected {
+  border-color: rgba(86,156,107,0.48);
+  background: rgba(86,156,107,0.16);
+  color: #b9dfcb;
+}
+
+.chapterWorkflowBannerActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.chapterWorkflowBanner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 14px 16px;
+  background:
+    radial-gradient(circle at 0 0, rgba(124,163,213,0.16), transparent 30%),
+    rgba(255,255,255,0.052);
+}
+
+.chapterWorkflowBanner.locked {
+  background:
+    radial-gradient(circle at 0 0, rgba(124,163,213,0.13), transparent 30%),
+    rgba(255,255,255,0.045);
+}
+
+.chapterWorkflowBannerMain {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chapterWorkflowBannerMain .workspaceStatusPill {
+  width: fit-content;
+}
+
+.chapterWorkflowBanner h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1.22;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.chapterWorkflowBanner p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.chapterWorkflowBannerActions {
+  align-self: start;
+  flex: 0 0 auto;
+}
+
+.chapterWorkflowBannerActions .workspacePillButton {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.workspaceSearchBox {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 24px;
+  background: rgba(0,0,0,0.22);
+}
+
+.workspaceSearchBox input {
+  min-height: 52px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 18px;
+  outline: none;
+  background: rgba(255,255,255,0.045);
+  color: var(--text);
+}
+
+.workspaceSearchBox button {
+  min-height: 52px;
+  border-radius: 18px;
+  border-color: rgba(150,188,232,0.42);
+  background: rgba(124,163,213,0.16);
+  color: var(--accent-strong);
+  font-weight: 750;
+}
+
+.workspaceSearchNotice {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+}
+
+.workspaceSearchNotice strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.workspaceLayerList {
+  display: grid;
+  gap: 8px;
+}
+
+.workspaceHomePage .researchWorkspaceLayout {
+  min-height: calc(100vh - 126px);
+}
+
+.workspaceHomeSourcePanel {
+  min-height: 0;
+}
+
+.workspaceHomeSourcesList,
+.workspaceHomeStudioTools {
+  display: grid;
+  gap: 10px;
+}
+
+.workspaceHomeSourceItem,
+.workspaceHomeToolCard {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.045);
+  color: inherit;
+  text-align: left;
+}
+
+.workspaceHomeSourceItem {
+  cursor: pointer;
+}
+
+.workspaceHomeSourceItem:hover,
+.workspaceHomeSourceItem.selected {
+  border-color: rgba(150,188,232,0.38);
+  background: rgba(124,163,213,0.12);
+}
+
+.workspaceHomeSourceItem span,
+.workspaceHomeToolCard {
+  display: grid;
+  gap: 4px;
+}
+
+.workspaceHomeSourceItem strong,
+.workspaceHomeToolCard strong {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.workspaceHomeSourceItem small,
+.workspaceHomeSourceItem em,
+.workspaceHomeToolCard span {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.workspaceHomeSourceItem em {
+  white-space: nowrap;
+  font-style: normal;
+}
+
+.workspaceHomeToolCard {
+  min-height: 72px;
+  justify-content: start;
+}
+
+.notebookHomePage {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, auto) minmax(0, 1fr);
+  align-content: start;
+  gap: 16px;
+  min-height: 100%;
+  padding: 18px 32px 30px;
+  background:
+    linear-gradient(135deg, rgba(124,163,213,0.08), transparent 32%),
+    linear-gradient(315deg, rgba(123,178,125,0.07), transparent 34%),
+    #0d0f14;
+}
+
+.notebookHomeTopbar,
+.notebookHomeTabs,
+.notebookHomeSection {
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 24px;
+  background: rgba(22,27,34,0.88);
+  box-shadow: 0 14px 36px rgba(0,0,0,0.26);
+}
+
+.notebookHomeTopbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 76px;
+  padding: 16px 18px;
+}
+
+.notebookHomeTopbar > div:first-child {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: center;
+}
+
+.notebookHomeBrandMark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 9px;
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+  font-size: 15px;
+  font-weight: 760;
+}
+
+.notebookHomeBrandStack {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notebookHomeBrandStack strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.notebookHomeTopbar h2,
+.notebookHomeSectionHeader h3 {
+  margin: 2px 0 4px;
+  color: var(--text);
+  letter-spacing: 0;
+}
+
+.notebookHomeTopbar h2 {
+  font-size: 22px;
+}
+
+.notebookHomeTopbar span,
+.notebookHomeMeta {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.notebookHomeToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.notebookHomeToolbar span,
+.notebookHomeSearchShell {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  padding: 0 11px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.045);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.notebookHomeToolbar .workspacePillButton {
+  min-height: 30px;
+  border-color: rgba(255,255,255,0.82);
+  background: rgba(255,255,255,0.92);
+  color: #161b22;
+}
+
+.notebookHomeSearchShell {
+  min-width: 190px;
+  justify-content: flex-start;
+}
+
+.notebookHomeTabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.notebookHomeTabs button {
+  min-height: 34px;
+  padding: 0 14px;
+  border-color: transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.notebookHomeTabs button.selected,
+.notebookHomeTabs button:hover {
+  border-color: rgba(150,188,232,0.28);
+  background: rgba(124,163,213,0.12);
+  color: var(--text);
+}
+
+.notebookHomeSection {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.notebookHomeSectionHeader {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.notebookCardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 320px));
+  gap: 12px;
+  justify-content: start;
+}
+
+.notebookCardGrid.featured {
+  grid-template-columns: minmax(280px, 360px);
+}
+
+.notebookCard {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 128px;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.045);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notebookCard.featured {
+  min-height: 150px;
+}
+
+.notebookCard:hover,
+.notebookCard.selected {
+  transform: translateY(-1px);
+  border-color: rgba(150,188,232,0.42);
+  background: rgba(124,163,213,0.12);
+}
+
+.notebookCardCover {
+  display: grid;
+  place-items: center;
+  height: 92px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #394f6a, #1e2835);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+}
+
+.notebookCardCover.tone1 {
+  background: linear-gradient(135deg, #4a5f47, #1f2b24);
+}
+
+.notebookCardCover.tone2 {
+  background: linear-gradient(135deg, #61563a, #302b22);
+}
+
+.notebookCardCover.tone3 {
+  background: linear-gradient(135deg, #5a4354, #2b232d);
+}
+
+.notebookCardCover span {
+  color: rgba(255,255,255,0.86);
+  font-size: 20px;
+  font-weight: 850;
+}
+
+.notebookCardBody {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.notebookCardBody strong {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.notebookCardBody small,
+.notebookCardBody em,
+.notebookCardBody i,
+.notebookCardAction {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+  font-style: normal;
+}
+
+.notebookCardBody i {
+  color: #d8bd80;
+}
+
+.notebookCardAction {
+  align-self: end;
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.emptyNotebookShell {
+  display: grid;
+  gap: 9px;
+  padding: 16px;
+  border: 1px dashed rgba(255,255,255,0.16);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.035);
+}
+
+.emptyNotebookShell strong {
+  color: var(--text);
+}
+
+.emptyNotebookShell span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.workspaceLayerCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px;
+}
+
+.workspaceLayerCard.locked,
+.workspaceLayerCard.unavailable {
+  opacity: 0.92;
+}
+
+.workspaceSearchResultsShell,
+.workspaceSearchLayerSection,
+.workspaceSearchResultCard,
+.workspaceSearchGateCard,
+.workspaceSearchNoQuery {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px;
+  background: rgba(255,255,255,0.045);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
+}
+
+.workspaceSearchResultsShell {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.workspaceStructuredOverview,
+.workspaceStructuredSection,
+.workspaceLegacyLayerStatus,
+.workspaceStructuredGateGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.workspaceStructuredOverview,
+.workspaceStructuredSection,
+.workspaceLegacyLayerStatus {
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.035);
+}
+
+.workspaceStructuredFacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.workspaceStructuredFacts div {
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(0,0,0,0.18);
+}
+
+.workspaceStructuredFacts dt {
+  color: var(--text-soft);
+  font-size: 10.5px;
+  text-transform: uppercase;
+}
+
+.workspaceStructuredFacts dd {
+  margin: 3px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.workspaceStructuredOverview code,
+.workspaceLocatorWarning {
+  padding: 7px 9px;
+  border-radius: 12px;
+  background: rgba(0,0,0,0.18);
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.workspaceLocatorWarning {
+  border: 1px solid rgba(179,146,86,0.26);
+  color: var(--warning);
+}
+
+.workspaceSearchResultsShell.loading,
+.workspaceSearchResultsShell.error {
+  border-color: rgba(179,146,86,0.28);
+}
+
+.workspaceSearchResultsHeader,
+.workspaceSearchLayerTop,
+.workspaceSearchResultMain {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workspaceSearchResultsHeader h3,
+.workspaceSearchLayerTop h4 {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.workspaceSearchLayerSection {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+}
+
+.workspaceSearchLayerSection.locked,
+.workspaceSearchLayerSection.unavailable {
+  border-color: rgba(124,163,213,0.2);
+  background: rgba(124,163,213,0.06);
+}
+
+.workspaceSearchLayerTop p,
+.workspaceSearchResultCard p,
+.workspaceSearchResultMain span,
+.workspaceSearchGateCard span,
+.workspaceSearchNoQuery span {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.workspaceSearchResultCard,
+.workspaceSearchGateCard,
+.workspaceSearchNoQuery {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+}
+
+.workspaceSearchResultMain strong,
+.workspaceSearchGateCard strong,
+.workspaceSearchNoQuery strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.workspaceSearchResultMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.workspaceSearchResultMeta span {
+  max-width: 100%;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.2);
+  color: var(--text-subtle);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.workspaceSearchLayerWarnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workspaceSearchLayerWarnings span {
+  border: 1px solid rgba(215, 183, 111, 0.24);
+  border-radius: 999px;
+  background: rgba(215, 183, 111, 0.08);
+  color: var(--text-soft);
+  font-size: 12px;
+  padding: 5px 9px;
+}
+
+.researchEvidencePacketPanel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(86, 156, 107, 0.2);
+  border-radius: 18px;
+  background: rgba(86, 156, 107, 0.05);
+}
+
+.researchEvidenceQualityGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.researchEvidenceQualityGrid div {
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.researchEvidenceQualityGrid dt {
+  color: var(--text-soft);
+  font-size: 10.5px;
+  text-transform: uppercase;
+}
+
+.researchEvidenceQualityGrid dd {
+  margin: 3px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.researchEvidencePacketActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.researchEvidenceRelatedKeywords {
+  display: grid;
+  gap: 7px;
+}
+
+.researchEvidenceRelatedKeywords > span {
+  color: var(--text-soft);
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.researchEvidenceRelatedKeywords em {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.researchEvidenceSelectedList span,
+.workspaceSearchStableId {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 23px;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid rgba(86, 156, 107, 0.28);
+  border-radius: var(--nb-radius-pill);
+  background: rgba(86, 156, 107, 0.1);
+  color: #b9dfcb;
+  font-size: 10.5px;
+  font-weight: 800;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.researchEvidencePacketPreview {
+  display: grid;
+  gap: 6px;
+}
+
+.researchEvidencePacketPreview span {
+  color: var(--text-soft);
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.researchEvidencePacketPreview textarea {
+  min-height: 180px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  outline: none;
+  resize: vertical;
+  background: #171c24;
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.researchEvidencePacketPreview.compact textarea {
+  min-height: 120px;
+}
+
+.researchEvidencePacketPanel code {
+  display: block;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.workspaceSearchEvidenceFields {
+  display: grid;
+  gap: 8px;
+}
+
+.workspaceSearchEvidenceFields section {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.035);
+}
+
+.workspaceSearchEvidenceFields span {
+  color: var(--text-soft);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.workspaceSearchEvidenceFields p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.workspaceStudioGrid {
+  display: grid;
+  gap: 8px;
+}
+
+.studioGatePanel {
+  align-content: start;
+}
+
+.workspaceStudioCard {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  min-height: 128px;
+  padding: 13px;
+  text-align: left;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.045);
+  color: inherit;
+  cursor: pointer;
+}
+
+.workspaceStudioCard:hover,
+.workspaceStudioCard.selected {
+  border-color: rgba(150,188,232,0.36);
+  background: rgba(124,163,213,0.11);
+}
+
+.workspaceStudioCardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.workspaceStudioStatusIcon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: rgba(0,0,0,0.18);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.workspaceStudioStatusIcon.locked {
+  color: #a9c7ed;
+}
+
+.workspaceStudioStatusIcon.planned {
+  color: #d8bd80;
+}
+
+.workspaceStudioStatusIcon.available {
+  color: #87c999;
+}
+
+.workspaceStudioCardTop strong,
+.workspaceStudioDetail strong {
+  color: var(--text);
+}
+
+.workspaceStudioReason {
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.workspaceStudioBlocker {
+  color: var(--text-subtle);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.workspaceStudioMiniList {
+  display: grid;
+  gap: 4px;
+}
+
+.workspaceStudioMiniList span {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.workspaceStudioMiniList span::before {
+  content: "- ";
+  color: var(--accent-strong);
+}
+
+.workspaceStudioSafetyBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.workspaceStudioSafetyBadges span {
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  padding: 0 7px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: rgba(0,0,0,0.16);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.workspaceStudioDetail {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+}
+
+.workspaceStudioDetailHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workspaceStudioDetailFacts {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 0;
+}
+
+.workspaceStudioDetailFacts div,
+.workspaceStudioDetailList,
+.workspaceStudioSafetyBoundary {
+  display: grid;
+  gap: 5px;
+  padding: 9px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 14px;
+  background: rgba(0,0,0,0.14);
+}
+
+.workspaceStudioDetailFacts dt {
+  color: var(--text-subtle);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.workspaceStudioDetailFacts dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.workspaceStudioDetailList ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 17px;
+}
+
+.workspaceStudioDetailList li,
+.workspaceStudioSafetyBoundary p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.advancedWorkflowDrawerLayer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.advancedWorkflowDrawerBackdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(0,0,0,0.24);
+  pointer-events: auto;
+}
+
+.advancedWorkflowDrawer {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: grid;
+  width: min(420px, calc(100vw - 24px));
+  align-content: start;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(124,163,213,0.08), transparent 20%),
+    rgba(18,22,29,0.97);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.48);
+  pointer-events: auto;
+}
+
+.advancedWorkflowDrawerHeader,
+.advancedWorkflowDrawerSectionHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.advancedWorkflowDrawerHeader h3 {
+  margin: 2px 0 3px;
+  color: var(--text);
+  font-size: 18px;
+}
+
+.advancedWorkflowDrawerHeader span,
+.advancedWorkflowDrawerCard span {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.advancedWorkflowDrawerClose {
+  min-height: 30px;
+  border-radius: 999px;
+}
+
+.advancedWorkflowDrawerCard {
+  display: grid;
+  gap: 7px;
+  padding: 11px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.045);
+}
+
+.advancedWorkflowDrawerCard strong {
+  color: var(--text);
+}
+
+.advancedWorkflowDrawerCard p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.advancedWorkflowDrawerWarning {
+  color: #d8bd80 !important;
+}
+
+.advancedWorkflowDrawerPillGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.advancedWorkflowDrawerPillGrid span {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  background: rgba(0,0,0,0.14);
+  font-size: 11px;
+}
+
+.advancedWorkflowDrawerForbiddenList {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 17px;
+}
+
+.advancedWorkflowDrawerForbiddenList li {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.advancedWorkflowDrawerCta {
+  width: 100%;
+}
+
+.sourcePdfPanel {
+  min-height: 0;
+}
+
+.sourceBackButton {
+  min-height: 30px;
+  border-radius: 999px;
+}
+
+.sourceSelectionHint,
+.workspaceSampleNotice {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px dashed rgba(255,255,255,0.1);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.035);
+}
+
+.sourceSelectionHint strong,
+.workspaceSampleNotice {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.sourceSelectionHint span,
+.workspaceSampleNotice.warning {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.workspacePdfViewportCard,
+.sourceEvidenceCard,
+.developerEvidenceDetails,
+.workspaceSourceSampleCard {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px;
+  background: rgba(255,255,255,0.045);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
+}
+
+.workspacePdfViewportCard {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.workspacePdfViewportHeader,
+.sourceEvidenceHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workspacePdfViewportHeader div,
+.sourceEvidenceHeader div {
+  display: grid;
+  gap: 3px;
+}
+
+.workspacePdfViewportHeader strong,
+.sourceEvidenceHeader strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.workspacePdfViewportHeader span,
+.sourceEvidenceHeader span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.workspacePdfViewportHeader code {
+  padding: 5px 7px;
+  border-radius: 999px;
+  color: var(--accent-strong);
+  background: rgba(124,163,213,0.12);
+  font-size: 10.5px;
+}
+
+.workspacePdfHeroShell {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.028));
+}
+
+.workspacePdfHeroMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workspacePdfPageChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(58,73,90,0.12);
+  border-radius: 999px;
+  background: rgba(248,241,229,0.94);
+  color: #233242;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.workspacePdfHeroLabel {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.workspacePdfPaperPreview {
+  position: relative;
+  min-height: 220px;
+  overflow: hidden;
+  padding: 22px 22px 18px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #f8f1e5 0%, #efe5d4 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.82), 0 16px 34px rgba(0,0,0,0.16);
+}
+
+.workspacePdfPaperPreview::before {
+  content: "";
+  position: absolute;
+  inset: 14px 18px;
+  border: 1px solid rgba(58,73,90,0.12);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.58));
+  box-shadow: 0 8px 18px rgba(58,73,90,0.08);
+}
+
+.workspacePdfPaperColumn {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 10px;
+}
+
+.workspacePdfPaperEyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workspacePdfPaperEyebrow strong {
+  color: #243444;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.workspacePdfPaperEyebrow span {
+  color: #5e6b78;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.workspacePdfPaperLine {
+  display: block;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(77,91,108,0.18);
+}
+
+.workspacePdfPaperLine.long {
+  width: 92%;
+}
+
+.workspacePdfPaperLine.medium {
+  width: 78%;
+}
+
+.workspacePdfPaperLine.short {
+  width: 61%;
+}
+
+.workspacePdfPaperLine.text {
+  min-height: 62px;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(241,212,108,0.18);
+  box-shadow: inset 0 0 0 1px rgba(141,123,55,0.16);
+  color: #223142;
+  font-size: 12.5px;
+  line-height: 1.6;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.workspacePdfLocatorMarker {
+  position: absolute;
+  left: 34px;
+  right: 42px;
+  bottom: 28px;
+  height: 14px;
+  border-radius: 6px;
+  opacity: 0.86;
+}
+
+.workspacePdfLocatorMarker.mapped {
+  background: linear-gradient(90deg, rgba(94,190,150,0.32), rgba(94,190,150,0.08));
+}
+
+.workspacePdfLocatorMarker.fallback {
+  background: linear-gradient(90deg, rgba(231,187,93,0.38), rgba(231,187,93,0.12));
+}
+
+.workspacePdfLocatorMarker.pending {
+  background: linear-gradient(90deg, rgba(83,166,216,0.22), rgba(83,166,216,0.08));
+}
+
+.workspaceFullPdfFrameWrap {
+  min-height: 360px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(0,0,0,0.2);
+}
+
+.workspaceFullPdfFrame {
+  display: block;
+  width: 100%;
+  min-height: min(58vh, 640px);
+  border: 0;
+  background: rgba(0,0,0,0.18);
+}
+
+.workspacePdfViewportCard .pdfPreviewPanel {
+  min-height: 320px;
+  margin-top: 0;
+  padding: 12px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(10,16,24,0.16));
+}
+
+.workspacePdfViewportCard .pdfPreviewScroller {
+  min-height: 260px;
+  max-height: min(54vh, 560px);
+  padding: 12px;
+  background: linear-gradient(180deg, rgba(216,224,232,0.9), rgba(193,205,218,0.78));
+}
+
+.workspacePdfViewportCard .pdfPageCanvasWrap {
+  box-shadow: 0 14px 28px rgba(0,0,0,0.22);
+}
+
+.workspacePdfViewportCard .pdfPreviewLoading {
+  background: rgba(255,255,255,0.9);
+  color: #213040;
+}
+
+.workspacePdfViewportCard .pdfPreviewHeader {
+  align-items: start;
+}
+
+.workspacePdfViewportCard .pdfPreviewHeader p {
+  color: var(--text-muted);
+}
+
+.workspacePdfViewportCard .pdfPreviewEmpty,
+.workspacePdfViewportCard .pdfPreviewError,
+.workspacePdfViewportCard .pdfPreviewNotice {
+  background: rgba(255,255,255,0.06);
+}
+
+.workspacePdfViewportCard .pdfPreviewError {
+  border-color: rgba(179,146,86,0.34);
+  color: var(--text-muted);
+  background: rgba(179,146,86,0.08);
+}
+
+.pdfHighlightStatus {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  background: rgba(0,0,0,0.16);
+}
+
+.pdfHighlightStatus span {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.pdfHighlightStatus.mapped {
+  border-color: rgba(86,156,107,0.3);
+  background: rgba(86,156,107,0.08);
+}
+
+.pdfHighlightStatus.fallback,
+.pdfHighlightStatus.pending {
+  border-color: rgba(179,146,86,0.28);
+  background: rgba(179,146,86,0.08);
+}
+
+.sourceEvidenceCard {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.sourceEvidenceTextBlock {
+  display: grid;
+  gap: 6px;
+}
+
+.sourceEvidenceTextBlock span {
+  color: var(--text-subtle);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sourceEvidenceTextBlock p,
+.sourceEvidenceTextBlock mark {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.sourceEvidenceTextBlock mark {
+  display: block;
+  padding: 10px;
+  border: 1px solid rgba(231,187,93,0.32);
+  border-radius: 14px;
+  background: rgba(231,187,93,0.13);
+}
+
+.sourceEvidenceEmpty,
+.sourceLocatorError {
+  margin: 0;
+  color: var(--warning);
+  font-size: 12px;
+}
+
+.developerEvidenceDetails {
+  padding: 12px;
+}
+
+.developerEvidenceDetails summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.developerEvidenceDetails p {
+  margin: 8px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.developerEvidenceDetails pre {
+  overflow: auto;
+  max-height: 320px;
+  margin: 0;
+  padding: 10px;
+  border-radius: 12px;
+  color: var(--text-muted);
+  background: rgba(0,0,0,0.24);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.workspaceSourceSamples {
+  display: grid;
+  gap: 8px;
+}
+
+.workspaceSourceSampleCard {
+  display: grid;
+  gap: 9px;
+  padding: 13px;
+}
+
+.workspaceSourceSampleCard div {
+  display: grid;
+  gap: 3px;
+}
+
+.workspaceSourceSampleCard strong {
+  color: var(--text);
+}
+
+.workspaceSourceSampleCard span,
+.workspaceSourceSampleCard p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.workspaceSourceSampleCard p {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.mechanismGraphPanel {
+  align-content: start;
+}
+
+.mechanismGraphChipRow,
+.mechanismGraphSafetyStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mechanismGraphViewport {
+  position: relative;
+  min-height: 310px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px;
+  overflow: hidden;
+  background:
+    linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px),
+    radial-gradient(circle at 50% 45%, rgba(124,163,213,0.16), transparent 34%),
+    rgba(7,10,14,0.72);
+  background-size: 28px 28px, 28px 28px, auto, auto;
+}
+
+.mechanismGraphEdges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.mechanismGraphEdges line {
+  stroke: rgba(154,172,198,0.32);
+  stroke-width: 0.7;
+}
+
+.mechanismGraphEdges line.focused {
+  stroke: rgba(129,203,159,0.72);
+  stroke-width: 1.1;
+}
+
+.mechanismGraphNode {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  width: 72px;
+  min-height: 42px;
+  padding: 6px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  background: rgba(31,38,48,0.94);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.28);
+}
+
+.mechanismGraphNode span {
+  max-width: 58px;
+  color: inherit;
+  font-size: 9.5px;
+  font-weight: 800;
+  line-height: 1.15;
+  text-align: center;
+}
+
+.mechanismGraphNode.evidence {
+  border-color: rgba(124,163,213,0.48);
+}
+
+.mechanismGraphNode.note {
+  border-color: rgba(214,180,100,0.5);
+}
+
+.mechanismGraphNode.object_candidate {
+  border-color: rgba(129,203,159,0.5);
+}
+
+.mechanismGraphNode.relation_candidate {
+  border-color: rgba(184,157,217,0.5);
+}
+
+.mechanismGraphNode.mechanism_readiness {
+  border-color: rgba(124,163,213,0.48);
+}
+
+.mechanismGraphNode.quarantine {
+  border-color: rgba(214,180,100,0.58);
+}
+
+.mechanismGraphNode.focused {
+  z-index: 2;
+  transform: translate(-50%, -50%) scale(1.12);
+  border-color: rgba(255,255,255,0.7);
+  background: rgba(57,70,88,0.98);
+  box-shadow: 0 0 0 5px rgba(124,163,213,0.12), 0 14px 34px rgba(0,0,0,0.32);
+}
+
+.mechanismGraphDetail {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px;
+  background: rgba(255,255,255,0.045);
+}
+
+.mechanismGraphDetail p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mechanismGraphSafetyStrip span {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  background: rgba(0,0,0,0.18);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.researchWorkspaceEmpty {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 50% 20%, rgba(124,163,213,0.18), transparent 34%),
+    #0d0f14;
+}
+
+.workspaceEmptyCard {
+  display: grid;
+  gap: 14px;
+  width: min(680px, 100%);
+  padding: 28px;
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 28px;
+  background: rgba(22,27,34,0.9);
+  box-shadow: 0 20px 56px rgba(0,0,0,0.32);
+}
+
+.workspaceEmptyCard h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 28px;
+}
+
+.workspaceEmptyCard p,
+.workspaceEmptyActions span {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.workspaceEmptyActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.researchWorkspaceReturnBar {
+  display: flex;
+  justify-content: flex-start;
+  padding: 12px 16px 0;
+}

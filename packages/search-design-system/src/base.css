@@ -1,0 +1,39 @@
+html,
+body {
+  width: 100%;
+  margin: 0;
+  font-family: var(--search-font-sans);
+}
+
+body {
+  color: var(--search-text-primary);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--search-brand);
+  outline-offset: 2px;
+  box-shadow: var(--search-focus-ring);
+}
+
+code,
+pre,
+.search-mono {
+  font-family: var(--search-font-mono);
+}
+
+::selection {
+  background: var(--search-primary-soft);
+  color: var(--search-text-primary);
+}

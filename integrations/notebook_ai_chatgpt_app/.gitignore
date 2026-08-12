@@ -1,0 +1,7 @@
+node_modules/
+.npm-cache/
+dist/
+web/dist/
+.test-build/
+.env
+*.local

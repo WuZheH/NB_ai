@@ -1,0 +1,7 @@
+{
+  "research_memory_db": "<PATH_TO_RESEARCH_MEMORY_DB>",
+  "zotero_snapshot": "<PATH_TO_ZOTERO_SNAPSHOT>",
+  "local_pdfs": "<PATH_TO_LOCAL_PDFS>",
+  "model_cache": "<PATH_TO_MODEL_CACHE>",
+  "search_index": "<PATH_TO_SEARCH_INDEX>"
+}
