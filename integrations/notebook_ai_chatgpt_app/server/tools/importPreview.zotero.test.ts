@@ -25,6 +25,7 @@ function zoteroResponse() {
     annotation_count: 4,
     annotation_comment_count: 2,
     child_note_count: 2,
+    zotero_source_revision: "b".repeat(64),
   };
 }
 
@@ -54,12 +55,28 @@ test("import_preview accepts legacy local PDF and Zotero key inputs", async () =
     inbox_filename: undefined,
     zotero_item_key: "ABCD1234",
     zotero_attachment_key: undefined,
+    zotero_source_revision: undefined,
   });
   assert.deepEqual(calls[2], {
     source_type: "zotero_selected_book",
     inbox_filename: undefined,
     zotero_item_key: "ABCD1234",
     zotero_attachment_key: "EFGH5678",
+    zotero_source_revision: undefined,
+  });
+
+  await runImportPreviewTool(client, {
+    source_type: "zotero_selected_book",
+    zotero_item_key: "ABCD1234",
+    zotero_attachment_key: "EFGH5678",
+    zotero_source_revision: "b".repeat(64),
+  });
+  assert.deepEqual(calls[3], {
+    source_type: "zotero_selected_book",
+    inbox_filename: undefined,
+    zotero_item_key: "ABCD1234",
+    zotero_attachment_key: "EFGH5678",
+    zotero_source_revision: "b".repeat(64),
   });
 });
 
@@ -114,11 +131,13 @@ test("NotebookClient forwards all Zotero import preview fields", async () => {
     source_type: "zotero_selected_book",
     zotero_item_key: "ABCD1234",
     zotero_attachment_key: "EFGH5678",
+    zotero_source_revision: "b".repeat(64),
   });
   assert.deepEqual(requestBody, {
     source_type: "zotero_selected_book",
     zotero_item_key: "ABCD1234",
     zotero_attachment_key: "EFGH5678",
+    zotero_source_revision: "b".repeat(64),
   });
   assert.equal(response.operation_id, "a".repeat(32));
 });

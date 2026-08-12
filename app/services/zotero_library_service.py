@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ def list_parent_items(
     status: str = "all",
     limit: int = 20,
     db_path: str | Path | None = DEFAULT_DB_PATH,
+    snapshot_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Return one candidate per top-level Zotero bibliographic item.
 
@@ -29,9 +31,13 @@ def list_parent_items(
     """
 
     config = zotero_source_cache_service._load_config()
-    snapshot = zotero_source_cache_service._project_path(
-        config["zotero_db_snapshot"]
-    ).resolve(strict=False)
+    snapshot = (
+        Path(snapshot_path).resolve(strict=False)
+        if snapshot_path is not None
+        else zotero_source_cache_service._project_path(
+            config["zotero_db_snapshot"]
+        ).resolve(strict=False)
+    )
     if not snapshot.is_file():
         raise RuntimeError("zotero_snapshot_missing")
 
@@ -41,7 +47,9 @@ def list_parent_items(
     requested_limit = max(1, min(int(limit), 50))
     imported = _load_imported_documents(db_path)
 
-    with sqlite3.connect(f"file:{snapshot.as_posix()}?mode=ro", uri=True) as connection:
+    with closing(
+        sqlite3.connect(f"file:{snapshot.as_posix()}?mode=ro", uri=True)
+    ) as connection:
         connection.row_factory = sqlite3.Row
         parent_rows = connection.execute(
             """

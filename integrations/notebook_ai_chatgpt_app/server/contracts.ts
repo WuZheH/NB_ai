@@ -146,6 +146,10 @@ export interface ListLibraryResponse {
   scope: "imported" | "catalog" | "zotero";
   warnings?: Array<Record<string, unknown>>;
   applied_filters?: Record<string, unknown>;
+  zotero_source_revision?: string;
+  captured_at?: string;
+  source_freshness?: "fresh_capture";
+  read_only_source_capture_write?: boolean;
 }
 
 export interface IntegrityReportInput {
@@ -228,6 +232,7 @@ export interface ImportPreviewInput {
   inbox_filename?: string;
   zotero_item_key?: string;
   zotero_attachment_key?: string;
+  zotero_source_revision?: string;
 }
 
 export interface OpenAIFileInput {
@@ -247,6 +252,7 @@ export interface ImportPreviewResponse {
   parent_key?: string | null;
   zotero_item_key?: string | null;
   zotero_attachment_key?: string | null;
+  zotero_source_revision?: string | null;
   pdf_sha256: string | null;
   duplicate_status: string;
   existing_document_id: number | null;
@@ -277,6 +283,8 @@ export interface ImportPreviewResponse {
   child_note_count: number | null;
   note_count?: number;
   note_files?: string[];
+  writes_performed: false;
+  production_data_modified: false;
 }
 
 export interface ImportDocumentInput {

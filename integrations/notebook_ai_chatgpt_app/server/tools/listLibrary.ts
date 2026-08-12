@@ -63,6 +63,10 @@ export const listLibraryOutputShape = {
   truncated: z.boolean(),
   warnings: z.array(z.record(z.string(), z.unknown())).optional(),
   applied_filters: z.record(z.string(), z.unknown()).optional(),
+  zotero_source_revision: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  captured_at: z.string().optional(),
+  source_freshness: z.literal("fresh_capture").optional(),
+  read_only_source_capture_write: z.boolean().optional(),
 };
 
 export async function runListLibraryTool(client: NotebookClient, rawInput: unknown) {
@@ -79,6 +83,10 @@ export async function runListLibraryTool(client: NotebookClient, rawInput: unkno
       truncated: response.truncated,
       warnings: response.warnings,
       applied_filters: response.applied_filters,
+      zotero_source_revision: response.zotero_source_revision,
+      captured_at: response.captured_at,
+      source_freshness: response.source_freshness,
+      read_only_source_capture_write: response.read_only_source_capture_write,
     };
     logToolInvocation({
       tool: "list_library",
@@ -102,7 +110,7 @@ export function registerListLibraryTool(server: McpServer, client: NotebookClien
     {
       title: "List the private READ library",
       description:
-        "List imported READ documents, the controlled import catalog, or Zotero candidates. Each item includes a non-path source label and never exposes absolute paths.",
+        "List imported READ documents, the controlled import catalog, or Zotero candidates. Zotero discovery uses a fresh immutable read capture and returns a zotero_source_revision that must be passed unchanged to import_preview. Each item includes a non-path source label and never exposes absolute paths.",
       inputSchema: listLibraryInputShape,
       outputSchema: listLibraryOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,

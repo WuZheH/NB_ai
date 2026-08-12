@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import gc
 import sqlite3
 from pathlib import Path
 
@@ -681,6 +683,89 @@ def test_preview_token_detects_source_drift(
         exc_info.value.code
         == "preview_source_drift"
     )
+
+
+def test_content_addressed_preview_stays_bound_to_capture_a(
+    tmp_path,
+    no_pdf_parser,
+):
+    env = make_environment(tmp_path)
+    capture_a = env["snapshot"]
+    revision_a = hashlib.sha256(capture_a.read_bytes()).hexdigest()
+    preview_a = service.build_selected_book_preview(
+        zotero_item_key="BOOKKEY1",
+        snapshot_path=capture_a,
+        zotero_source_revision=revision_a,
+        db_path=env["research_db"],
+        config=env["config"],
+        now_ts=1000,
+        token_ttl_seconds=100,
+    )
+
+    capture_b = tmp_path / "capture-b.sqlite"
+    source = sqlite3.connect(capture_a)
+    destination = sqlite3.connect(capture_b)
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
+    with sqlite3.connect(capture_b) as connection:
+        connection.execute(
+            "UPDATE itemAnnotations SET comment='Capture B comment' WHERE itemID=20"
+        )
+    revision_b = hashlib.sha256(capture_b.read_bytes()).hexdigest()
+    preview_b = service.build_selected_book_preview(
+        zotero_item_key="BOOKKEY1",
+        snapshot_path=capture_b,
+        zotero_source_revision=revision_b,
+        db_path=env["research_db"],
+        config=env["config"],
+        now_ts=1001,
+        issue_token=False,
+    )
+    resolved_a = service.resolve_selected_book_preview_token(
+        preview_a["preview_token"],
+        now_ts=1002,
+    )
+
+    assert preview_b["annotations"][0]["source_comment"] == "Capture B comment"
+    assert resolved_a["annotations"][0]["source_comment"] == "My annotation comment"
+    assert resolved_a["zotero_source_revision"] == revision_a
+    assert resolved_a["zotero_source_revision"] != revision_b
+
+
+@pytest.mark.parametrize("mutation", ["tamper", "delete"])
+def test_content_addressed_preview_capture_loss_fails_closed(
+    tmp_path,
+    no_pdf_parser,
+    mutation,
+):
+    env = make_environment(tmp_path)
+    capture = env["snapshot"]
+    revision = hashlib.sha256(capture.read_bytes()).hexdigest()
+    preview = service.build_selected_book_preview(
+        zotero_item_key="BOOKKEY1",
+        snapshot_path=capture,
+        zotero_source_revision=revision,
+        db_path=env["research_db"],
+        config=env["config"],
+        now_ts=1000,
+        token_ttl_seconds=100,
+    )
+    if mutation == "tamper":
+        capture.write_bytes(capture.read_bytes() + b"tamper")
+    else:
+        gc.collect()
+        capture.unlink()
+
+    with pytest.raises(service.ZoteroSelectedBookPreviewError) as error:
+        service.resolve_selected_book_preview_token(
+            preview["preview_token"],
+            now_ts=1001,
+        )
+    assert error.value.code == "preview_source_drift"
+    assert error.value.details["cause_code"] == "zotero_source_revision_corrupt"
 
 
 def test_duplicate_item_key_across_libraries_is_rejected(

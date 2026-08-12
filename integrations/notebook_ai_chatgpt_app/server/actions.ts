@@ -213,7 +213,8 @@ export async function dispatchAction(
     const inboxFilename = optionalString(input.inbox_filename, 255);
     const zoteroItemKey = optionalString(input.zotero_item_key, 64);
     const zoteroAttachmentKey = optionalString(input.zotero_attachment_key, 64);
-    if (sourceType === "local_pdf" && (zoteroItemKey || zoteroAttachmentKey)) {
+    const zoteroSourceRevision = optionalZoteroSourceRevision(input.zotero_source_revision);
+    if (sourceType === "local_pdf" && (zoteroItemKey || zoteroAttachmentKey || zoteroSourceRevision)) {
       throw new ActionRequestError("ACTIONS_INVALID_ARGUMENT", "local_pdf does not accept Zotero keys.");
     }
     if (sourceType === "zotero_selected_book" && (!zoteroItemKey || inboxFilename)) {
@@ -227,6 +228,7 @@ export async function dispatchAction(
       inbox_filename: inboxFilename,
       zotero_item_key: zoteroItemKey,
       zotero_attachment_key: zoteroAttachmentKey,
+      zotero_source_revision: zoteroSourceRevision,
     });
   }
   if (action === "import_document") {
@@ -390,6 +392,17 @@ function requiredImportSourceType(value: unknown): "local_pdf" | "zotero_selecte
   throw new ActionRequestError("ACTIONS_INVALID_ARGUMENT", "source_type is invalid.");
 }
 
+function optionalZoteroSourceRevision(value: unknown): string | undefined {
+  const revision = optionalString(value, 64);
+  if (revision !== undefined && !/^[0-9a-f]{64}$/.test(revision)) {
+    throw new ActionRequestError(
+      "ACTIONS_INVALID_ARGUMENT",
+      "zotero_source_revision must be a 64-character lowercase hexadecimal identifier.",
+    );
+  }
+  return revision;
+}
+
 function requiredStringArray(value: unknown, name: string, maximumItems: number, maximumLength: number): string[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > maximumItems) {
     throw new ActionRequestError("ACTIONS_INVALID_ARGUMENT", `${name} is invalid.`);
@@ -487,6 +500,7 @@ function actionInputSchema(name: string): Record<string, unknown> {
     properties.inbox_filename = { type: "string", minLength: 1, maxLength: 255 };
     properties.zotero_item_key = { type: "string", minLength: 1, maxLength: 64 };
     properties.zotero_attachment_key = { type: "string", minLength: 1, maxLength: 64 };
+    properties.zotero_source_revision = { type: "string", pattern: "^[0-9a-f]{64}$" };
     return {
       type: "object",
       additionalProperties: false,
@@ -500,6 +514,7 @@ function actionInputSchema(name: string): Record<string, unknown> {
             anyOf: [
               { required: ["zotero_item_key"] },
               { required: ["zotero_attachment_key"] },
+              { required: ["zotero_source_revision"] },
             ],
           },
         },

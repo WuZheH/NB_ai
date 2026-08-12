@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from app.services import (
     book_import_service,
     import_duplicate_check_service,
     pdf_extraction_strategy_service,
+    zotero_live_capture_service,
     zotero_source_cache_service,
 )
 from app.services.retrieval.fragment_normalizer import (
@@ -89,6 +91,7 @@ def build_selected_book_preview(
     zotero_item_key: str,
     zotero_attachment_key: str | None = None,
     snapshot_path: str | Path | None = None,
+    zotero_source_revision: str | None = None,
     db_path: str | Path | None = None,
     config: dict[str, Any] | None = None,
     now_ts: float | None = None,
@@ -118,12 +121,25 @@ def build_selected_book_preview(
             source_config["zotero_db_snapshot"]
         ).resolve(strict=False)
     )
+    capture_revision = str(zotero_source_revision or "").strip() or None
+    if capture_revision is not None:
+        try:
+            zotero_live_capture_service.verify_zotero_capture_file(
+                snapshot,
+                capture_revision,
+            )
+        except zotero_live_capture_service.ZoteroLiveCaptureError as exc:
+            raise ZoteroSelectedBookPreviewError(
+                status_code=409,
+                code=exc.code,
+                message=str(exc),
+            ) from exc
 
     research_db = Path(
         db_path if db_path is not None else DEFAULT_DB_PATH
     ).resolve(strict=False)
 
-    with open_snapshot_readonly(snapshot) as connection:
+    with closing(open_snapshot_readonly(snapshot)) as connection:
         parent = _read_parent_item(
             connection,
             item_key,
@@ -186,6 +202,7 @@ def build_selected_book_preview(
                 "preview_token": None,
                 "preview_expires_at": None,
                 "source_revision": None,
+                "zotero_source_revision": capture_revision,
                 **_no_write_flags(),
             }
 
@@ -326,6 +343,7 @@ def build_selected_book_preview(
                     selected["attachment_key"]
                 ),
                 "snapshot_path": str(snapshot),
+                "zotero_source_revision": capture_revision,
                 "db_path": str(research_db),
                 "resolved_pdf_path": str(pdf_path),
                 "config": source_config,
@@ -377,6 +395,7 @@ def build_selected_book_preview(
         "warnings": _dedupe(warnings),
         **extraction_plan,
         "source_revision": source_revision,
+        "zotero_source_revision": capture_revision,
         "preview_token": preview_token,
         "preview_expires_at": (
             _iso_timestamp(expires_at)
@@ -519,6 +538,7 @@ def resolve_selected_book_preview_token(
             snapshot_path=entry[
                 "snapshot_path"
             ],
+            zotero_source_revision=entry.get("zotero_source_revision"),
             db_path=entry["db_path"],
             config=entry["config"],
             now_ts=timestamp,
@@ -740,6 +760,7 @@ def validate_selected_book_preview_token(
                 "zotero_attachment_key"
             ],
             snapshot_path=entry["snapshot_path"],
+            zotero_source_revision=entry.get("zotero_source_revision"),
             db_path=entry["db_path"],
             config=entry["config"],
             now_ts=timestamp,
@@ -792,6 +813,7 @@ def validate_selected_book_preview_token(
         "source_revision_fingerprint": (
             current_fingerprint
         ),
+        "zotero_source_revision": entry.get("zotero_source_revision"),
         "expires_at": _iso_timestamp(
             float(entry["expires_at"])
         ),

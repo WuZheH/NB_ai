@@ -18,6 +18,7 @@ test("Actions forwards Zotero import_preview and keeps exactly ten actions", asy
       source_type: "zotero_selected_book",
       zotero_item_key: "ABCD1234",
       zotero_attachment_key: "EFGH5678",
+      zotero_source_revision: "b".repeat(64),
     },
     client,
   );
@@ -26,6 +27,7 @@ test("Actions forwards Zotero import_preview and keeps exactly ten actions", asy
     inbox_filename: undefined,
     zotero_item_key: "ABCD1234",
     zotero_attachment_key: "EFGH5678",
+    zotero_source_revision: "b".repeat(64),
   }]);
 
   const document = actionsOpenApiDocument() as {
@@ -38,9 +40,33 @@ test("Actions forwards Zotero import_preview and keeps exactly ten actions", asy
     .requestBody.content["application/json"].schema;
   assert.deepEqual(
     Object.keys(schema.properties as Record<string, unknown>).sort(),
-    ["inbox_filename", "source_type", "zotero_attachment_key", "zotero_item_key"],
+    ["inbox_filename", "source_type", "zotero_attachment_key", "zotero_item_key", "zotero_source_revision"],
   );
   assert.equal(Array.isArray(schema.oneOf), true);
+});
+
+test("Actions rejects malformed or local-PDF Zotero revisions", async () => {
+  const client = {
+    importPreview: async () => {
+      throw new Error("backend must not be called");
+    },
+  } as NotebookClient;
+  await assert.rejects(
+    dispatchAction("import_preview", {
+      source_type: "zotero_selected_book",
+      zotero_item_key: "ABCD1234",
+      zotero_source_revision: "bad",
+    }, client),
+    /64-character lowercase hexadecimal/,
+  );
+  await assert.rejects(
+    dispatchAction("import_preview", {
+      source_type: "local_pdf",
+      inbox_filename: "fixture.pdf",
+      zotero_source_revision: "b".repeat(64),
+    }, client),
+    /local_pdf does not accept Zotero keys/,
+  );
 });
 
 test("Actions rejects mixed local and Zotero import_preview inputs", async () => {

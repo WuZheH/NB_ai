@@ -357,6 +357,8 @@ test("tools/list exposes ten annotated tools and widget resource", async () => {
       listLibrary?.inputSchema?.properties?.status?.enum,
       ["active", "archived", "available", "imported", "all"],
     );
+    assert.ok(listLibrary?.outputSchema?.properties?.zotero_source_revision);
+    assert.ok(importPreview?.inputSchema?.properties?.zotero_source_revision);
 
     const resource = await client.readResource({ uri: "ui://notebook-ai/research-search-v1.html" });
     assert.equal(resource.contents[0]?.mimeType, RESOURCE_MIME_TYPE);

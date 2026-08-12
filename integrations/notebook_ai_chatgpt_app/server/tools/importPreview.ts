@@ -23,6 +23,7 @@ export const importPreviewInputShape = {
   inbox_filename: z.string().trim().min(1).max(255).optional(),
   zotero_item_key: z.string().trim().min(1).max(64).optional(),
   zotero_attachment_key: z.string().trim().min(1).max(64).optional(),
+  zotero_source_revision: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   file: z.object({
     download_url: z.string().url(),
     file_id: z.string().min(1),
@@ -33,7 +34,7 @@ export const importPreviewInputShape = {
 export const importPreviewInputSchema = z.object(importPreviewInputShape).superRefine(
   (value, context) => {
     if (value.source_type === "local_pdf") {
-      if (value.zotero_item_key || value.zotero_attachment_key) {
+      if (value.zotero_item_key || value.zotero_attachment_key || value.zotero_source_revision) {
         context.addIssue({ code: "custom", message: "local_pdf does not accept Zotero keys." });
       }
       if (value.file && value.inbox_filename) {
@@ -62,6 +63,7 @@ export const importPreviewOutputShape = {
   parent_key: z.string().nullable().optional(),
   zotero_item_key: z.string().nullable().optional(),
   zotero_attachment_key: z.string().nullable().optional(),
+  zotero_source_revision: z.string().regex(/^[0-9a-f]{64}$/).nullable().optional(),
   pdf_sha256: z.string().nullable(),
   duplicate_status: z.string(),
   existing_document_id: z.number().int().positive().nullable(),
@@ -92,6 +94,8 @@ export const importPreviewOutputShape = {
   child_note_count: z.number().int().nonnegative().nullable(),
   note_count: z.number().int().nonnegative().optional(),
   note_files: z.array(z.string()).optional(),
+  writes_performed: z.literal(false),
+  production_data_modified: z.literal(false),
 };
 
 export async function runImportPreviewTool(
@@ -114,6 +118,7 @@ export async function runImportPreviewTool(
       inbox_filename: inboxFilename,
       zotero_item_key: input.zotero_item_key,
       zotero_attachment_key: input.zotero_attachment_key,
+      zotero_source_revision: input.zotero_source_revision,
     });
     const response = {
       ...backendResponse,
@@ -123,11 +128,14 @@ export async function runImportPreviewTool(
       parent_key: backendResponse.parent_key ?? null,
       zotero_item_key: backendResponse.zotero_item_key ?? null,
       zotero_attachment_key: backendResponse.zotero_attachment_key ?? null,
+      zotero_source_revision: backendResponse.zotero_source_revision ?? null,
       pdf_sha256: backendResponse.pdf_sha256 ?? null,
       attachment_choices: backendResponse.attachment_choices ?? [],
       annotation_count: backendResponse.annotation_count ?? null,
       annotation_comment_count: backendResponse.annotation_comment_count ?? null,
       child_note_count: backendResponse.child_note_count ?? null,
+      writes_performed: false as const,
+      production_data_modified: false as const,
     };
     if (stagedPath && response.confirmation_token) {
       rememberStagedImport(response.confirmation_token, stagedPath);
@@ -161,7 +169,7 @@ export function registerImportPreviewTool(server: McpServer, client: NotebookCli
     {
       title: "Preview a local PDF or selected Zotero book for READ",
       description:
-        "Read-only. Inspect a local PDF or selected Zotero book without adding it to READ. Before asking for confirmation, show the title, item type, selected attachment, page and chunk estimates, chapter count when available, annotation count, annotation-comment count, child-note count, duplicate status, warnings, blockers, and confirmation expiry. Never call import_document from this preview alone.",
+        "Read-only. Inspect a local PDF or selected Zotero book without adding it to READ. For a Zotero item discovered by list_library, pass its zotero_source_revision unchanged so preview stays bound to that immutable capture. Before asking for confirmation, show the title, item type, selected attachment, page and chunk estimates, chapter count when available, annotation count, annotation-comment count, child-note count, duplicate status, warnings, blockers, and confirmation expiry. Never call import_document from this preview alone.",
       inputSchema: importPreviewInputShape,
       outputSchema: importPreviewOutputShape,
       annotations: READ_ONLY_ANNOTATIONS,

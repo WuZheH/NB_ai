@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -467,6 +468,11 @@ def test_import_preview_request_source_contract() -> None:
     with pytest.raises(ValidationError):
         ImportPreviewRequest(source_type="local_pdf", zotero_item_key="ABCD1234")
     with pytest.raises(ValidationError):
+        ImportPreviewRequest(
+            source_type="local_pdf",
+            zotero_source_revision="a" * 64,
+        )
+    with pytest.raises(ValidationError):
         ImportPreviewRequest(source_type="zotero_selected_book")
     with pytest.raises(ValidationError):
         ImportPreviewRequest(
@@ -483,9 +489,17 @@ def test_import_preview_request_source_contract() -> None:
         source_type="zotero_selected_book",
         zotero_item_key=" ABCD1234 ",
         zotero_attachment_key=" EFGH5678 ",
+        zotero_source_revision="a" * 64,
     )
     assert selected.zotero_item_key == "ABCD1234"
     assert selected.zotero_attachment_key == "EFGH5678"
+    assert selected.zotero_source_revision == "a" * 64
+    with pytest.raises(ValidationError):
+        ImportPreviewRequest(
+            source_type="zotero_selected_book",
+            zotero_item_key="ABCD1234",
+            zotero_source_revision="not-a-revision",
+        )
     with pytest.raises(ValidationError):
         ImportPreviewRequest(
             source_type="zotero_selected_book",
@@ -518,6 +532,7 @@ def test_import_preview_api_forwards_all_source_fields(
             "source_type": "zotero_selected_book",
             "zotero_item_key": "ABCD1234",
             "zotero_attachment_key": "EFGH5678",
+            "zotero_source_revision": "a" * 64,
         },
     )
     assert response.status_code == 200
@@ -527,8 +542,66 @@ def test_import_preview_api_forwards_all_source_fields(
             "inbox_filename": None,
             "zotero_item_key": "ABCD1234",
             "zotero_attachment_key": "EFGH5678",
+            "zotero_source_revision": "a" * 64,
         }
     ]
+
+
+def test_zotero_import_preview_resolves_only_the_requested_capture_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_path = tmp_path / "captures" / f"{'a' * 64}.sqlite"
+    capture_path.parent.mkdir(parents=True)
+    capture_path.write_bytes(b"fixture")
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        chat_tool_service.zotero_live_capture_service,
+        "resolve_zotero_source_revision",
+        lambda revision, **_kwargs: SimpleNamespace(
+            revision=revision,
+            snapshot_path=capture_path,
+        ),
+    )
+
+    def build_preview(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "attachment_choice_required",
+            "zotero_item": {
+                "zotero_item_key": "YQ5AKN4I",
+                "title": "The KIT Motion-Language Dataset",
+                "item_type": "journalArticle",
+            },
+            "attachment_choices": [],
+            "warnings": [],
+            "blockers": [],
+            "annotation_count": None,
+            "annotation_comment_count": None,
+            "child_note_count": None,
+        }
+
+    monkeypatch.setattr(
+        chat_tool_service.zotero_selected_book_preview_service,
+        "build_selected_book_preview",
+        build_preview,
+    )
+    runtime = chat_tool_service.ChatToolRuntime(
+        db_path=tmp_path / "research.db",
+        data_dir=tmp_path / "data",
+        zotero_capture_dir=capture_path.parent,
+    )
+    result = chat_tool_service.import_preview(
+        source_type="zotero_selected_book",
+        zotero_item_key="YQ5AKN4I",
+        zotero_source_revision="a" * 64,
+        runtime=runtime,
+    )
+    assert result["zotero_source_revision"] == "a" * 64
+    assert result["writes_performed"] is False
+    assert result["production_data_modified"] is False
+    assert calls[0]["snapshot_path"] == capture_path
+    assert calls[0]["zotero_source_revision"] == "a" * 64
 
 
 def test_pdf_classifier_accepts_only_the_explicit_inbox_root(

@@ -1,5 +1,8 @@
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from app.services import chat_tool_service, zotero_library_service
 
@@ -252,8 +255,10 @@ def test_two_pdf_sort_order_never_creates_primary(tmp_path, monkeypatch):
     assert item["attachment_selection_required"] is True
 
 
-def test_chat_tool_passes_document_type_to_parent_service(monkeypatch):
+def test_chat_tool_passes_fresh_capture_to_parent_service(tmp_path, monkeypatch):
     captured = {}
+    snapshot = tmp_path / "fresh.sqlite"
+    snapshot.write_bytes(b"capture")
 
     def fake_list_parent_items(**kwargs):
         captured.update(kwargs)
@@ -264,16 +269,157 @@ def test_chat_tool_passes_document_type_to_parent_service(monkeypatch):
         "list_parent_items",
         fake_list_parent_items,
     )
-    chat_tool_service.list_library(
-        scope="zotero", document_type="journalArticle", limit=7
+    monkeypatch.setattr(
+        chat_tool_service.zotero_live_capture_service,
+        "capture_configured_live_zotero",
+        lambda **_kwargs: SimpleNamespace(
+            snapshot_path=snapshot,
+            revision="a" * 64,
+            captured_at="2026-08-12T00:00:00+00:00",
+            created=True,
+        ),
+    )
+    result = chat_tool_service.list_library(
+        scope="zotero",
+        document_type="journalArticle",
+        limit=7,
+        runtime=chat_tool_service.ChatToolRuntime(
+            db_path=tmp_path / "research.db",
+            data_dir=tmp_path / "data",
+        ),
     )
     assert captured == {
         "query": None,
         "document_type": "journalArticle",
         "status": "active",
         "limit": 7,
-        "db_path": chat_tool_service.DEFAULT_DB_PATH,
+        "db_path": tmp_path / "research.db",
+        "snapshot_path": snapshot,
     }
+    assert result["zotero_source_revision"] == "a" * 64
+    assert result["captured_at"] == "2026-08-12T00:00:00+00:00"
+    assert result["source_freshness"] == "fresh_capture"
+    assert result["read_only_source_capture_write"] is True
+
+
+def test_explicit_fresh_snapshot_is_used_instead_of_configured_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    configured = _fixture(tmp_path, monkeypatch)
+    fresh = tmp_path / "fresh.sqlite"
+    source = sqlite3.connect(configured)
+    destination = sqlite3.connect(fresh)
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
+    with sqlite3.connect(fresh) as connection:
+        connection.executemany(
+            "INSERT INTO items VALUES(?,?,?,?)",
+            [
+                (90, "YQ5AKN4I", 2, "2026-08-12"),
+                (91, "RMIJWC9C", 3, "2026-08-12"),
+            ],
+        )
+        connection.execute(
+            "INSERT INTO itemDataValues VALUES(90,'The KIT Motion-Language Dataset')"
+        )
+        connection.execute("INSERT INTO itemData VALUES(90,1,90)")
+        connection.execute(
+            "INSERT INTO itemAttachments VALUES(91,90,'storage:kit.pdf','application/pdf')"
+        )
+
+    assert zotero_library_service.list_parent_items(
+        query="KIT Motion-Language",
+        db_path=None,
+    )["count"] == 0
+    result = zotero_library_service.list_parent_items(
+        query="KIT Motion-Language",
+        db_path=None,
+        snapshot_path=fresh,
+    )
+    assert result["count"] == 1
+    assert result["items"][0]["zotero_item_key"] == "YQ5AKN4I"
+    assert result["items"][0]["attachment_keys"] == ["RMIJWC9C"]
+
+
+def test_duplicate_fresh_titles_return_both_real_parent_keys_without_guessing(
+    tmp_path,
+    monkeypatch,
+):
+    snapshot = _fixture(tmp_path, monkeypatch)
+    with sqlite3.connect(snapshot) as connection:
+        connection.executemany(
+            "INSERT INTO items VALUES(?,?,?,?)",
+            [
+                (90, "KITPARENT1", 2, "2026-08-12"),
+                (91, "KITPARENT2", 2, "2026-08-12"),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO itemDataValues VALUES(?,?)",
+            [
+                (90, "The KIT Motion-Language Dataset"),
+                (91, "The KIT Motion-Language Dataset"),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO itemData VALUES(?,?,?)",
+            [(90, 1, 90), (91, 1, 91)],
+        )
+    result = zotero_library_service.list_parent_items(
+        query="The KIT Motion-Language Dataset",
+        snapshot_path=snapshot,
+        db_path=None,
+    )
+    assert result["count"] == 2
+    assert {item["zotero_item_key"] for item in result["items"]} == {
+        "KITPARENT1",
+        "KITPARENT2",
+    }
+    assert all(item["primary_pdf_attachment_key"] is None for item in result["items"])
+
+
+def test_chat_zotero_capture_busy_never_falls_back_to_stale_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    called = False
+
+    def list_parent_items(**_kwargs):
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(
+        chat_tool_service.zotero_library_service,
+        "list_parent_items",
+        list_parent_items,
+    )
+    monkeypatch.setattr(
+        chat_tool_service.zotero_live_capture_service,
+        "capture_configured_live_zotero",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            chat_tool_service.zotero_live_capture_service.ZoteroLiveCaptureError(
+                "zotero_live_capture_busy",
+                "busy",
+            )
+        ),
+    )
+    with pytest.raises(chat_tool_service.ChatToolError) as error:
+        chat_tool_service.list_library(
+            scope="zotero",
+            runtime=chat_tool_service.ChatToolRuntime(
+                db_path=tmp_path / "research.db",
+                data_dir=tmp_path / "data",
+            ),
+        )
+    assert error.value.error_code == "zotero_live_capture_busy"
+    assert error.value.details["writes_performed"] is False
+    assert error.value.details["production_data_modified"] is False
+    assert called is False
 
 
 def test_limit_and_truncated_are_computed_after_parent_filtering(tmp_path, monkeypatch):

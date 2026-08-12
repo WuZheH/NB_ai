@@ -1581,6 +1581,8 @@ def test_public_chat_zotero_preview_forwards_keys_and_sanitizes_choices(
         {
             "zotero_item_key": "ABCD1234",
             "zotero_attachment_key": "ATTACH01",
+            "snapshot_path": None,
+            "zotero_source_revision": None,
             "db_path": database,
             "issue_token": True,
         }
@@ -1647,6 +1649,8 @@ def test_public_chat_zotero_temp_preview_registers_chat_confirmation(
     ]
     assert result["confirmation_token"] == "chat-confirmation-token"
     assert result["confirmation_expires_in_seconds"] == 600
+    assert result["writes_performed"] is False
+    assert result["production_data_modified"] is False
     assert result["estimated_pages"] == 12
     assert result["estimated_chunks"] == 4
     assert result["annotation_count"] == 4

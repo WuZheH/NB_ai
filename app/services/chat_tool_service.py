@@ -30,6 +30,7 @@ from app.services import (
     pdf_import_classifier_service,
     retrieval_generation_mutation_service,
     zotero_direction_b_import_service,
+    zotero_live_capture_service,
     zotero_selected_book_preview_service,
 )
 from app.services.library import document_deletion_service
@@ -146,6 +147,7 @@ class ChatToolRuntime:
     zotero_body_importer: Callable[..., dict[str, Any]] | None = None
     commit_zotero_import: Callable[..., dict[str, Any]] | None = None
     integrity_runtime: document_integrity_report_service.IntegrityReportRuntime | None = None
+    zotero_capture_dir: Path | None = None
 
     def resolved_inbox_root(self) -> Path:
         if self.inbox_root is not None:
@@ -178,6 +180,15 @@ class ChatToolRuntime:
             / "import_operation_journal"
         )
 
+    def resolved_zotero_capture_dir(self) -> Path:
+        if self.zotero_capture_dir is not None:
+            return Path(self.zotero_capture_dir).resolve(strict=False)
+        return (
+            Path(self.data_dir).resolve(strict=False)
+            / "runtime"
+            / "zotero_read_snapshots"
+        )
+
 
 def _import_journal_store(
     runtime: ChatToolRuntime,
@@ -201,13 +212,35 @@ def list_library(
         return chat_import_catalog_service.list_catalog(inbox_root=actual_runtime.resolved_inbox_root(), query=query, limit=limit)
     if scope == "zotero":
         try:
-            return zotero_library_service.list_parent_items(
+            capture = zotero_live_capture_service.capture_configured_live_zotero(
+                capture_dir=actual_runtime.resolved_zotero_capture_dir(),
+            )
+            result = zotero_library_service.list_parent_items(
                 query=query,
                 document_type=document_type,
                 status=status,
                 limit=limit,
                 db_path=actual_runtime.db_path,
+                snapshot_path=capture.snapshot_path,
             )
+            return {
+                **result,
+                "zotero_source_revision": capture.revision,
+                "captured_at": capture.captured_at,
+                "source_freshness": "fresh_capture",
+                "read_only_source_capture_write": capture.created,
+            }
+        except zotero_live_capture_service.ZoteroLiveCaptureError as exc:
+            raise ChatToolError(
+                exc.code,
+                str(exc),
+                status_code=(503 if exc.code == "zotero_live_capture_busy" else 409),
+                details={
+                    "safe_to_retry": exc.code == "zotero_live_capture_busy",
+                    "writes_performed": False,
+                    "production_data_modified": False,
+                },
+            ) from exc
         except ValueError as exc:
             if str(exc) == "zotero_status_invalid":
                 raise ChatToolError(
@@ -404,6 +437,7 @@ def import_preview(
     source_type: str = "local_pdf",
     zotero_item_key: str | None = None,
     zotero_attachment_key: str | None = None,
+    zotero_source_revision: str | None = None,
     runtime: ChatToolRuntime | None = None,
 ) -> dict[str, Any]:
     actual_runtime = runtime or ChatToolRuntime()
@@ -411,12 +445,19 @@ def import_preview(
         return _import_zotero_selected_book_preview(
             zotero_item_key=zotero_item_key,
             zotero_attachment_key=zotero_attachment_key,
+            zotero_source_revision=zotero_source_revision,
             runtime=actual_runtime,
         )
     if source_type != "local_pdf":
         raise ChatToolError(
             "import_source_type_invalid",
             "Import preview source type is invalid.",
+            status_code=422,
+        )
+    if zotero_source_revision is not None:
+        raise ChatToolError(
+            "import_source_contract_invalid",
+            "local_pdf does not accept a Zotero source revision.",
             status_code=422,
         )
     inbox_root = actual_runtime.resolved_inbox_root()
@@ -513,6 +554,8 @@ def import_preview(
         "child_note_count": None,
         "note_count": len(record.note_sources) if token else len(chat_import_catalog_service.note_sources(pdf=source, inbox_root=inbox_root)),
         "note_files": [item["relative_path"] for item in (record.note_sources if token else chat_import_catalog_service.note_sources(pdf=source, inbox_root=inbox_root))],
+        "writes_performed": False,
+        "production_data_modified": False,
     }
 
 
@@ -520,6 +563,7 @@ def _import_zotero_selected_book_preview(
     *,
     zotero_item_key: str | None,
     zotero_attachment_key: str | None,
+    zotero_source_revision: str | None,
     runtime: ChatToolRuntime,
 ) -> dict[str, Any]:
     item_key = str(zotero_item_key or "").strip()
@@ -533,10 +577,32 @@ def _import_zotero_selected_book_preview(
 
     _zotero_runtime_is_production(runtime)
 
+    capture = None
+    source_revision = str(zotero_source_revision or "").strip() or None
+    if source_revision is not None:
+        try:
+            capture = zotero_live_capture_service.resolve_zotero_source_revision(
+                source_revision,
+                capture_dir=runtime.resolved_zotero_capture_dir(),
+            )
+        except zotero_live_capture_service.ZoteroLiveCaptureError as exc:
+            raise ChatToolError(
+                exc.code,
+                str(exc),
+                status_code=409,
+                details={
+                    "safe_to_retry": False,
+                    "writes_performed": False,
+                    "production_data_modified": False,
+                },
+            ) from exc
+
     try:
         preview = zotero_selected_book_preview_service.build_selected_book_preview(
             zotero_item_key=item_key,
             zotero_attachment_key=attachment_key,
+            snapshot_path=(capture.snapshot_path if capture is not None else None),
+            zotero_source_revision=source_revision,
             db_path=runtime.db_path,
             issue_token=True,
         )
@@ -597,6 +663,7 @@ def _import_zotero_selected_book_preview(
         "parent_key": str(item.get("zotero_item_key") or "") or None,
         "zotero_item_key": str(item.get("zotero_item_key") or "") or None,
         "zotero_attachment_key": None,
+        "zotero_source_revision": source_revision,
         "pdf_sha256": None,
         "duplicate_status": "not_evaluated",
         "existing_document_id": None,
@@ -619,6 +686,8 @@ def _import_zotero_selected_book_preview(
         "annotation_count": preview.get("annotation_count"),
         "annotation_comment_count": preview.get("annotation_comment_count"),
         "child_note_count": preview.get("child_note_count"),
+        "writes_performed": False,
+        "production_data_modified": False,
     }
 
     if preview.get("status") == "attachment_choice_required":

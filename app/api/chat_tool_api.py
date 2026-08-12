@@ -70,6 +70,7 @@ def import_preview(payload: ImportPreviewRequest, request: Request) -> dict[str,
         inbox_filename=payload.inbox_filename,
         zotero_item_key=payload.zotero_item_key,
         zotero_attachment_key=payload.zotero_attachment_key,
+        zotero_source_revision=payload.zotero_source_revision,
     )
 
 

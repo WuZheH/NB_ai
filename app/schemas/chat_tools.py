@@ -25,6 +25,10 @@ class ImportPreviewRequest(StrictChatToolRequest):
     inbox_filename: str | None = Field(default=None, max_length=255)
     zotero_item_key: str | None = Field(default=None, min_length=1, max_length=64)
     zotero_attachment_key: str | None = Field(default=None, min_length=1, max_length=64)
+    zotero_source_revision: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -35,6 +39,7 @@ class ImportPreviewRequest(StrictChatToolRequest):
                 "inbox_filename",
                 "zotero_item_key",
                 "zotero_attachment_key",
+                "zotero_source_revision",
             ):
                 raw = value.get(field)
                 if isinstance(raw, str):
@@ -44,7 +49,11 @@ class ImportPreviewRequest(StrictChatToolRequest):
     @model_validator(mode="after")
     def validate_source_fields(self):
         if self.source_type == "local_pdf":
-            if self.zotero_item_key is not None or self.zotero_attachment_key is not None:
+            if (
+                self.zotero_item_key is not None
+                or self.zotero_attachment_key is not None
+                or self.zotero_source_revision is not None
+            ):
                 raise ValueError("local_pdf does not accept Zotero keys")
         else:
             if self.zotero_item_key is None:

@@ -185,6 +185,7 @@ export class NotebookClient {
         inbox_filename: input.inbox_filename,
         zotero_item_key: input.zotero_item_key,
         zotero_attachment_key: input.zotero_attachment_key,
+        zotero_source_revision: input.zotero_source_revision,
       },
       "ok",
     );
