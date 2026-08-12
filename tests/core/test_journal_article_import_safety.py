@@ -116,6 +116,23 @@ def test_journal_article_profile_skips_only_book_structure_blockers(tmp_path):
     assert prepared.rejected_candidates[0].title == REFERENCE_TITLE
 
 
+def test_conference_paper_profile_skips_book_structure_blockers(tmp_path):
+    prepared = _prepared_article_like_document(tmp_path)
+
+    result = book_import_service.evaluate_auto_apply_safety(
+        prepared,
+        db_path=tmp_path / "missing.db",
+        document_type="conferencePaper",
+    )
+
+    assert result["auto_apply_eligible"] is True
+    assert result["reasons"] == []
+    assert result["book_safety_decision"] == "allowed"
+    assert result["book_safety_blockers"] == []
+    assert result["chapter_title_quality"] == "not_applicable"
+    assert prepared.rejected_candidates[0].title == REFERENCE_TITLE
+
+
 def test_apply_forwards_document_type_to_safety(tmp_path, monkeypatch):
     prepared = _prepared_article_like_document(tmp_path)
     captured = {}

@@ -26,6 +26,8 @@ from app.services.pdf_backend_service import PdfBackendUnavailableError, load_fi
 
 HIGH_RISK_WARNING_PREFIXES = ("duplicate_", "synthetic_full_text", "parser_failed")
 
+PAPER_DOCUMENT_TYPES = frozenset({"journalArticle", "conferencePaper"})
+
 
 def _callable_accepts_keyword(fn: Callable[..., Any], keyword: str) -> bool:
     try:
@@ -506,7 +508,7 @@ def evaluate_auto_apply_safety(
     document_type: str = "book",
 ) -> dict[str, Any]:
     normalized_document_type = str(document_type or "book").strip() or "book"
-    is_journal_article = normalized_document_type == "journalArticle"
+    is_paper_type = normalized_document_type in PAPER_DOCUMENT_TYPES
     reasons: list[str] = []
     structured_blockers: list[dict[str, Any]] = []
     db = Path(db_path)
@@ -530,10 +532,10 @@ def evaluate_auto_apply_safety(
                 "parsed_page_count": parsed_page_count,
             }
         )
-    if not is_journal_article and prepared.detection_method == "synthetic_full_text":
+    if not is_paper_type and prepared.detection_method == "synthetic_full_text":
         reasons.append("synthetic_full_text_not_apply_safe")
         structured_blockers.append({"code": "synthetic_full_text_not_apply_safe"})
-    if is_journal_article:
+    if is_paper_type:
         chapter_safety = {
             "book_safety_decision": "allowed",
             "book_safety_blockers": [],
@@ -590,7 +592,7 @@ def evaluate_auto_apply_safety(
         if not warning.startswith(HIGH_RISK_WARNING_PREFIXES):
             continue
         if (
-            is_journal_article
+            is_paper_type
             and warning
             == "synthetic_full_text: no chapter heading candidates detected"
         ):
