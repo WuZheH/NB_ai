@@ -877,6 +877,12 @@ def _commit_selected_book_import_locked(
                     manifest_path=staging_vector_manifest,
                 )
             )
+            expected_scoped_orphan_delete = int(
+                note_vector_reconciliation.get(
+                    "deleted_orphan_note_vectors"
+                )
+                or 0
+            ) > 0
             if (
                 note_vector_reconciliation.get("status") != "ok"
                 or note_vector_reconciliation.get("scope")
@@ -893,6 +899,14 @@ def _commit_selected_book_import_locked(
                     "orphan_delete_performed"
                 )
                 is not False
+                or note_vector_reconciliation.get(
+                    "global_orphan_sweep_performed"
+                )
+                is not False
+                or note_vector_reconciliation.get(
+                    "scoped_orphan_delete_performed"
+                )
+                is not expected_scoped_orphan_delete
             ):
                 raise RuntimeError(
                     "unsafe note vector scope reconciliation result"

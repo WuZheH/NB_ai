@@ -3401,6 +3401,10 @@ def test_direction_b_reconciles_reused_document_note_vector_scope(
         "cleared_current_document_note_vectors"
     ] == (1 if inherited_row_count else 0)
     assert reconciliation["full_rebuild_performed"] is False
+    assert reconciliation["scoped_orphan_delete_performed"] is (
+        inherited_row_count > 0
+    )
+    assert reconciliation["global_orphan_sweep_performed"] is False
     assert reconciliation["orphan_delete_performed"] is False
     assert result["note_vector_reconciliation"] == reconciliation
     sources = vector_store_service.collect_personal_note_sources(

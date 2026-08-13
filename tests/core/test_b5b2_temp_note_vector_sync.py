@@ -542,3 +542,245 @@ def test_note_apply_production_guards_run_before_store_or_model(
                 apply=True,
                 **paths,
             )
+
+
+def _reused_scope_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    corrupt_field: str | None = None,
+    corrupt_value: object = None,
+    duplicate: bool = False,
+) -> tuple[Path, Path, Path, dict]:
+    database = _note_database(tmp_path)
+    store = tmp_path / "candidate-lancedb"
+    manifest = tmp_path / "candidate-vector-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "embedding_dim": 3,
+                "note_count": 1,
+                "passage_count": 0,
+                "object_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "_expected_embedding_dim",
+        lambda: 3,
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "_active_embedding_model_path",
+        lambda: "isolated-note-model",
+    )
+    source = vector_store_service.collect_personal_note_sources(
+        document_id=2,
+        source_db_path=database,
+    )[0]
+    row = vector_store_service.build_note_schema_record(source)
+    row["document_id"] = 1
+    row["vector"] = [0.125, 0.25, 0.5]
+    if corrupt_field is not None:
+        row[corrupt_field] = corrupt_value
+    records = [row, dict(row)] if duplicate else [row]
+    vector_store_service.open_vector_store(store).create_table(
+        vector_store_service.NOTE_TABLE,
+        data=records,
+        mode="create",
+    )
+    return database, store, manifest, row
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    (
+        pytest.param("vector_id", "note:999", id="wrong_vector_id"),
+        pytest.param("source_type", "passage", id="wrong_source_type"),
+        pytest.param("note_type", "wrong-note-type", id="wrong_note_type"),
+        pytest.param("title", "wrong materialized title", id="wrong_title"),
+        pytest.param(
+            "text_for_embedding",
+            "wrong embedding materialization",
+            id="wrong_text_for_embedding",
+        ),
+        pytest.param("embedding_dim", 2, id="wrong_embedding_dim"),
+        pytest.param("source_hash", "f" * 64, id="stale_source_hash"),
+    ),
+)
+def test_reused_note_scope_reconciliation_fails_before_mutation_on_corruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    wrong_value: object,
+) -> None:
+    database, store, manifest, _row = _reused_scope_candidate(
+        tmp_path,
+        monkeypatch,
+        corrupt_field=field,
+        corrupt_value=wrong_value,
+    )
+    db = vector_store_service.open_vector_store(store)
+    before_rows = vector_store_service._existing_records(
+        db,
+        vector_store_service.NOTE_TABLE,
+    )
+    before_manifest = manifest.read_bytes()
+
+    with pytest.raises(vector_store_service.VectorStoreSchemaMismatch):
+        vector_store_service.reconcile_reused_document_note_vector_scope(
+            document_id=1,
+            source_db_path=database,
+            store_path=store,
+            manifest_path=manifest,
+        )
+
+    assert vector_store_service._existing_records(
+        db,
+        vector_store_service.NOTE_TABLE,
+    ) == before_rows
+    assert manifest.read_bytes() == before_manifest
+
+
+def test_reused_note_scope_reconciliation_rejects_duplicate_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, store, manifest, _row = _reused_scope_candidate(
+        tmp_path,
+        monkeypatch,
+        duplicate=True,
+    )
+    db = vector_store_service.open_vector_store(store)
+    before_rows = vector_store_service._existing_records(
+        db,
+        vector_store_service.NOTE_TABLE,
+    )
+    before_manifest = manifest.read_bytes()
+
+    with pytest.raises(vector_store_service.VectorStoreSchemaMismatch):
+        vector_store_service.reconcile_reused_document_note_vector_scope(
+            document_id=1,
+            source_db_path=database,
+            store_path=store,
+            manifest_path=manifest,
+        )
+
+    assert vector_store_service._existing_records(
+        db,
+        vector_store_service.NOTE_TABLE,
+    ) == before_rows
+    assert manifest.read_bytes() == before_manifest
+
+
+def test_reused_note_scope_reconciliation_preserves_embedding_for_scope_only_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, store, manifest, seeded = _reused_scope_candidate(
+        tmp_path,
+        monkeypatch,
+    )
+    monkeypatch.setattr(
+        vector_store_service.local_embedding_service,
+        "_load_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("scope-only reconciliation must not load the encoder")
+        ),
+    )
+
+    result = vector_store_service.reconcile_reused_document_note_vector_scope(
+        document_id=1,
+        source_db_path=database,
+        store_path=store,
+        manifest_path=manifest,
+    )
+
+    rows = vector_store_service._existing_records(
+        vector_store_service.open_vector_store(store),
+        vector_store_service.NOTE_TABLE,
+    )
+    assert len(rows) == 1
+    assert rows[0]["source_id"] == "note:4"
+    assert rows[0]["document_id"] == 2
+    assert rows[0]["vector"] == seeded["vector"]
+    assert result["reassigned_note_vectors"] == 1
+    assert result["deleted_orphan_note_vectors"] == 0
+    assert result["scoped_orphan_delete_performed"] is False
+    assert result["global_orphan_sweep_performed"] is False
+
+
+def test_reused_note_scope_reconciliation_reports_scoped_orphan_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, store, manifest, seeded = _reused_scope_candidate(
+        tmp_path,
+        monkeypatch,
+    )
+    orphan = dict(seeded)
+    orphan.update(
+        {
+            "vector_id": "note:999",
+            "source_id": "note:999",
+            "note_id": 999,
+        }
+    )
+    vector_store_service.open_vector_store(store).open_table(
+        vector_store_service.NOTE_TABLE
+    ).add([orphan])
+
+    result = vector_store_service.reconcile_reused_document_note_vector_scope(
+        document_id=1,
+        source_db_path=database,
+        store_path=store,
+        manifest_path=manifest,
+    )
+
+    assert result["deleted_orphan_note_vectors"] == 1
+    assert result["scoped_orphan_delete_performed"] is True
+    assert result["global_orphan_sweep_performed"] is False
+    assert result["orphan_delete_performed"] is False
+
+
+def test_reused_note_scope_reconciliation_keeps_candidate_dimension_when_table_empties(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, store, manifest, seeded = _reused_scope_candidate(
+        tmp_path,
+        monkeypatch,
+    )
+    table = vector_store_service.open_vector_store(store).open_table(
+        vector_store_service.NOTE_TABLE
+    )
+    table.delete("source_id = 'note:4'")
+    orphan = dict(seeded)
+    orphan.update(
+        {
+            "vector_id": "note:999",
+            "source_id": "note:999",
+            "note_id": 999,
+        }
+    )
+    table.add([orphan])
+    monkeypatch.setattr(
+        vector_store_service,
+        "_embedding_dim",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("empty candidate table must not consult another manifest")
+        ),
+    )
+
+    result = vector_store_service.reconcile_reused_document_note_vector_scope(
+        document_id=1,
+        source_db_path=database,
+        store_path=store,
+        manifest_path=manifest,
+    )
+
+    assert result["note_count"] == 0
+    assert result["deleted_orphan_note_vectors"] == 1
+    assert json.loads(manifest.read_text(encoding="utf-8"))["embedding_dim"] == 3

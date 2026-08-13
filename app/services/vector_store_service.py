@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 import hashlib
 import json
+import math
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -138,6 +139,15 @@ NOTE_EXPECTED_RECORD_FIELDS = {
     "updated_at",
     "vector",
 }
+_NOTE_CANONICAL_NON_VECTOR_FIELDS = frozenset(
+    NOTE_EXPECTED_RECORD_FIELDS
+    - {
+        "document_id",
+        "created_at",
+        "updated_at",
+        "vector",
+    }
+)
 
 
 class VectorStoreUnavailable(RuntimeError):
@@ -1953,6 +1963,75 @@ def cleanup_document_note_vectors(
     }
 
 
+def _note_record_matches_authoritative_metadata(
+    record: Mapping[str, Any],
+    source: dict[str, Any],
+    *,
+    embedding_dim: int,
+) -> bool:
+    """Compare every stable materialized field without recomputing a vector."""
+    if embedding_dim <= 0:
+        return False
+    note = source.get("note")
+    if not isinstance(note, Mapping):
+        return False
+    expected = _note_record_from_parts(
+        source=source,
+        text_for_embedding=_note_text_for_embedding(dict(note)),
+        vector=[0.0] * embedding_dim,
+        model_path=_active_embedding_model_path(),
+    )
+    for field in _NOTE_CANONICAL_NON_VECTOR_FIELDS:
+        current = record.get(field)
+        wanted = expected[field]
+        if field == "embedding_model_path":
+            if not _same_model_path(current, wanted):
+                return False
+        elif field in {"note_id", "embedding_dim"}:
+            if isinstance(current, bool):
+                return False
+            try:
+                if int(current) != int(wanted):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        elif field == "pdf_page":
+            if wanted is None:
+                if current is not None:
+                    return False
+            elif isinstance(current, bool):
+                return False
+            else:
+                try:
+                    if int(current) != int(wanted):
+                        return False
+                except (TypeError, ValueError):
+                    return False
+        elif field == "source_missing":
+            if not isinstance(current, bool) or current is not wanted:
+                return False
+        elif current != wanted:
+            return False
+    vector = record.get("vector")
+    if isinstance(vector, (str, bytes, bytearray)):
+        return False
+    try:
+        values = list(vector)
+    except (TypeError, ValueError):
+        return False
+    if len(values) != embedding_dim:
+        return False
+    for value in values:
+        if isinstance(value, bool):
+            return False
+        try:
+            if not math.isfinite(float(value)):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
 def reconcile_reused_document_note_vector_scope(
     *,
     document_id: int,
@@ -2003,6 +2082,8 @@ def reconcile_reused_document_note_vector_scope(
             "cleared_current_document_note_vectors": 0,
             "note_count": 0,
             "full_rebuild_performed": False,
+            "scoped_orphan_delete_performed": False,
+            "global_orphan_sweep_performed": False,
             "orphan_delete_performed": False,
         }
     fields = _table_schema_fields(db, NOTE_TABLE)
@@ -2034,6 +2115,8 @@ def reconcile_reused_document_note_vector_scope(
             "cleared_current_document_note_vectors": 0,
             "note_count": int(table.count_rows()),
             "full_rebuild_performed": False,
+            "scoped_orphan_delete_performed": False,
+            "global_orphan_sweep_performed": False,
             "orphan_delete_performed": False,
         }
 
@@ -2062,6 +2145,7 @@ def reconcile_reused_document_note_vector_scope(
         raise VectorStoreSchemaMismatch(
             "note scope reconciliation found duplicate target source IDs"
         )
+    source_id_set = set(source_ids)
 
     quoted_source_ids = ", ".join(_sql_quote(value) for value in source_ids)
     matching_where = f"source_id IN ({quoted_source_ids})"
@@ -2099,8 +2183,47 @@ def reconcile_reused_document_note_vector_scope(
             document_id=owner_document_id,
             source_db_path=source_database,
         )
-        if str(source.get("source_id") or "") in set(source_ids)
+        if str(source.get("source_id") or "") in source_id_set
     }
+
+    current_manifest = get_vector_manifest(actual_manifest_path) or {}
+    raw_manifest_embedding_dim = current_manifest.get("embedding_dim")
+    try:
+        manifest_embedding_dim = int(raw_manifest_embedding_dim or 0)
+    except (TypeError, ValueError) as exc:
+        raise VectorStoreSchemaMismatch(
+            "note scope reconciliation found an invalid manifest embedding dimension"
+        ) from exc
+    vector_dimensions: set[int] = set()
+    for row in target_rows:
+        vector = row.get("vector")
+        if isinstance(vector, (str, bytes, bytearray)):
+            raise VectorStoreSchemaMismatch(
+                "note scope reconciliation found an invalid embedding vector"
+            )
+        try:
+            vector_dimensions.add(len(vector))
+        except TypeError as exc:
+            raise VectorStoreSchemaMismatch(
+                "note scope reconciliation found an invalid embedding vector"
+            ) from exc
+    if len(vector_dimensions) != 1:
+        raise VectorStoreSchemaMismatch(
+            "note scope reconciliation found inconsistent embedding dimensions"
+        )
+    table_embedding_dim = next(iter(vector_dimensions))
+    if (
+        manifest_embedding_dim > 0
+        and manifest_embedding_dim != table_embedding_dim
+    ):
+        raise VectorStoreSchemaMismatch(
+            "note scope reconciliation found a manifest embedding dimension mismatch"
+        )
+    expected_embedding_dim = manifest_embedding_dim or table_embedding_dim
+    if expected_embedding_dim <= 0:
+        raise VectorStoreSchemaMismatch(
+            "note scope reconciliation could not prove an embedding dimension"
+        )
 
     reassigned_records: list[dict[str, Any]] = []
     orphan_count = 0
@@ -2125,7 +2248,11 @@ def reconcile_reused_document_note_vector_scope(
             )
         corrected = dict(row)
         corrected["document_id"] = owner_document_id
-        if _note_record_stale(corrected, source):
+        if _note_record_stale(
+            corrected,
+            source,
+            embedding_dim=expected_embedding_dim,
+        ):
             raise VectorStoreSchemaMismatch(
                 "note scope reconciliation found stale non-scope metadata"
             )
@@ -2136,10 +2263,10 @@ def reconcile_reused_document_note_vector_scope(
         table.add(reassigned_records)
     note_records = _existing_records(db, NOTE_TABLE)
     note_count = int(table.count_rows())
-    current_manifest = get_vector_manifest(actual_manifest_path) or {}
     embedding_dim = (
         _embedding_dim(note_records)
-        or int(current_manifest.get("embedding_dim") or 0)
+        if note_records
+        else expected_embedding_dim
     )
     _updated_manifest(
         manifest_path=actual_manifest_path,
@@ -2156,6 +2283,11 @@ def reconcile_reused_document_note_vector_scope(
         "cleared_current_document_note_vectors": current_document_count,
         "note_count": note_count,
         "full_rebuild_performed": False,
+        "scoped_orphan_delete_performed": orphan_count > 0,
+        "global_orphan_sweep_performed": False,
+        # Backwards-compatible alias: historically this field meant an
+        # unbounded/global orphan sweep. The explicit fields above distinguish
+        # that forbidden operation from this reused-document-ID cleanup.
         "orphan_delete_performed": False,
     }
 
@@ -3438,6 +3570,8 @@ def _object_record_stale(
 def _note_record_stale(
     record: dict[str, Any],
     source: dict[str, Any],
+    *,
+    embedding_dim: int | None = None,
 ) -> bool:
     note = source.get("note")
     if not isinstance(note, Mapping):
@@ -3464,7 +3598,24 @@ def _note_record_stale(
             return True
         if current != expected:
             return True
-    return _record_stale(record, source)
+    if embedding_dim is None:
+        vector = record.get("vector")
+        if isinstance(vector, (str, bytes, bytearray)):
+            return True
+        try:
+            expected_embedding_dim = len(vector)
+        except TypeError:
+            return True
+    else:
+        expected_embedding_dim = embedding_dim
+    return (
+        _record_stale(record, source)
+        or not _note_record_matches_authoritative_metadata(
+            record,
+            source,
+            embedding_dim=expected_embedding_dim,
+        )
+    )
 
 
 def _schema_sample_record(sources: list[dict[str, Any]], schema_record_builder: Any) -> dict[str, Any] | None:
