@@ -2286,6 +2286,17 @@ def _install_production_shaped_runtime(
         / "search_index"
         / "retrieval_fts_v1_manifest.json"
     )
+    fts_manifest.write_text(
+        json.dumps(
+            {
+                "production_db_sha256": hashlib.sha256(
+                    db_path.read_bytes()
+                ).hexdigest()
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     vector_store = (
         data_dir
         / "vector_store"

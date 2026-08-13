@@ -210,16 +210,81 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     return parsed
 
 
-def _legacy_snapshot(*, data_dir: Path, db_path: Path) -> RetrievalGenerationSnapshot:
+def _legacy_snapshot(
+    *, data_dir: Path, db_path: Path, production_db_sha256: str | None = None
+) -> RetrievalGenerationSnapshot:
     return RetrievalGenerationSnapshot(
         mode="legacy",
         generation_id=None,
-        production_db_sha256=cached_sha256_file(db_path),
+        production_db_sha256=(
+            production_db_sha256 or cached_sha256_file(db_path)
+        ),
         fts_index_path=(data_dir / "search_index" / FTS_INDEX_NAME),
         fts_manifest_path=(data_dir / "search_index" / FTS_MANIFEST_NAME),
         vector_store_path=(data_dir / "vector_store" / VECTOR_STORE_NAME),
         vector_manifest_path=(data_dir / "vector_store" / VECTOR_MANIFEST_NAME),
         native_note_vector_path=(data_dir / "vector_store" / NATIVE_NOTE_VECTOR_NAME),
+    )
+
+
+def _validated_legacy_snapshot(
+    *, data_dir: Path, db_path: Path
+) -> RetrievalGenerationSnapshot:
+    """Return legacy paths only after proving they match the current database."""
+
+    root = data_dir / GENERATION_ROOT_NAME
+    if _path_entry_exists(root):
+        if root.is_symlink() or not root.is_dir():
+            raise RetrievalGenerationError(
+                "active_index_invalid",
+                "Retrieval generation root is invalid while the active pointer is absent.",
+            )
+        try:
+            has_generation_entries = next(root.iterdir(), None) is not None
+        except OSError as exc:
+            raise RetrievalGenerationError(
+                "active_index_invalid",
+                "Retrieval generation root is unreadable while the active pointer is absent.",
+            ) from exc
+        if has_generation_entries:
+            raise RetrievalGenerationError(
+                "active_index_invalid",
+                "Retrieval generation state exists while the active pointer is absent.",
+            )
+
+    manifest_path = data_dir / "search_index" / FTS_MANIFEST_NAME
+    if (
+        not _path_entry_exists(manifest_path)
+        or manifest_path.is_symlink()
+        or not manifest_path.is_file()
+    ):
+        raise RetrievalGenerationError(
+            "active_index_invalid",
+            "Legacy retrieval manifest cannot prove a safe legacy state.",
+        )
+    manifest = _read_json_object(manifest_path)
+    manifest_db_sha = str(manifest.get("production_db_sha256") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", manifest_db_sha):
+        raise RetrievalGenerationError(
+            "active_index_invalid",
+            "Legacy retrieval database revision is invalid.",
+        )
+    try:
+        database_sha = cached_sha256_file(db_path).lower()
+    except (OSError, ValueError) as exc:
+        raise RetrievalGenerationError(
+            "active_index_invalid",
+            "Production database cannot be validated for legacy retrieval.",
+        ) from exc
+    if database_sha != manifest_db_sha:
+        raise RetrievalGenerationError(
+            "active_index_database_revision_mismatch",
+            "Legacy retrieval generation does not match the production database.",
+        )
+    return _legacy_snapshot(
+        data_dir=data_dir,
+        db_path=db_path,
+        production_db_sha256=database_sha,
     )
 
 
@@ -232,8 +297,8 @@ def resolve_active_retrieval_generation(
     data_root = Path(data_dir).resolve(strict=False)
     database = Path(db_path).resolve(strict=False)
     pointer_path = data_root / ACTIVE_POINTER_NAME
-    if not pointer_path.exists():
-        return _legacy_snapshot(data_dir=data_root, db_path=database)
+    if not _path_entry_exists(pointer_path):
+        return _validated_legacy_snapshot(data_dir=data_root, db_path=database)
     if not pointer_path.is_file() or pointer_path.is_symlink():
         raise RetrievalGenerationError(
             "active_index_invalid", "Active retrieval generation pointer is invalid."
@@ -975,11 +1040,18 @@ def revalidate_active_generation(
     with PRODUCTION_GENERATION_COORDINATOR.write(allow_degraded=True):
         invalidate_generation_validation_cache()
         activation = _read_activation_state(data_dir=data_dir)
-        snapshot = resolve_active_retrieval_generation(
-            data_dir=data_dir,
-            db_path=db_path,
-            verify_fingerprints=True,
-        )
+        try:
+            snapshot = resolve_active_retrieval_generation(
+                data_dir=data_dir,
+                db_path=db_path,
+                verify_fingerprints=True,
+            )
+        except RetrievalGenerationError as exc:
+            raise RetrievalGenerationError(
+                "retrieval_generation_revalidation_failed",
+                "Active retrieval generation failed full revalidation.",
+                safe_to_retry=False,
+            ) from exc
         if activation is None and snapshot.mode != "versioned":
             raise RetrievalGenerationError(
                 "retrieval_generation_revalidation_failed",

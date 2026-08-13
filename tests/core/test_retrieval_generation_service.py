@@ -63,6 +63,26 @@ def _db(tmp_path: Path, value: bytes = b"database") -> Path:
     return path
 
 
+def _write_legacy_manifest(
+    data: Path,
+    database: Path,
+    *,
+    production_db_sha256: str | None = None,
+) -> Path:
+    manifest = data / "search_index" / generations.FTS_MANIFEST_NAME
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "production_db_sha256": production_db_sha256
+                or generations.sha256_file(database)
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def _ready_generation(tmp_path: Path):
     data = tmp_path / "data"
     data.mkdir()
@@ -99,6 +119,7 @@ def test_active_pointer_absent_uses_legacy(monkeypatch, tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
     database = _db(tmp_path)
+    _write_legacy_manifest(data, database)
     source = _source(tmp_path)
     monkeypatch.setattr(generations, "DEFAULT_INDEX_PATH", source.fts_index_path)
     monkeypatch.setattr(generations, "DEFAULT_MANIFEST_PATH", source.fts_manifest_path)
@@ -114,6 +135,212 @@ def test_active_pointer_absent_uses_legacy(monkeypatch, tmp_path: Path) -> None:
     assert result.production_db_sha256 == generations.sha256_file(database)
 
 
+def test_active_pointer_absent_with_empty_generation_root_uses_legacy(
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    database = _db(tmp_path)
+    _write_legacy_manifest(data, database)
+    (data / generations.GENERATION_ROOT_NAME).mkdir()
+
+    result = generations.resolve_active_retrieval_generation(
+        data_dir=data,
+        db_path=database,
+    )
+
+    assert result.mode == "legacy"
+    assert result.production_db_sha256 == generations.sha256_file(database)
+
+
+@pytest.mark.parametrize("entry_name", [".c-dead", "g-valid", "unknown-state"])
+def test_active_pointer_absent_with_generation_state_fails_closed(
+    tmp_path: Path,
+    entry_name: str,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    database = _db(tmp_path)
+    _write_legacy_manifest(data, database)
+    (data / generations.GENERATION_ROOT_NAME / entry_name).mkdir(parents=True)
+
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        generations.resolve_active_retrieval_generation(
+            data_dir=data,
+            db_path=database,
+        )
+
+    assert caught.value.code == "active_index_invalid"
+    assert caught.value.safe_to_retry is False
+
+
+@pytest.mark.parametrize("generation_root", [False, True])
+def test_active_pointer_absent_with_legacy_database_mismatch_fails_closed(
+    tmp_path: Path,
+    generation_root: bool,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    database = _db(tmp_path, b"database-new")
+    _write_legacy_manifest(data, database, production_db_sha256="0" * 64)
+    if generation_root:
+        (data / generations.GENERATION_ROOT_NAME).mkdir()
+
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        generations.resolve_active_retrieval_generation(
+            data_dir=data,
+            db_path=database,
+        )
+
+    assert caught.value.code == "active_index_database_revision_mismatch"
+    assert caught.value.safe_to_retry is False
+
+
+def test_first_activation_database_write_crash_fails_closed_after_restart(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    database = _db(tmp_path, b"database-old")
+    _write_legacy_manifest(data, database)
+    source = _source(tmp_path)
+    generations.prepare_candidate_generation(
+        source,
+        data_dir=data,
+        generation_id="generation-1",
+    )
+    database.write_bytes(b"database-new")
+    generations.invalidate_generation_validation_cache()
+    _simulate_process_restart(monkeypatch)
+
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        with generations.production_read_generation(
+            data_dir=data,
+            db_path=database,
+        ):
+            pytest.fail("interrupted first activation must not expose legacy")
+
+    assert caught.value.code == "active_index_invalid"
+    assert caught.value.safe_to_retry is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"not-json",
+        b"[]",
+        b"{}",
+        b'{"production_db_sha256":"invalid"}',
+    ],
+)
+def test_active_pointer_absent_with_invalid_legacy_manifest_fails_closed(
+    tmp_path: Path,
+    payload: bytes,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    database = _db(tmp_path)
+    manifest = data / "search_index" / generations.FTS_MANIFEST_NAME
+    _write(manifest, payload)
+
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        generations.resolve_active_retrieval_generation(
+            data_dir=data,
+            db_path=database,
+        )
+
+    assert caught.value.code == "active_index_invalid"
+    assert caught.value.safe_to_retry is False
+
+
+def test_active_pointer_absent_with_missing_legacy_manifest_fails_closed(
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    database = _db(tmp_path)
+
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        generations.resolve_active_retrieval_generation(
+            data_dir=data,
+            db_path=database,
+        )
+
+    assert caught.value.code == "active_index_invalid"
+    assert caught.value.safe_to_retry is False
+
+
+def test_active_pointer_absent_with_legacy_manifest_symlink_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    database = _db(tmp_path)
+    real_manifest = tmp_path / "legacy-manifest.json"
+    real_manifest.write_text(
+        json.dumps({"production_db_sha256": generations.sha256_file(database)}),
+        encoding="utf-8",
+    )
+    manifest = data / "search_index" / generations.FTS_MANIFEST_NAME
+    manifest.parent.mkdir(parents=True)
+    try:
+        os.symlink(real_manifest, manifest)
+    except OSError:
+        manifest.write_bytes(real_manifest.read_bytes())
+        real_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda self: True if self == manifest else real_is_symlink(self),
+        )
+
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        generations.resolve_active_retrieval_generation(
+            data_dir=data,
+            db_path=database,
+        )
+
+    assert caught.value.code == "active_index_invalid"
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_active_pointer_symlink_fails_closed(
+    tmp_path: Path,
+    dangling: bool,
+    monkeypatch,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    database = _db(tmp_path)
+    _write_legacy_manifest(data, database)
+    target = tmp_path / "pointer-target.json"
+    if not dangling:
+        target.write_text("{}", encoding="utf-8")
+    try:
+        os.symlink(target, data / generations.ACTIVE_POINTER_NAME)
+    except OSError:
+        pointer = data / generations.ACTIVE_POINTER_NAME
+        if not dangling:
+            pointer.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+        real_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda self: True if self == pointer else real_is_symlink(self),
+        )
+
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        generations.resolve_active_retrieval_generation(
+            data_dir=data,
+            db_path=database,
+        )
+
+    assert caught.value.code == "active_index_invalid"
+    assert caught.value.safe_to_retry is False
+
+
 def test_legacy_to_candidate_and_restart_resolution(tmp_path: Path) -> None:
     data, database, source, snapshot = _ready_generation(tmp_path)
     generations.publish_active_generation(snapshot, data_dir=data)
@@ -125,6 +352,25 @@ def test_legacy_to_candidate_and_restart_resolution(tmp_path: Path) -> None:
     assert resolved == snapshot
     assert source.fts_index_path.read_bytes() == b"fts-old"
     assert source.vector_store_path.joinpath("table.lance", "data").read_bytes() == b"vectors-old"
+
+
+def test_versioned_database_revision_mismatch_still_fails_closed(
+    tmp_path: Path,
+) -> None:
+    data, database, _, snapshot = _ready_generation(tmp_path)
+    generations.publish_active_generation(snapshot, data_dir=data)
+    database.write_bytes(b"database-new")
+    generations.invalidate_generation_validation_cache()
+
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        with generations.production_read_generation(
+            data_dir=data,
+            db_path=database,
+        ):
+            pytest.fail("versioned database mismatch must not be readable")
+
+    assert caught.value.code == "active_index_database_revision_mismatch"
+    assert caught.value.safe_to_retry is False
 
 
 def test_active_generation_to_next_candidate_does_not_modify_old(tmp_path: Path) -> None:
