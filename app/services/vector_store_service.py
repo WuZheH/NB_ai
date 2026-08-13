@@ -1953,6 +1953,213 @@ def cleanup_document_note_vectors(
     }
 
 
+def reconcile_reused_document_note_vector_scope(
+    *,
+    document_id: int,
+    source_db_path: str | Path,
+    store_path: Path,
+    manifest_path: Path,
+) -> dict[str, Any]:
+    """Reconcile inherited note rows for one reused document ID.
+
+    A candidate copied from the previous generation may contain note rows
+    whose physical ``document_id`` is the ID just allocated to a new import.
+    Rows that the post-write database proves belong to another document are
+    preserved with that authoritative scope when every other identity field
+    is already current. True orphans are removed, and rows belonging to the
+    newly imported document are cleared so its ordinary document-scoped sync
+    can rebuild them. Ambiguous, duplicate, or otherwise stale rows fail
+    closed before any mutation.
+    """
+    if (
+        isinstance(document_id, bool)
+        or not isinstance(document_id, int)
+        or document_id <= 0
+    ):
+        raise ValueError("document_id must be a positive integer")
+    source_database = Path(source_db_path).resolve(strict=False)
+    actual_store_path = Path(store_path).resolve(strict=False)
+    actual_manifest_path = Path(manifest_path).resolve(strict=False)
+    if not source_database.is_file():
+        raise ValueError(
+            "source_db_path must identify an existing SQLite database"
+        )
+    if source_database == Path(DEFAULT_DB_PATH).resolve(strict=False):
+        raise ValueError("note scope reconciliation forbids the production database")
+    if actual_store_path == Path(LANCEDB_DIR).resolve(strict=False):
+        raise ValueError("note scope reconciliation forbids the production vector store")
+    if actual_manifest_path == Path(MANIFEST_PATH).resolve(strict=False):
+        raise ValueError("note scope reconciliation forbids the production vector manifest")
+
+    db = open_vector_store(actual_store_path)
+    if NOTE_TABLE not in _table_names(db):
+        return {
+            "status": "ok",
+            "scope": "reused_document_id_only",
+            "document_id": document_id,
+            "target_row_count": 0,
+            "reassigned_note_vectors": 0,
+            "deleted_orphan_note_vectors": 0,
+            "cleared_current_document_note_vectors": 0,
+            "note_count": 0,
+            "full_rebuild_performed": False,
+            "orphan_delete_performed": False,
+        }
+    fields = _table_schema_fields(db, NOTE_TABLE)
+    missing_fields = NOTE_EXPECTED_RECORD_FIELDS - fields
+    if missing_fields:
+        raise VectorStoreSchemaMismatch(
+            "note scope reconciliation requires the current note schema; "
+            "missing fields: " + ", ".join(sorted(missing_fields))
+        )
+    table = db.open_table(NOTE_TABLE)
+    target_where = f"document_id = {document_id}"
+    target_row_count = int(table.count_rows(target_where))
+    target_rows = (
+        table.search()
+        .where(target_where)
+        .limit(max(target_row_count, 1))
+        .to_list()
+        if target_row_count
+        else []
+    )
+    if not target_rows:
+        return {
+            "status": "ok",
+            "scope": "reused_document_id_only",
+            "document_id": document_id,
+            "target_row_count": 0,
+            "reassigned_note_vectors": 0,
+            "deleted_orphan_note_vectors": 0,
+            "cleared_current_document_note_vectors": 0,
+            "note_count": int(table.count_rows()),
+            "full_rebuild_performed": False,
+            "orphan_delete_performed": False,
+        }
+
+    note_ids: list[int] = []
+    source_ids: list[str] = []
+    for row in target_rows:
+        source_id = str(row.get("source_id") or "").strip()
+        raw_note_id = row.get("note_id")
+        if isinstance(raw_note_id, bool):
+            raise VectorStoreSchemaMismatch(
+                "note scope reconciliation found an invalid note identity"
+            )
+        try:
+            note_id = int(raw_note_id)
+        except (TypeError, ValueError) as exc:
+            raise VectorStoreSchemaMismatch(
+                "note scope reconciliation found an invalid note identity"
+            ) from exc
+        if note_id <= 0 or source_id != make_note_source_id(note_id):
+            raise VectorStoreSchemaMismatch(
+                "note scope reconciliation found an invalid note identity"
+            )
+        note_ids.append(note_id)
+        source_ids.append(source_id)
+    if len(set(source_ids)) != len(source_ids):
+        raise VectorStoreSchemaMismatch(
+            "note scope reconciliation found duplicate target source IDs"
+        )
+
+    quoted_source_ids = ", ".join(_sql_quote(value) for value in source_ids)
+    matching_where = f"source_id IN ({quoted_source_ids})"
+    matching_count = int(table.count_rows(matching_where))
+    if matching_count != len(source_ids):
+        raise VectorStoreSchemaMismatch(
+            "note scope reconciliation found duplicate source IDs"
+        )
+
+    placeholders = ", ".join("?" for _value in note_ids)
+    with closing(
+        connect_readonly_sqlite(
+            source_database,
+            resolve_strict=True,
+            row_factory=sqlite3.Row,
+            query_only=True,
+            temp_store="MEMORY",
+        )
+    ) as connection:
+        owner_rows = connection.execute(
+            "SELECT id, document_id FROM personal_notes "
+            f"WHERE id IN ({placeholders})",
+            tuple(note_ids),
+        ).fetchall()
+    owner_by_note_id = {
+        int(row["id"]): int(row["document_id"])
+        for row in owner_rows
+        if row["document_id"] is not None
+    }
+    owner_document_ids = sorted(set(owner_by_note_id.values()))
+    authoritative_sources = {
+        str(source["source_id"]): source
+        for owner_document_id in owner_document_ids
+        for source in collect_personal_note_sources(
+            document_id=owner_document_id,
+            source_db_path=source_database,
+        )
+        if str(source.get("source_id") or "") in set(source_ids)
+    }
+
+    reassigned_records: list[dict[str, Any]] = []
+    orphan_count = 0
+    current_document_count = 0
+    for row, note_id, source_id in zip(
+        target_rows,
+        note_ids,
+        source_ids,
+        strict=True,
+    ):
+        owner_document_id = owner_by_note_id.get(note_id)
+        if owner_document_id is None:
+            orphan_count += 1
+            continue
+        if owner_document_id == document_id:
+            current_document_count += 1
+            continue
+        source = authoritative_sources.get(source_id)
+        if source is None:
+            raise VectorStoreSchemaMismatch(
+                "note scope reconciliation could not resolve an authoritative source"
+            )
+        corrected = dict(row)
+        corrected["document_id"] = owner_document_id
+        if _note_record_stale(corrected, source):
+            raise VectorStoreSchemaMismatch(
+                "note scope reconciliation found stale non-scope metadata"
+            )
+        reassigned_records.append(corrected)
+
+    table.delete(target_where)
+    if reassigned_records:
+        table.add(reassigned_records)
+    note_records = _existing_records(db, NOTE_TABLE)
+    note_count = int(table.count_rows())
+    current_manifest = get_vector_manifest(actual_manifest_path) or {}
+    embedding_dim = (
+        _embedding_dim(note_records)
+        or int(current_manifest.get("embedding_dim") or 0)
+    )
+    _updated_manifest(
+        manifest_path=actual_manifest_path,
+        embedding_dim=embedding_dim,
+        note_count=note_count,
+    )
+    return {
+        "status": "ok",
+        "scope": "reused_document_id_only",
+        "document_id": document_id,
+        "target_row_count": target_row_count,
+        "reassigned_note_vectors": len(reassigned_records),
+        "deleted_orphan_note_vectors": orphan_count,
+        "cleared_current_document_note_vectors": current_document_count,
+        "note_count": note_count,
+        "full_rebuild_performed": False,
+        "orphan_delete_performed": False,
+    }
+
+
 def collect_affected_object_sources(
     *,
     db_path: str | Path,

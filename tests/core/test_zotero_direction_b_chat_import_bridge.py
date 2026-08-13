@@ -39,6 +39,9 @@ _REAL_INSPECT_DOCUMENT_NOTE_VECTOR_STATE = (
 _REAL_INSPECT_DOCUMENT_PASSAGE_VECTOR_STATE = (
     vector_store_service.inspect_document_passage_vector_state
 )
+_REAL_RECONCILE_REUSED_DOCUMENT_NOTE_VECTOR_SCOPE = (
+    vector_store_service.reconcile_reused_document_note_vector_scope
+)
 
 
 @pytest.fixture(autouse=True)
@@ -3135,6 +3138,309 @@ def _direction_commit(
     )
 
 
+def _annotation_only_preview(
+    *,
+    annotation_count: int,
+    comment_count: int,
+):
+    payload = preview_payload()
+    template = payload["annotations"][0]
+    annotations = []
+    for index in range(annotation_count):
+        annotation = dict(template)
+        annotation_key = f"ANN{index + 1:04d}"
+        annotation["source_identity"] = (
+            f"zotero:1:annotation:{annotation_key}"
+        )
+        annotation["zotero_annotation_key"] = annotation_key
+        annotation["selected_text"] = f"Selected text {index + 1}"
+        annotation["source_comment"] = (
+            f"Comment {index + 1}"
+            if index < comment_count
+            else ""
+        )
+        annotation["source_content_hash"] = hashlib.sha256(
+            annotation_key.encode("utf-8")
+        ).hexdigest()
+        annotations.append(annotation)
+    payload["annotations"] = annotations
+    payload["annotation_count"] = annotation_count
+    payload["annotation_comment_count"] = comment_count
+    payload["child_notes"] = []
+    payload["child_note_count"] = 0
+    return payload
+
+
+def _install_preview_payload(monkeypatch, payload):
+    monkeypatch.setattr(
+        zotero_selected_book_preview_service,
+        "resolve_selected_book_preview_token",
+        lambda *_args, **_kwargs: payload,
+    )
+    monkeypatch.setattr(
+        zotero_selected_book_preview_service,
+        "resolve_selected_book_preview_source",
+        lambda *_args, **_kwargs: (
+            payload,
+            Path(__file__).resolve(),
+        ),
+    )
+
+
+def _fixture_note_source(note_id: int, document_id: int):
+    return {
+        "source_id": vector_store_service.make_note_source_id(note_id),
+        "source_hash": hashlib.sha256(
+            f"old-note:{note_id}".encode("utf-8")
+        ).hexdigest(),
+        "note": {
+            "id": note_id,
+            "document_id": document_id,
+            "note_type": "zotero_annotation",
+            "title": f"Old note {note_id}",
+            "content": "Old rolled-back content",
+            "summary": "",
+            "selected_text": "Old selected text",
+            "source_comment": "",
+            "source_record_kind": "zotero_annotation",
+            "source_identity": f"zotero:1:annotation:OLD{note_id}",
+            "source_missing": False,
+            "pdf_page": 1,
+            "page_label": "1",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    (
+        "annotation_count",
+        "comment_count",
+        "inherited_row_count",
+    ),
+    (
+        pytest.param(28, 26, 0, id="amass_like"),
+        pytest.param(12, 11, 3, id="babel_like"),
+        pytest.param(5, 3, 3, id="actor_like"),
+    ),
+)
+def test_direction_b_reconciles_reused_document_note_vector_scope(
+    tmp_path,
+    monkeypatch,
+    annotation_count,
+    comment_count,
+    inherited_row_count,
+):
+    db_path = make_temp_db(tmp_path / "db")
+    data_dir = make_temp_data_dir(tmp_path / "data")
+    payload = _annotation_only_preview(
+        annotation_count=annotation_count,
+        comment_count=comment_count,
+    )
+    _install_preview_payload(monkeypatch, payload)
+
+    monkeypatch.setattr(
+        vector_store_service,
+        "_expected_embedding_dim",
+        lambda: 2,
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "_active_embedding_model_path",
+        lambda: "fixture-model",
+    )
+
+    vector_root = data_dir / "vector_store"
+    vector_root.mkdir(parents=True, exist_ok=True)
+    store_path = vector_root / "lancedb"
+    store_path.mkdir(parents=True, exist_ok=True)
+    manifest_path = vector_root / "vector_manifest.json"
+    manifest_path.write_text("{}\n", encoding="utf-8")
+    if inherited_row_count:
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO documents(
+                    id,
+                    title,
+                    document_type,
+                    content_layer,
+                    created_at,
+                    read_status
+                )
+                VALUES (
+                    2,
+                    'Preserved document',
+                    'paper',
+                    'body',
+                    '2026-07-25',
+                    'read'
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO personal_notes(
+                    id,
+                    document_id,
+                    note_type,
+                    title,
+                    content,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    901,
+                    2,
+                    'zotero_annotation',
+                    'Preserved note',
+                    'Authoritative note content',
+                    '2026-07-25',
+                    '2026-07-25'
+                )
+                """
+            )
+            connection.commit()
+        preserved_source = (
+            vector_store_service.collect_personal_note_sources(
+                document_id=2,
+                source_db_path=db_path,
+            )[0]
+        )
+        inherited_records = [
+            vector_store_service.build_note_schema_record(
+                _fixture_note_source(900, 1)
+            ),
+            vector_store_service.build_note_schema_record(
+                preserved_source
+            ),
+            vector_store_service.build_note_schema_record(
+                _fixture_note_source(902, 1)
+            ),
+        ]
+        inherited_records[1]["document_id"] = 1
+        store = vector_store_service.open_vector_store(store_path)
+        store.create_table(
+            vector_store_service.NOTE_TABLE,
+            data=inherited_records,
+            mode="create",
+        )
+
+    reconciliation_results = []
+
+    def reconcile(**kwargs):
+        result = _REAL_RECONCILE_REUSED_DOCUMENT_NOTE_VECTOR_SCOPE(
+            **kwargs
+        )
+        reconciliation_results.append(dict(result))
+        return result
+
+    def sync_notes(document_id, **kwargs):
+        sources = vector_store_service.collect_personal_note_sources(
+            document_id=document_id,
+            source_db_path=kwargs["source_db_path"],
+        )
+        records = [
+            vector_store_service.build_note_schema_record(source)
+            for source in sources
+        ]
+        store = vector_store_service.open_vector_store(
+            kwargs["store_path"]
+        )
+        if vector_store_service.NOTE_TABLE in (
+            vector_store_service._table_names(store)
+        ):
+            if records:
+                store.open_table(vector_store_service.NOTE_TABLE).add(
+                    records
+                )
+        elif records:
+            store.create_table(
+                vector_store_service.NOTE_TABLE,
+                data=records,
+                mode="create",
+            )
+        return {
+            "status": "ok",
+            "scope": "document_only",
+            "source_count": len(sources),
+            "lancedb_writes_performed": bool(records),
+            "full_rebuild_performed": False,
+            "orphan_delete_performed": False,
+        }
+
+    monkeypatch.setattr(
+        vector_store_service,
+        "reconcile_reused_document_note_vector_scope",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "sync_document_note_embeddings",
+        sync_notes,
+    )
+    monkeypatch.setattr(
+        vector_store_service,
+        "inspect_document_note_vector_state",
+        _REAL_INSPECT_DOCUMENT_NOTE_VECTOR_STATE,
+    )
+
+    result = _direction_commit(db_path, data_dir)
+
+    reconciliation = reconciliation_results[0]
+    assert reconciliation["status"] == "ok"
+    assert reconciliation["scope"] == "reused_document_id_only"
+    assert reconciliation["document_id"] == 1
+    assert reconciliation["target_row_count"] == inherited_row_count
+    assert reconciliation["reassigned_note_vectors"] == (
+        1 if inherited_row_count else 0
+    )
+    assert reconciliation["deleted_orphan_note_vectors"] == (
+        1 if inherited_row_count else 0
+    )
+    assert reconciliation[
+        "cleared_current_document_note_vectors"
+    ] == (1 if inherited_row_count else 0)
+    assert reconciliation["full_rebuild_performed"] is False
+    assert reconciliation["orphan_delete_performed"] is False
+    assert result["note_vector_reconciliation"] == reconciliation
+    sources = vector_store_service.collect_personal_note_sources(
+        document_id=1,
+        source_db_path=db_path,
+    )
+    assert len(sources) == annotation_count
+    assert sum(
+        not str(source["note"].get("content") or "").strip()
+        for source in sources
+    ) == annotation_count - comment_count
+    state = _REAL_INSPECT_DOCUMENT_NOTE_VECTOR_STATE(
+        document_id=1,
+        expected_sources=sources,
+        store_path=data_dir / "vector_store" / "lancedb",
+    )
+    assert state["actual_count"] == annotation_count
+    assert state["missing_count"] == 0
+    assert state["orphan_count"] == 0
+    assert state["stale_count"] == 0
+    assert state["duplicate_count"] == 0
+    if inherited_row_count:
+        preserved_sources = (
+            vector_store_service.collect_personal_note_sources(
+                document_id=2,
+                source_db_path=db_path,
+            )
+        )
+        preserved_state = _REAL_INSPECT_DOCUMENT_NOTE_VECTOR_STATE(
+            document_id=2,
+            expected_sources=preserved_sources,
+            store_path=data_dir / "vector_store" / "lancedb",
+        )
+        assert preserved_state["actual_count"] == 1
+        assert preserved_state["missing_count"] == 0
+        assert preserved_state["orphan_count"] == 0
+        assert preserved_state["stale_count"] == 0
+        assert preserved_state["duplicate_count"] == 0
+
+
 def test_direction_b_stage_callback_success_order(tmp_path, monkeypatch):
     db_path, data_dir = _direction_temp_case(tmp_path, monkeypatch)
     stages = []
@@ -3390,7 +3696,14 @@ def test_missing_staging_vector_manifest_blocks_publish(
 
 @pytest.mark.parametrize(
     "corruption",
-    ["missing", "wrong_document", "wrong_note", "orphan", "duplicate"],
+    [
+        "missing",
+        "wrong_document",
+        "wrong_note",
+        "stale",
+        "orphan",
+        "duplicate",
+    ],
 )
 def test_staging_lancedb_note_identity_must_match_affected_document(
     tmp_path,
@@ -3434,6 +3747,9 @@ def test_staging_lancedb_note_identity_must_match_affected_document(
         elif corruption == "wrong_note":
             row["note_id"] = 999
             table.add([row])
+        elif corruption == "stale":
+            row["source_hash"] = "f" * 64
+            table.add([row])
         elif corruption == "orphan":
             table.add([row])
             orphan = dict(row)
@@ -3443,6 +3759,13 @@ def test_staging_lancedb_note_identity_must_match_affected_document(
             table.add([orphan])
         elif corruption == "duplicate":
             table.add([row])
+        if corruption == "stale":
+            state = _REAL_INSPECT_DOCUMENT_NOTE_VECTOR_STATE(
+                document_id=document_id,
+                expected_sources=sources,
+                store_path=kwargs["store_path"],
+            )
+            assert state["stale_count"] == 1
         return result
 
     monkeypatch.setattr(

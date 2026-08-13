@@ -857,6 +857,47 @@ def _commit_selected_book_import_locked(
                         "unsafe passage vector sync result"
                     )
 
+            # A rolled-back import can make SQLite reuse its document ID.
+            # Reconcile inherited rows in exactly that candidate scope against
+            # the authoritative post-write snapshot before rebuilding the new
+            # document's rows. Authoritative notes belonging to another
+            # document are preserved; this is not a global orphan sweep.
+            if (
+                staging_vector_store.resolve(strict=False)
+                == vector_store_path.resolve(strict=False)
+            ):
+                raise RuntimeError(
+                    "note vector cleanup target is not a candidate store"
+                )
+            note_vector_reconciliation = (
+                vector_store_service.reconcile_reused_document_note_vector_scope(
+                    source_db_path=post_write_snapshot,
+                    document_id=document_id,
+                    store_path=staging_vector_store,
+                    manifest_path=staging_vector_manifest,
+                )
+            )
+            if (
+                note_vector_reconciliation.get("status") != "ok"
+                or note_vector_reconciliation.get("scope")
+                != "reused_document_id_only"
+                or int(
+                    note_vector_reconciliation.get("document_id") or 0
+                )
+                != document_id
+                or note_vector_reconciliation.get(
+                    "full_rebuild_performed"
+                )
+                is not False
+                or note_vector_reconciliation.get(
+                    "orphan_delete_performed"
+                )
+                is not False
+            ):
+                raise RuntimeError(
+                    "unsafe note vector scope reconciliation result"
+                )
+
             note_vector_sync: dict[str, Any] = {
                 "status": "skipped",
                 "scope": "document_only",
@@ -1267,6 +1308,9 @@ def _commit_selected_book_import_locked(
             "passage_vector_sync": dict(
                 passage_vector_sync
             ),
+            "note_vector_reconciliation": dict(
+                note_vector_reconciliation
+            ),
             "note_vector_sync": dict(
                 note_vector_sync
             ),
@@ -1289,6 +1333,13 @@ def _commit_selected_book_import_locked(
                 passage_vector_sync.get(
                     "lancedb_writes_performed"
                 )
+                or int(
+                    note_vector_reconciliation.get(
+                        "target_row_count"
+                    )
+                    or 0
+                )
+                > 0
                 or note_vector_sync.get(
                     "lancedb_writes_performed"
                 )
