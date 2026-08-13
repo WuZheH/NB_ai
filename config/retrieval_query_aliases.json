@@ -1,0 +1,129 @@
+{
+  "version": "retrieval_query_aliases.v1",
+  "aliases": [
+    {
+      "concept": "graph neural network",
+      "terms": ["graph neural network", "GNN", "图神经网络"]
+    },
+    {
+      "concept": "graph learning",
+      "terms": ["graph learning", "graph-based learning", "图学习"]
+    },
+    {
+      "concept": "spectral clustering",
+      "terms": ["spectral clustering", "谱聚类"]
+    },
+    {
+      "concept": "graph Laplacian",
+      "terms": ["graph Laplacian", "Laplacian matrix", "图拉普拉斯", "拉普拉斯矩阵"]
+    },
+    {
+      "concept": "variational autoencoder",
+      "terms": ["variational autoencoder", "variational auto-encoder", "VAE", "变分自编码器"]
+    },
+    {
+      "concept": "latent variable",
+      "terms": ["latent variable", "latent-variable model", "潜变量"]
+    },
+    {
+      "concept": "regularization",
+      "terms": ["regularization", "regularisation", "正则化"]
+    },
+    {
+      "concept": "overfitting",
+      "terms": ["overfitting", "over-fitting", "过拟合"]
+    },
+    {
+      "concept": "motion generation",
+      "terms": ["motion generation", "human motion generation", "运动生成", "动作生成"]
+    },
+    {
+      "concept": "text-to-motion",
+      "terms": ["text-to-motion", "text to motion", "文本到动作", "文本生成动作"]
+    },
+    {
+      "concept": "classifier-free guidance",
+      "terms": ["classifier-free guidance", "classifier free guidance", "CFG", "无分类器引导"]
+    },
+    {
+      "concept": "physical plausibility",
+      "terms": ["physical plausibility", "physically plausible", "物理合理性"]
+    },
+    {
+      "concept": "foot sliding",
+      "terms": ["foot sliding", "foot skate", "foot skating", "脚滑"]
+    },
+    {
+      "concept": "enhanced deep residual network",
+      "terms": ["enhanced deep residual network", "EDSR", "增强深度残差网络"]
+    },
+    {
+      "concept": "residual scaling",
+      "terms": ["residual scaling", "residual scale", "残差缩放"]
+    },
+    {
+      "concept": "squeeze-and-excitation",
+      "terms": ["squeeze-and-excitation", "squeeze and excitation", "SE block", "压缩激励"]
+    },
+    {
+      "concept": "channel attention",
+      "terms": ["channel attention", "channel-wise attention", "通道注意力"]
+    },
+    {
+      "concept": "sub-pixel convolution",
+      "terms": ["sub-pixel convolution", "subpixel convolution", "亚像素卷积"]
+    },
+    {
+      "concept": "pixel shuffle",
+      "terms": ["pixel shuffle", "periodic shuffling", "像素重排"]
+    },
+    {
+      "concept": "human motion diffusion model",
+      "terms": ["human motion diffusion model", "MDM", "人体运动扩散模型"]
+    },
+    {
+      "concept": "T2M-GPT",
+      "terms": ["T2M-GPT", "T2M GPT", "T2MGPT"]
+    },
+    {
+      "concept": "Gaussian mixture model",
+      "terms": ["Gaussian mixture model", "GMM", "高斯混合模型"]
+    },
+    {
+      "concept": "mixture of factor analyzers",
+      "terms": ["mixture of factor analyzers", "MFA", "因子分析器混合模型"]
+    },
+    {
+      "concept": "variational inference",
+      "terms": ["variational inference", "VI", "变分推断"]
+    },
+    {
+      "concept": "stochastic gradient descent",
+      "terms": ["stochastic gradient descent", "SGD", "随机梯度下降"]
+    },
+    {
+      "concept": "BFGS",
+      "terms": ["BFGS", "Broyden Fletcher Goldfarb Shanno"]
+    },
+    {
+      "concept": "Hessian",
+      "terms": ["Hessian", "Hessian matrix", "海森矩阵"]
+    },
+    {
+      "concept": "line search",
+      "terms": ["line search", "line-search method", "线搜索"]
+    },
+    {
+      "concept": "R-Precision",
+      "terms": ["R-Precision", "R Precision", "RPrecision"]
+    },
+    {
+      "concept": "FID",
+      "terms": ["FID", "Fréchet inception distance", "Frechet inception distance"]
+    },
+    {
+      "concept": "mutual information",
+      "terms": ["mutual information", "MI", "互信息"]
+    }
+  ]
+}

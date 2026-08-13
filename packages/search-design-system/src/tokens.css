@@ -1,0 +1,76 @@
+:root {
+  color-scheme: light;
+  --search-brand: #4f9ff8;
+  --search-brand-hover: #378de5;
+  --search-brand-pressed: #2878c9;
+  --search-brand-soft: #e8f3ff;
+
+  --search-bg: #f5f7fa;
+  --search-bg-subtle: #f8fafc;
+  --search-surface: #ffffff;
+  --search-surface-subtle: #f8fafc;
+  --search-surface-hover: #f1f5f9;
+  --search-surface-selected: #e8f3ff;
+
+  --search-primary: var(--search-brand);
+  --search-primary-hover: var(--search-brand-hover);
+  --search-primary-active: var(--search-brand-pressed);
+  --search-primary-soft: var(--search-brand-soft);
+
+  --search-text-primary: #20242a;
+  --search-text-secondary: #606a75;
+  --search-text-muted: #7d8792;
+
+  --search-border: #d9e0e7;
+  --search-border-strong: #c6d0da;
+
+  --search-success: #3a8f69;
+  --search-warning: #b7791f;
+  --search-danger: #c65353;
+  --search-info: var(--search-brand);
+
+  --search-source-pdf-bg: #dceeff;
+  --search-source-pdf-text: #236da8;
+  --search-source-annotation-bg: #fff0dc;
+  --search-source-annotation-text: #965c16;
+  --search-source-note-bg: #eee6ff;
+  --search-source-note-text: #6b4bab;
+  --search-source-inspiration-bg: #e2f5e9;
+  --search-source-inspiration-text: #357a57;
+  --search-source-object-bg: #dcf4f5;
+  --search-source-object-text: #2b7277;
+  --search-source-mechanism-bg: #ffe7df;
+  --search-source-mechanism-text: #a34e36;
+
+  --search-space-1: 4px;
+  --search-space-2: 8px;
+  --search-space-3: 12px;
+  --search-space-4: 16px;
+  --search-space-6: 24px;
+  --search-control-compact: 28px;
+  --search-control-standard: 32px;
+  --search-control-prominent: 36px;
+  --search-radius-small: 6px;
+  --search-radius-standard: 6px;
+  --search-radius-card: 8px;
+  --search-shadow-subtle: 0 1px 2px rgba(32, 36, 42, 0.06);
+  --search-shadow-overlay: 0 8px 24px rgba(32, 36, 42, 0.14);
+  --search-focus-ring: 0 0 0 3px rgba(79, 159, 248, 0.24);
+  --search-font-sans: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --search-font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  .search-host-theme-aware {
+    --search-bg: #171a1f;
+    --search-bg-subtle: #20252b;
+    --search-surface: #1d2127;
+    --search-surface-hover: #252b33;
+    --search-surface-selected: #1c3952;
+    --search-text-primary: #f0f4f8;
+    --search-text-secondary: #c0cad4;
+    --search-text-muted: #98a5b3;
+    --search-border: #38424c;
+    --search-border-strong: #4b5967;
+  }
+}

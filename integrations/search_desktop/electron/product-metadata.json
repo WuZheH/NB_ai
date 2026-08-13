@@ -1,0 +1,5 @@
+{
+  "schemaVersion": "search.product-metadata.v2",
+  "productName": "Search",
+  "identityResource": "package.json#searchBuildIdentity"
+}

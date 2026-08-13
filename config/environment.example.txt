@@ -1,0 +1,6 @@
+NOTEBOOK_AI_DATABASE_URL=<PATH_TO_RESEARCH_MEMORY_DB>
+NOTEBOOK_AI_ZOTERO_SNAPSHOT_PATH=<PATH_TO_ZOTERO_SNAPSHOT>
+NOTEBOOK_AI_PDF_ROOT=<PATH_TO_LOCAL_PDFS>
+# Search embedding/reranker paths are configured in
+# %APPDATA%\Search\machine-config.json via scripts/configure_search_machine.ps1.
+NOTEBOOK_AI_RETRIEVAL_INDEX_PATH=<PATH_TO_SEARCH_INDEX>

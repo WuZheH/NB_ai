@@ -1,0 +1,152 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdir, rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const ELECTRON_EXE = resolve(ROOT, "node_modules", "electron", "dist", "electron.exe");
+const PROBE = resolve(ROOT, "tests", "fixtures", "productionScrollProbe.mjs");
+const TEST_TMP_ROOT = resolve(process.env.SEARCH_TEST_TMP_ROOT || resolve(ROOT, "..", "..", ".codex_tmp"));
+const PROJECT_TMP = resolve(TEST_TMP_ROOT, "electron-scroll-process");
+const USER_DATA_TMP = resolve(TEST_TMP_ROOT, "electron-scroll-user-data");
+const CRASH_DUMPS_TMP = resolve(TEST_TMP_ROOT, "electron-scroll-crashes");
+
+test("production renderer keeps window fixed while results, preview, and evidence basket scroll independently", { timeout: 30000 }, async () => {
+  const { payload, stdout, stderr, code } = await runProbe();
+  assert.equal(code, 0, `production DOM probe failed\n${stdout}\n${stderr}`);
+  assert.equal(payload.status, "ok", `${payload.error || "production DOM metrics missing"}\n${stdout}\n${stderr}`);
+  const { metrics } = payload;
+  console.log(`production DOM scroll metrics: ${JSON.stringify(metrics)}`);
+
+  assert.deepEqual(metrics.viewport, { width: 1024, height: 768 });
+  assert.ok(metrics.root.scrollHeight <= metrics.root.clientHeight + 1, JSON.stringify(metrics.root));
+  assert.equal(metrics.rootOverflowY, "hidden");
+  assert.equal(metrics.results.count, 12);
+  assert.ok(metrics.results.scrollHeight > metrics.results.clientHeight, JSON.stringify(metrics.results));
+  assert.ok(metrics.preview.scrollHeight > metrics.preview.clientHeight, JSON.stringify(metrics.preview));
+  assert.equal(metrics.basket.count, 12);
+  assert.ok(metrics.basket.scrollHeight > metrics.basket.clientHeight, JSON.stringify(metrics.basket));
+  assert.equal(metrics.results.lastVisible, true);
+  assert.equal(metrics.preview.lastVisible, true);
+  assert.equal(metrics.basket.lastVisible, true);
+  assert.equal(metrics.railPosition, "fixed");
+  assert.equal(metrics.navigationOutlined, false);
+  assert.equal(metrics.evidenceBasketEnglishVisible, false);
+  assert.deepEqual(metrics.unifiedSearch, {
+    searchEntryCount: 1,
+    forbiddenEntryVisible: false,
+    unifiedPagePresent: true,
+    heading: "搜索",
+  });
+  assert.deepEqual(metrics.legacyRoute, {
+    path: "/retrieval",
+    unifiedPagePresent: true,
+    query: "滚动测试",
+    searchEntryCount: 1,
+  });
+  assert.ok(metrics.interactions.wheelTop > 0, JSON.stringify(metrics.interactions));
+  assert.ok(metrics.interactions.pageDownTop > 0, JSON.stringify(metrics.interactions));
+  assert.ok(metrics.interactions.endTop > 0, JSON.stringify(metrics.interactions));
+  assert.equal(metrics.interactions.homeTop, 0, JSON.stringify(metrics.interactions));
+  assert.ok(metrics.interactions.scrollbarDragTop > 0, JSON.stringify(metrics.interactions));
+  assert.equal(metrics.resultState.basketSameNode, true, JSON.stringify(metrics.resultState));
+  assert.ok(metrics.resultState.basketScrollBefore > 0, JSON.stringify(metrics.resultState));
+  assert.ok(Math.abs(metrics.resultState.basketScrollAfter - metrics.resultState.basketScrollBefore) <= 1, JSON.stringify(metrics.resultState));
+  assert.equal(metrics.resultState.previewSameNode, true, JSON.stringify(metrics.resultState));
+  assert.ok(metrics.resultState.previewScrollBefore > 0, JSON.stringify(metrics.resultState));
+  assert.ok(Math.abs(metrics.resultState.previewScrollAfter - metrics.resultState.previewScrollBefore) <= 1, JSON.stringify(metrics.resultState));
+  assert.equal(metrics.navigationRestore.query, "滚动测试", JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.resultCount, 12, JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.basketCount, 12, JSON.stringify(metrics.navigationRestore));
+  assert.match(metrics.navigationRestore.previewTitle, /生产构建滚动测试文档/, JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.searchMode, "高质量搜索", JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.sourceFilter, "pdf_chunk", JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.documentFilter, "1", JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.includeContext, true, JSON.stringify(metrics.navigationRestore));
+  assert.equal(metrics.navigationRestore.previewView, "文本", JSON.stringify(metrics.navigationRestore));
+  assert.ok(Math.abs(metrics.navigationRestore.resultsScroll - metrics.navigationRestore.expectedScroll.results) <= 1, JSON.stringify(metrics.navigationRestore));
+  assert.ok(Math.abs(metrics.navigationRestore.previewScroll - metrics.navigationRestore.expectedScroll.preview) <= 1, JSON.stringify(metrics.navigationRestore));
+  assert.ok(Math.abs(metrics.navigationRestore.basketScroll - metrics.navigationRestore.expectedScroll.basket) <= 1, JSON.stringify(metrics.navigationRestore));
+});
+
+async function runProbe() {
+  await mkdir(PROJECT_TMP, { recursive: true });
+  let resolvePayload;
+  let rejectPayload;
+  const payloadPromise = new Promise((resolvePromise, reject) => {
+    resolvePayload = resolvePromise;
+    rejectPayload = reject;
+  });
+  const callbackServer = createServer((request, response) => {
+    if (request.method !== "POST") {
+      response.writeHead(405).end();
+      return;
+    }
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      try {
+        resolvePayload(JSON.parse(body));
+        response.writeHead(204).end();
+      } catch (error) {
+        rejectPayload(error);
+        response.writeHead(400).end();
+      }
+    });
+  });
+  await new Promise((resolvePromise, reject) => {
+    callbackServer.once("error", reject);
+    callbackServer.listen(0, "127.0.0.1", resolvePromise);
+  });
+  const address = callbackServer.address();
+  assert.ok(address && typeof address !== "string");
+
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(ELECTRON_EXE, [PROBE], {
+      cwd: ROOT,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
+        TEMP: PROJECT_TMP,
+        TMP: PROJECT_TMP,
+        SEARCH_SCROLL_CALLBACK_URL: `http://127.0.0.1:${address.port}/result`,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    const timeout = setTimeout(() => {
+      child.kill();
+      callbackServer.close();
+      reject(new Error(`production DOM probe timed out\n${stdout}\n${stderr}`));
+    }, 25000);
+    payloadPromise.then((payload) => {
+      child.once("close", async (code) => {
+        clearTimeout(timeout);
+        callbackServer.close();
+        await cleanupProbeTemp();
+        resolvePromise({ payload, code, stdout, stderr });
+      });
+    }, (error) => {
+      clearTimeout(timeout);
+      child.kill();
+      callbackServer.close();
+      reject(error);
+    });
+  });
+}
+
+function cleanupProbeTemp() {
+  return Promise.all([
+    rm(PROJECT_TMP, { recursive: true, force: true }),
+    rm(USER_DATA_TMP, { recursive: true, force: true }),
+    rm(CRASH_DUMPS_TMP, { recursive: true, force: true }),
+  ]);
+}

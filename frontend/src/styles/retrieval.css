@@ -1,0 +1,132 @@
+/* Local retrieval and stateless evidence basket */
+.srOnly { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.localRetrievalAppShell { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); width: 100%; height: 100vh; height: 100dvh; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); }
+.localRetrievalPage { display: flex; flex-direction: column; gap: 12px; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 20px 22px; overflow: hidden; }
+.localRetrievalHeader { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.localRetrievalHeader > div:first-child { display: grid; gap: 2px; }
+.localRetrievalHeader span { color: var(--text-subtle); font-size: 10px; font-weight: 700; }
+.localRetrievalHeader h1 { margin: 0; color: var(--text); font-size: 22px; font-weight: 720; letter-spacing: 0; }
+.localRetrievalIndexState { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 11px; }
+.localRetrievalIndexState > span { width: 7px; height: 7px; border-radius: 50%; background: var(--text-subtle); }
+.localRetrievalIndexState > span.ready { background: var(--success); }
+.localRetrievalIndexState code { padding: 2px 5px; border: 1px solid var(--border-soft); border-radius: 4px; color: var(--text-subtle); }
+
+.localRetrievalSearchForm { display: grid; grid-template-columns: minmax(240px, 1fr) auto auto auto auto; gap: 8px; align-items: center; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.localRetrievalQueryField { min-width: 0; }
+.localRetrievalQueryField input { width: 100%; color: var(--search-text-primary); }
+.localRetrievalMode { display: grid; grid-template-columns: repeat(2, minmax(86px, 1fr)); min-height: 34px; padding: 2px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--bg); }
+.localRetrievalMode button { min-height: 28px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); }
+.localRetrievalMode button.selected { background: var(--surface-hover); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+.localRetrievalLimit, .localRetrievalFtsMode { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.localRetrievalLimit select, .localRetrievalFtsMode select, .localRetrievalFilters select, .localRetrievalFilters input { min-height: 34px; padding: 0 8px; border: 1px solid var(--border-soft); border-radius: 6px; color: var(--text); background: var(--surface-2); }
+.localRetrievalSubmit { min-width: 76px; }
+
+.localRetrievalFilters { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: end; padding: 8px 10px; border-bottom: 1px solid var(--border-soft); }
+.localRetrievalFilters > label:not(.localRetrievalCheck) { display: grid; gap: 4px; }
+.localRetrievalFilters label > span { color: var(--text-subtle); font-size: 10px; font-weight: 650; }
+.localRetrievalFilters input[type="number"] { width: 92px; }
+.localRetrievalCheck { display: inline-flex; min-height: 34px; align-items: center; gap: 6px; }
+.localRetrievalCheck input, .localEvidenceExportOptions input { accent-color: var(--accent); }
+.localRetrievalAliases { display: flex; gap: 6px; overflow-x: auto; }
+.localRetrievalAliases span { flex: 0 0 auto; padding: 4px 7px; border: 1px solid rgba(86, 156, 107, 0.34); border-radius: 6px; color: #8fc49e; background: rgba(86, 156, 107, 0.08); font-size: 10px; }
+.localRetrievalWarnings { display: flex; flex-wrap: wrap; gap: 6px; }
+.localRetrievalWarnings span { padding: 4px 7px; border: 1px solid rgba(201, 159, 85, 0.38); border-radius: 6px; color: #d6bb82; background: rgba(201, 159, 85, 0.08); font-size: 10px; }
+
+.localRetrievalBody { display: grid; flex: 1 1 0; grid-template-columns: minmax(0, 1fr) minmax(330px, 390px); gap: 14px; min-width: 0; min-height: 0; overflow: hidden; }
+.localRetrievalResults { display: grid; grid-template-rows: auto minmax(0, 1fr); width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.localRetrievalResultsToolbar { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 0 2px 9px; }
+.localRetrievalResultsToolbar > div:first-child { display: grid; gap: 2px; }
+.localRetrievalResultsToolbar strong { color: var(--text); font-size: 13px; }
+.localRetrievalResultsToolbar span { color: var(--text-subtle); font-size: 10px; }
+.localRetrievalBatchActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.localRetrievalBatchActions button { min-height: 30px; padding: 0 9px; border-radius: 6px; font-size: 11px; }
+.localRetrievalResultStack { display: grid; align-content: start; gap: 8px; min-width: 0; min-height: 0; padding-right: 4px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.localRetrievalState { margin: 12px 2px; color: var(--text-muted); font-size: 12px; }
+.localRetrievalState.error, .localEvidenceBasketStatus .error { color: #df9292; }
+
+.localRetrievalResult { display: grid; gap: 8px; min-width: 0; padding: 12px 13px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--surface); }
+.localRetrievalResult.selected { border-color: rgba(124, 163, 213, 0.72); box-shadow: inset 3px 0 0 var(--accent); }
+.localRetrievalResultTop, .localRetrievalResultActions, .localRetrievalResultMeta { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+.localRetrievalResultTop { justify-content: space-between; }
+.localRetrievalSelect { display: inline-flex; min-width: 0; align-items: center; gap: 7px; }
+.localRetrievalSelect input { accent-color: var(--accent); }
+.localRetrievalDisplayId { overflow-wrap: anywhere; color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; }
+.localRetrievalSelectLabel { color: var(--text-subtle); font-size: 9px; }
+.localRetrievalSourceType { padding: 3px 6px; border-radius: 5px; color: var(--text-muted); background: var(--surface-hover); font-size: 10px; font-weight: 650; }
+.localRetrievalSourceType.source-pdf_chunk { color: #a7c6e8; background: rgba(124, 163, 213, 0.12); }
+.localRetrievalSourceType.source-zotero_highlight { color: #d3bb7e; background: rgba(179, 146, 86, 0.13); }
+.localRetrievalSourceType.source-zotero_annotation_comment { color: #df9d9d; background: rgba(201, 112, 112, 0.12); }
+.localRetrievalSourceType.source-zotero_child_note, .localRetrievalSourceType.source-zotero_inspiration_note, .localRetrievalSourceType.source-markdown_note { color: #91c7a0; background: rgba(86, 156, 107, 0.12); }
+.localRetrievalResultHeading { display: grid; gap: 2px; }
+.localRetrievalResultHeading h3 { margin: 0; overflow-wrap: anywhere; color: var(--text); font-size: 14px; line-height: 1.35; }
+.localRetrievalResultHeading p, .localRetrievalLocation { margin: 0; color: var(--text-subtle); font-size: 10px; line-height: 1.4; }
+.localRetrievalFragmentId { overflow-wrap: anywhere; color: var(--text-subtle); font-size: 9px; }
+.localRetrievalText { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; overflow: hidden; margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+.localRetrievalEvidenceBlock { display: grid; gap: 4px; padding: 9px 10px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--surface-2); }
+.localRetrievalEvidenceBlock strong { color: var(--text-subtle); font-size: 10px; }
+.localRetrievalEvidenceBlock p { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+.localRetrievalEvidenceBlock.userNote { border-left: 3px solid rgba(86, 156, 107, 0.7); }
+.localRetrievalEvidenceBlock.selectedText { border-left: 3px solid rgba(179, 146, 86, 0.7); }
+.localRetrievalContext { border-top: 1px solid var(--border-soft); padding-top: 7px; }
+.localRetrievalContext summary { color: var(--text-muted); cursor: pointer; font-size: 11px; }
+.localRetrievalContext p { display: grid; gap: 3px; margin: 7px 0 0; color: var(--text-subtle); font-size: 11px; line-height: 1.5; }
+.localRetrievalReasons { display: flex; flex-wrap: wrap; gap: 4px; }
+.localRetrievalReasons span { padding: 2px 5px; border: 1px solid var(--border-soft); border-radius: 5px; color: var(--text-subtle); font-size: 9px; }
+.localRetrievalResultMeta { color: var(--text-subtle); font-size: 9px; }
+.localRetrievalProvenance { border-top: 1px solid var(--border-soft); padding-top: 7px; }
+.localRetrievalProvenance summary { color: var(--text-muted); cursor: pointer; font-size: 11px; }
+.localRetrievalProvenance p { margin: 7px 0 0; color: var(--text-subtle); font-size: 10px; }
+.localRetrievalProvenance pre { max-height: 220px; overflow: auto; margin: 7px 0 0; padding: 8px; border-radius: 6px; color: var(--text-subtle); background: var(--bg); font-size: 9px; line-height: 1.45; white-space: pre-wrap; }
+.localRetrievalResultActions { border-top: 1px solid var(--border-soft); padding-top: 7px; }
+.localRetrievalResultActions a { min-height: 26px; display: inline-flex; align-items: center; padding: 0 7px; border: 1px solid var(--border-soft); border-radius: 5px; color: var(--accent-strong); font-size: 10px; text-decoration: none; }
+.localRetrievalResultActions button { min-height: 26px; padding: 0 7px; border-radius: 5px; font-size: 10px; }
+.localRetrievalOpenReasons, .localRetrievalInlineError { margin: 0; color: var(--text-subtle); font-size: 9px; line-height: 1.4; }
+.localRetrievalInlineError { color: #df9292; }
+.localRetrievalFile { flex: 1 1 160px; min-width: 0; overflow: hidden; color: var(--text-subtle); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+
+.localEvidenceBasket { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; min-height: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: hidden; }
+.localEvidenceBasketHeader { display: flex; justify-content: space-between; gap: 10px; align-items: start; padding-bottom: 10px; border-bottom: 1px solid var(--border-soft); }
+.localEvidenceBasketHeader > div { display: grid; gap: 2px; }
+.localEvidenceBasketHeader span { color: var(--text-subtle); font-size: 9px; font-weight: 700; }
+.localEvidenceBasketHeader strong { color: var(--text); font-size: 16px; }
+.localEvidenceBasketHeader small { color: var(--text-muted); font-size: 10px; }
+.localEvidenceBasketHeader button { min-height: 28px; padding: 0 7px; font-size: 10px; }
+.localEvidenceBasketList { display: grid; align-content: start; gap: 0; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.localEvidenceBasketItem { display: grid; grid-template-columns: 37px minmax(0, 1fr) auto; gap: 7px; align-items: center; min-width: 0; padding: 9px 0; border-bottom: 1px solid var(--border-soft); }
+.localEvidenceBasketOrder { color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; }
+.localEvidenceBasketMain { display: grid; gap: 2px; min-width: 0; }
+.localEvidenceBasketMain strong, .localEvidenceBasketMain span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.localEvidenceBasketMain strong { color: var(--text); font-size: 10px; }
+.localEvidenceBasketMain span { color: var(--text-muted); font-size: 10px; }
+.localEvidenceBasketMain small { color: var(--text-subtle); font-size: 9px; }
+.localEvidenceBasketControls { display: grid; grid-template-columns: repeat(3, 25px); gap: 3px; }
+.localEvidenceBasketControls button { width: 25px; min-height: 25px; padding: 0; border-radius: 5px; font-size: 12px; }
+.localEvidenceExport { display: grid; gap: 9px; padding-top: 10px; border-top: 1px solid var(--border-soft); }
+.localEvidenceExportOptions { display: flex; flex-wrap: wrap; gap: 5px 9px; }
+.localEvidenceExportOptions label { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 9px; }
+.localEvidenceExportActions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
+.localEvidenceExportActions button { min-height: 31px; padding: 0 5px; border-radius: 6px; font-size: 10px; }
+.localEvidenceExportActions .search-overflow-menu-panel { position: static; margin-top: var(--search-space-1); }
+.localEvidenceBasketStatus { min-height: 28px; }
+.localEvidenceBasketStatus p { margin: 7px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+
+@media (max-width: 1180px) {
+  .localRetrievalAppShell { grid-template-columns: 205px minmax(0, 1fr); }
+  .localRetrievalPage { padding: 16px; }
+  .localRetrievalBody { grid-template-columns: minmax(0, 1fr) 320px; }
+  .localRetrievalSearchForm { grid-template-columns: minmax(190px, 1fr) auto auto; }
+}
+@media (max-width: 900px) {
+  .localRetrievalAppShell { grid-template-columns: minmax(168px, 24vw) minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
+  .localRetrievalPage { overflow: hidden; }
+  .localRetrievalBody { grid-template-columns: 1fr; }
+  .localRetrievalResults, .localEvidenceBasket { min-height: 0; overflow: hidden; }
+  .localRetrievalResultStack, .localEvidenceBasketList { max-height: none; overflow-x: hidden; overflow-y: auto; }
+}
+@media (max-width: 620px) {
+  .localRetrievalSearchForm { grid-template-columns: 1fr; }
+  .localRetrievalMode, .localRetrievalFtsMode, .localRetrievalLimit, .localRetrievalSubmit { grid-column: auto; }
+  .localRetrievalResultsToolbar { align-items: flex-start; flex-direction: column; }
+  .localRetrievalBatchActions { justify-content: flex-start; }
+  .localEvidenceExportActions { grid-template-columns: 1fr; }
+}
