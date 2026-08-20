@@ -637,6 +637,12 @@ class RuntimeSupervisor:
             if alive and component is ComponentName.FASTAPI:
                 health = check_fastapi_health(self.config.backend_url)
                 _apply_backend_readiness(self.status, health)
+                if health.ready:
+                    current = self.status.components.get(component.value)
+                    if current:
+                        current.state = ComponentState.READY
+                        current.error_code = None
+                        current.restart_count = 0
                 if not health.ready and port_is_listening(self.config.backend_port):
                     current = self.status.components.get(component.value)
                     if current:
@@ -648,6 +654,12 @@ class RuntimeSupervisor:
             elif alive and component is ComponentName.MCP:
                 health = check_mcp_contract(self.config.mcp_port)
                 self.status.mcp_ready = health.ready and self.status.retrieval_ready
+                if health.ready:
+                    current = self.status.components.get(component.value)
+                    if current:
+                        current.state = ComponentState.READY
+                        current.error_code = None
+                        current.restart_count = 0
                 if not health.ready and port_is_listening(self.config.mcp_port):
                     current = self.status.components.get(component.value)
                     if current:

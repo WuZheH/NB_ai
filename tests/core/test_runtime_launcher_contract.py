@@ -1124,6 +1124,66 @@ def test_dead_child_uses_bounded_backoff_and_restart_counter(
     assert supervisor.status.components[ComponentName.FASTAPI.value].restart_count == 1
 
 
+def test_managed_components_recover_ready_status_after_transient_health_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supervisor = RuntimeSupervisor(_config(tmp_path))
+    fastapi = ManagedProcess(
+        supervisor._fastapi_spec(),
+        ProcessIdentity(73, 1.0, str(supervisor.config.python_exe)),
+    )
+    mcp = ManagedProcess(
+        supervisor._mcp_spec(),
+        ProcessIdentity(74, 1.0, str(supervisor.config.node_exe)),
+    )
+    supervisor._managed = {
+        ComponentName.FASTAPI: fastapi,
+        ComponentName.MCP: mcp,
+    }
+    for component, process in (
+        (ComponentName.FASTAPI, fastapi),
+        (ComponentName.MCP, mcp),
+    ):
+        supervisor.status.components[component.value] = ComponentStatus(
+            component=component,
+            state=ComponentState.DEGRADED,
+            pid=process.pid,
+            owned=True,
+            identity=process.identity,
+            restart_count=2,
+            error_code="health_unreachable",
+        )
+
+    monkeypatch.setattr(supervisor.process_manager, "is_alive", lambda value: True)
+    monkeypatch.setattr(
+        "app.runtime.supervisor.check_fastapi_health",
+        lambda url: HealthResult(
+            True,
+            details={
+                "api_ready": True,
+                "retrieval_ready": True,
+                "model_state": "ready",
+                "embedding_state": "ready",
+                "reranker_state": "ready",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.runtime.supervisor.check_mcp_contract", lambda port: HealthResult(True)
+    )
+    monkeypatch.setattr(supervisor, "_monitor_external_components", lambda: None)
+    monkeypatch.setattr(supervisor, "_refresh_tunnel_status", lambda: None)
+    monkeypatch.setattr(supervisor, "_persist", lambda *args, **kwargs: None)
+
+    supervisor._monitor_once()
+
+    for component in (ComponentName.FASTAPI, ComponentName.MCP):
+        recovered = supervisor.status.components[component.value]
+        assert recovered.state is ComponentState.READY
+        assert recovered.error_code is None
+        assert recovered.restart_count == 0
+
+
 def test_runtime_note_sync_failure_degrades_only_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
