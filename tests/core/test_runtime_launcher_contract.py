@@ -619,6 +619,11 @@ def test_missing_mcp_build_is_reported_after_fastapi_check(
 ) -> None:
     supervisor = RuntimeSupervisor(_config(tmp_path))
     calls: list[str] = []
+    monkeypatch.setattr(
+        supervisor,
+        "_sync_zotero_retrieval_before_startup",
+        lambda: None,
+    )
     monkeypatch.setattr(supervisor, "_start_fastapi", lambda: calls.append("fastapi"))
     monkeypatch.setattr(supervisor, "_rollback", lambda: calls.append("rollback"))
     monkeypatch.setattr(
@@ -632,14 +637,20 @@ def test_missing_mcp_build_is_reported_after_fastapi_check(
     assert supervisor._managed == {}
 
 
-def test_startup_never_runs_note_index_status_or_sync(
+def test_startup_runs_combined_zotero_sync_not_legacy_note_only_sync(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = _config(tmp_path)
     config.paths.mcp_server_entry.parent.mkdir(parents=True)
     config.paths.mcp_server_entry.write_text("built", encoding="utf-8")
     supervisor = RuntimeSupervisor(config)
+    calls: list[str] = []
     assert not hasattr(supervisor, "tunnel")
+    monkeypatch.setattr(
+        supervisor,
+        "_sync_zotero_retrieval_before_startup",
+        lambda: calls.append("combined_zotero_sync"),
+    )
     monkeypatch.setattr(
         supervisor,
         "_ensure_note_index",
@@ -666,6 +677,81 @@ def test_startup_never_runs_note_index_status_or_sync(
         lambda state, **kwargs: setattr(supervisor.status, "state", state),
     )
     assert supervisor.start_components().state is RuntimeState.LOCAL_READY_TUNNEL_MISSING
+    assert calls == ["combined_zotero_sync"]
+
+
+def test_combined_zotero_sync_contract_is_checked_before_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.paths.zotero_retrieval_sync_script.parent.mkdir(parents=True)
+    config.paths.zotero_retrieval_sync_script.write_text("sync", encoding="utf-8")
+    supervisor = RuntimeSupervisor(config)
+    observed: list[tuple[Path, float, bool]] = []
+    monkeypatch.setattr(
+        "app.runtime.supervisor.check_fastapi_health",
+        lambda _url: HealthResult(False, "health_unreachable"),
+    )
+    monkeypatch.setattr(
+        "app.runtime.supervisor.port_is_listening",
+        lambda _port: False,
+    )
+
+    def run(
+        script: Path,
+        *,
+        timeout_seconds: float,
+        accept_nonzero_json: bool = False,
+    ) -> dict[str, object]:
+        observed.append((script, timeout_seconds, accept_nonzero_json))
+        return {
+            "status": "ready",
+            "production_db_write_performed": False,
+            "zotero_db_write_performed": False,
+            "pdf_passage_vector_rebuild": False,
+            "pdf_passage_embedding_inference_count": 0,
+        }
+
+    monkeypatch.setattr(supervisor, "_run_note_index_command", run)
+    supervisor._sync_zotero_retrieval_before_startup()
+
+    assert observed == [
+        (config.paths.zotero_retrieval_sync_script, 7200, True)
+    ]
+    assert (
+        supervisor.status.components[ComponentName.ZOTERO_NOTE_INDEX.value].state
+        is ComponentState.READY
+    )
+
+
+def test_combined_zotero_sync_unknown_drift_stays_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.paths.zotero_retrieval_sync_script.parent.mkdir(parents=True)
+    config.paths.zotero_retrieval_sync_script.write_text("sync", encoding="utf-8")
+    supervisor = RuntimeSupervisor(config)
+    monkeypatch.setattr(
+        "app.runtime.supervisor.check_fastapi_health",
+        lambda _url: HealthResult(False, "health_unreachable"),
+    )
+    monkeypatch.setattr(
+        "app.runtime.supervisor.port_is_listening",
+        lambda _port: False,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_run_note_index_command",
+        lambda *_args, **_kwargs: {
+            "status": "error",
+            "error_code": "zotero_sync_unsupported_drift",
+        },
+    )
+
+    with pytest.raises(RuntimeStartupError, match="zotero_sync_unsupported_drift"):
+        supervisor._sync_zotero_retrieval_before_startup()
 
 
 def test_note_index_sync_rejects_missing_read_only_safety_fields(
@@ -788,6 +874,11 @@ def test_partial_start_failure_rolls_back_only_owned_components(
     calls: list[str] = []
     monkeypatch.setattr(
         supervisor,
+        "_sync_zotero_retrieval_before_startup",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        supervisor,
         "_ensure_note_index",
         lambda **kwargs: pytest.fail("startup attempted note-index work"),
     )
@@ -810,6 +901,11 @@ def test_startup_detects_quick_tunnel_without_starting_or_stopping_it(
     config.paths.mcp_server_entry.parent.mkdir(parents=True)
     config.paths.mcp_server_entry.write_text("built", encoding="utf-8")
     supervisor = RuntimeSupervisor(config)
+    monkeypatch.setattr(
+        supervisor,
+        "_sync_zotero_retrieval_before_startup",
+        lambda: None,
+    )
     monkeypatch.setattr(
         supervisor,
         "_start_fastapi",

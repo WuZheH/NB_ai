@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -529,6 +530,56 @@ def test_legacy_to_candidate_and_restart_resolution(tmp_path: Path) -> None:
     assert resolved == snapshot
     assert source.fts_index_path.read_bytes() == b"fts-old"
     assert source.vector_store_path.joinpath("table.lance", "data").read_bytes() == b"vectors-old"
+
+
+def test_generation_owns_and_verifies_one_pinned_zotero_snapshot(
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    database = _db(tmp_path)
+    source_snapshot = tmp_path / "pinned-zotero.sqlite"
+    source_snapshot.write_bytes(b"pinned-zotero-revision")
+    source = replace(_source(tmp_path), zotero_snapshot_path=source_snapshot)
+    candidate = generations.prepare_candidate_generation(
+        source,
+        data_dir=data,
+        generation_id="gen-pinned",
+    )
+    finalized = generations.finalize_candidate_generation(
+        candidate,
+        production_db_sha256=generations.sha256_file(database),
+    )
+    generations.publish_active_generation(finalized, data_dir=data)
+    source_snapshot.write_bytes(b"later-live-zotero-revision")
+
+    resolved = generations.resolve_active_retrieval_generation(
+        data_dir=data,
+        db_path=database,
+        verify_fingerprints=True,
+    )
+    assert resolved.zotero_snapshot_path == (
+        resolved.generation_dir / generations.ZOTERO_SOURCE_SNAPSHOT_NAME
+    )
+    assert resolved.zotero_snapshot_path.read_bytes() == b"pinned-zotero-revision"
+    manifest = json.loads(
+        (resolved.generation_dir / generations.GENERATION_MANIFEST_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["zotero_snapshot_sha256"] == generations.sha256_file(
+        resolved.zotero_snapshot_path
+    )
+
+    resolved.zotero_snapshot_path.write_bytes(b"tampered")
+    generations.invalidate_generation_validation_cache()
+    with pytest.raises(generations.RetrievalGenerationError) as caught:
+        generations.resolve_active_retrieval_generation(
+            data_dir=data,
+            db_path=database,
+            verify_fingerprints=True,
+        )
+    assert caught.value.code == "active_index_invalid"
 
 
 def test_versioned_database_revision_mismatch_remains_fail_closed(

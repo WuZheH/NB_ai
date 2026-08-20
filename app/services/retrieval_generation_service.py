@@ -33,6 +33,7 @@ FTS_MANIFEST_NAME = "retrieval_fts_v1_manifest.json"
 VECTOR_STORE_NAME = "lancedb"
 VECTOR_MANIFEST_NAME = "vector_manifest.json"
 NATIVE_NOTE_VECTOR_NAME = "zotero_user_notes_v1"
+ZOTERO_SOURCE_SNAPSHOT_NAME = "zotero_source.sqlite"
 ACTIVATION_STATE_SCHEMA_VERSION = 1
 ACTIVATION_STATUSES = frozenset({"activating", "degraded"})
 
@@ -81,6 +82,10 @@ class RetrievalGenerationSnapshot:
     vector_manifest_path: Path
     native_note_vector_path: Path
     generation_dir: Path | None = None
+    # Generation-owned snapshots were added as a backwards-compatible
+    # extension of the v1 manifest.  Older generations intentionally fall
+    # back to the canonical snapshot path.
+    zotero_snapshot_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +98,7 @@ class CandidateGeneration:
     vector_store_path: Path
     vector_manifest_path: Path
     native_note_vector_path: Path
+    zotero_snapshot_path: Path
 
 
 def sha256_file(path: Path) -> str:
@@ -269,6 +275,8 @@ def _read_json_object(path: Path) -> dict[str, Any]:
 
 
 def _legacy_snapshot(*, data_dir: Path, db_path: Path) -> RetrievalGenerationSnapshot:
+    from app.core.paths import ZOTERO_SNAPSHOT_PATH
+
     return RetrievalGenerationSnapshot(
         mode="legacy",
         generation_id=None,
@@ -278,6 +286,7 @@ def _legacy_snapshot(*, data_dir: Path, db_path: Path) -> RetrievalGenerationSna
         vector_store_path=(data_dir / "vector_store" / VECTOR_STORE_NAME),
         vector_manifest_path=(data_dir / "vector_store" / VECTOR_MANIFEST_NAME),
         native_note_vector_path=(data_dir / "vector_store" / NATIVE_NOTE_VECTOR_NAME),
+        zotero_snapshot_path=ZOTERO_SNAPSHOT_PATH,
     )
 
 
@@ -424,6 +433,35 @@ def resolve_active_retrieval_generation(
     if not resolved["native_note_vector_path"].is_dir():
         raise RetrievalGenerationError("active_index_invalid", "Retrieval generation note vectors are incomplete.")
 
+    snapshot_sha = str(manifest.get("zotero_snapshot_sha256") or "").lower()
+    if snapshot_sha:
+        if not re.fullmatch(r"[0-9a-f]{64}", snapshot_sha):
+            raise RetrievalGenerationError(
+                "active_index_invalid",
+                "Retrieval generation Zotero snapshot revision is invalid.",
+            )
+        zotero_snapshot_path = _contained_existing_path(
+            root,
+            generation_dir / ZOTERO_SOURCE_SNAPSHOT_NAME,
+        )
+        if not zotero_snapshot_path.is_file():
+            raise RetrievalGenerationError(
+                "active_index_invalid",
+                "Retrieval generation Zotero snapshot is missing.",
+            )
+        if verify_fingerprints and sha256_file(zotero_snapshot_path).lower() != snapshot_sha:
+            raise RetrievalGenerationError(
+                "active_index_invalid",
+                "Retrieval generation Zotero snapshot fingerprint mismatch.",
+            )
+    else:
+        # Existing v1 generations predate generation-owned Zotero snapshots.
+        # Keep their exact historical behavior until a normal Zotero sync
+        # publishes a pinned source inside a new generation.
+        from app.core.paths import ZOTERO_SNAPSHOT_PATH
+
+        zotero_snapshot_path = ZOTERO_SNAPSHOT_PATH
+
     if verify_fingerprints:
         expected = {
             "fts_index_sha256": sha256_file(resolved["fts_index_path"]),
@@ -444,6 +482,7 @@ def resolve_active_retrieval_generation(
         generation_id=generation_id,
         production_db_sha256=pointer_db_sha,
         generation_dir=generation_dir,
+        zotero_snapshot_path=zotero_snapshot_path,
         **resolved,
     )
 
@@ -476,6 +515,7 @@ def prepare_candidate_generation(
         vector_store_path=candidate_dir / VECTOR_STORE_NAME,
         vector_manifest_path=candidate_dir / VECTOR_MANIFEST_NAME,
         native_note_vector_path=candidate_dir / NATIVE_NOTE_VECTOR_NAME,
+        zotero_snapshot_path=candidate_dir / ZOTERO_SOURCE_SNAPSHOT_NAME,
     )
     try:
         shutil.copy2(source.fts_index_path, candidate.fts_index_path)
@@ -483,6 +523,10 @@ def prepare_candidate_generation(
         shutil.copytree(source.vector_store_path, candidate.vector_store_path)
         shutil.copy2(source.vector_manifest_path, candidate.vector_manifest_path)
         shutil.copytree(source.native_note_vector_path, candidate.native_note_vector_path)
+        if source.zotero_snapshot_path is not None and Path(
+            source.zotero_snapshot_path
+        ).is_file():
+            shutil.copy2(source.zotero_snapshot_path, candidate.zotero_snapshot_path)
     except BaseException:
         shutil.rmtree(candidate_dir, ignore_errors=True)
         raise
@@ -495,6 +539,8 @@ def finalize_candidate_generation(
     production_db_sha256: str,
     profile_versions: dict[str, Any] | None = None,
 ) -> RetrievalGenerationSnapshot:
+    from app.core.paths import ZOTERO_SNAPSHOT_PATH
+
     root = candidate.candidate_dir.parent
     expected_root = _validated_generation_root(root.parent)
     if root != expected_root:
@@ -517,6 +563,7 @@ def finalize_candidate_generation(
     db_sha = str(production_db_sha256 or "").lower()
     if not re.fullmatch(r"[0-9a-f]{64}", db_sha):
         raise ValueError("production_db_sha256 must be a SHA256 digest")
+    has_zotero_snapshot = candidate.zotero_snapshot_path.is_file()
     manifest = {
         "schema_version": GENERATION_MANIFEST_SCHEMA_VERSION,
         "generation_id": candidate.generation_id,
@@ -529,6 +576,10 @@ def finalize_candidate_generation(
         "native_note_vector_tree_fingerprint": tree_fingerprint(candidate.native_note_vector_path),
         "profile_versions": dict(profile_versions or {}),
     }
+    if has_zotero_snapshot:
+        manifest["zotero_snapshot_sha256"] = sha256_file(
+            candidate.zotero_snapshot_path
+        )
     manifest_path = candidate.candidate_dir / GENERATION_MANIFEST_NAME
     _write_json_fsync(manifest_path, manifest)
     os.replace(candidate.candidate_dir, candidate.final_dir)
@@ -542,6 +593,11 @@ def finalize_candidate_generation(
         vector_store_path=candidate.final_dir / VECTOR_STORE_NAME,
         vector_manifest_path=candidate.final_dir / VECTOR_MANIFEST_NAME,
         native_note_vector_path=candidate.final_dir / NATIVE_NOTE_VECTOR_NAME,
+        zotero_snapshot_path=(
+            candidate.final_dir / ZOTERO_SOURCE_SNAPSHOT_NAME
+            if has_zotero_snapshot
+            else ZOTERO_SNAPSHOT_PATH
+        ),
     )
 
 

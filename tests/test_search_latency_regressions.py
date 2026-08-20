@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,42 +66,14 @@ def test_note_vector_generation_is_not_reparsed_when_files_are_unchanged(
     tmp_path,
     monkeypatch,
 ):
-    index_name = "notes-fixture.json"
-    payload = {
-        "schema_version": note_vector_index.INDEX_SCHEMA_VERSION,
-        "content_hash": "fixture-content",
-        "entries": [
-            {
-                "fragment_id": "fixture",
-                "embedding": [1.0, 0.0],
-            }
-        ],
-    }
-    payload_bytes = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-    index_path = tmp_path / index_name
-    index_path.write_bytes(payload_bytes)
-
-    manifest = {
-        "status": "ready",
-        "schema_version": note_vector_index.INDEX_SCHEMA_VERSION,
-        "model": note_vector_index.local_embedding_service.MODEL_NAME,
-        "dimension": 2,
-        "normalization": note_vector_index.NORMALIZE_EMBEDDINGS,
-        "count": 1,
-        "content_hash": "fixture-content",
-        "index_file": index_name,
-        "index_sha256": hashlib.sha256(payload_bytes).hexdigest(),
-    }
-    (tmp_path / note_vector_index.MANIFEST_NAME).write_text(
-        json.dumps(manifest),
-        encoding="utf-8",
+    note_vector_index.sync_zotero_note_vectors(
+        index_dir=tmp_path,
+        fragments=[],
     )
+    manifest = json.loads(
+        (tmp_path / note_vector_index.MANIFEST_NAME).read_text(encoding="utf-8")
+    )
+    index_path = tmp_path / manifest["index_file"]
 
     with note_vector_index._INDEX_CACHE_LOCK:
         note_vector_index._INDEX_CACHE.clear()

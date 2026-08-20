@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from threading import RLock
@@ -88,7 +89,12 @@ def sync_zotero_note_vectors(
     if invalid:
         raise ValueError(f"note vector index received unsupported source types: {sorted(set(invalid))}")
 
-    previous_manifest, previous_entries = _load_existing(root, required=False)
+    previous_manifest, previous_entries = _load_existing(
+        root,
+        required=False,
+        validate_embeddings=False,
+        validate_profile=False,
+    )
     previous_by_id = {
         str(entry.get("fragment_id")): entry for entry in previous_entries
     }
@@ -128,7 +134,10 @@ def sync_zotero_note_vectors(
             and previous
             and previous.get("vector_content_hash") == vector_content_hash
             and previous.get("passage_text") == passage_text
-            and isinstance(previous.get("embedding"), list)
+            and _embedding_is_valid(
+                previous.get("embedding"),
+                dimension=int((previous_manifest or {}).get("dimension") or 0),
+            )
         )
         if can_reuse:
             embedding = [float(value) for value in previous["embedding"]]
@@ -968,6 +977,191 @@ def get_zotero_note_vector_status(
     }
 
 
+def plan_zotero_note_vector_sync(
+    *,
+    index_dir: str | Path,
+    fragments: Iterable[NotebookFragment],
+) -> dict[str, Any]:
+    """Compute the exact incremental note-vector work without mutating files."""
+
+    root = Path(index_dir)
+    manifest, previous_entries = _load_existing(
+        root,
+        required=True,
+        validate_embeddings=False,
+        validate_profile=False,
+    )
+    assert manifest is not None
+    current = sorted(list(fragments), key=lambda item: item.fragment_id)
+    invalid_sources = sorted(
+        {
+            item.source_type
+            for item in current
+            if item.source_type not in NOTE_SOURCE_TYPES
+        }
+    )
+    if invalid_sources:
+        raise ValueError(
+            f"note vector plan received unsupported source types: {invalid_sources}"
+        )
+    current_ids = [item.fragment_id for item in current]
+    duplicate_current = sorted(
+        fragment_id
+        for fragment_id, count in Counter(current_ids).items()
+        if count > 1
+    )
+    if duplicate_current:
+        raise ValueError(
+            f"duplicate authoritative note fragment identities: {duplicate_current[:5]}"
+        )
+
+    previous_by_id = {str(entry["fragment_id"]): entry for entry in previous_entries}
+    template_compatible = bool(
+        manifest.get("schema_version") == INDEX_SCHEMA_VERSION
+        and manifest.get("passage_template") == PASSAGE_TEMPLATE_VERSION
+        and manifest.get("model") == local_embedding_service.MODEL_NAME
+        and manifest.get("normalization") is NORMALIZE_EMBEDDINGS
+        and manifest.get("batch_size") == ENCODE_BATCH_SIZE
+    )
+    dimension = int(manifest.get("dimension") or 0)
+    reused_ids: list[str] = []
+    added_ids: list[str] = []
+    changed_ids: list[str] = []
+    metadata_only_ids: list[str] = []
+    added_by_type: Counter[str] = Counter()
+    changed_by_type: Counter[str] = Counter()
+    reused_by_type: Counter[str] = Counter()
+
+    for fragment in current:
+        passage_text = build_note_passage_text(fragment)
+        content_hash = _vector_content_hash(fragment, passage_text)
+        previous = previous_by_id.get(fragment.fragment_id)
+        can_reuse = bool(
+            template_compatible
+            and previous is not None
+            and previous.get("vector_content_hash") == content_hash
+            and previous.get("passage_text") == passage_text
+            and _embedding_is_valid(previous.get("embedding"), dimension=dimension)
+        )
+        if previous is None:
+            added_ids.append(fragment.fragment_id)
+            added_by_type[fragment.source_type] += 1
+        elif not can_reuse:
+            changed_ids.append(fragment.fragment_id)
+            changed_by_type[fragment.source_type] += 1
+        else:
+            reused_ids.append(fragment.fragment_id)
+            reused_by_type[fragment.source_type] += 1
+            if _entry_fragment_snapshot_hash(previous) != _fragment_snapshot_hash(fragment):
+                metadata_only_ids.append(fragment.fragment_id)
+
+    current_id_set = set(current_ids)
+    removed_entries = [
+        entry
+        for entry in previous_entries
+        if str(entry["fragment_id"]) not in current_id_set
+    ]
+    removed_by_type = Counter(str(entry.get("source_type") or "unknown") for entry in removed_entries)
+    return {
+        "status": "ready",
+        "expected_total": len(current),
+        "previous_total": len(previous_entries),
+        "reused_count": len(reused_ids),
+        "added_count": len(added_ids),
+        "removed_count": len(removed_entries),
+        "changed_count": len(changed_ids),
+        "metadata_only_count": len(metadata_only_ids),
+        "expected_inference_count": len(added_ids) + len(changed_ids),
+        "reused_fragment_ids": reused_ids,
+        "added_fragment_ids": added_ids,
+        "removed_fragment_ids": [str(entry["fragment_id"]) for entry in removed_entries],
+        "changed_fragment_ids": changed_ids,
+        "metadata_only_fragment_ids": metadata_only_ids,
+        "added_by_source_type": dict(sorted(added_by_type.items())),
+        "removed_by_source_type": dict(sorted(removed_by_type.items())),
+        "changed_by_source_type": dict(sorted(changed_by_type.items())),
+        "reused_by_source_type": dict(sorted(reused_by_type.items())),
+        "model": manifest.get("model"),
+        "dimension": dimension,
+        "normalization": manifest.get("normalization"),
+        "passage_template": manifest.get("passage_template"),
+        "template_compatible": template_compatible,
+        "read_only": True,
+    }
+
+
+def validate_zotero_note_vector_projection(
+    *,
+    index_dir: str | Path,
+    fragments: Iterable[NotebookFragment],
+) -> dict[str, Any]:
+    """Validate one materialized note-vector index against authoritative notes."""
+
+    manifest, entries = _load_existing(Path(index_dir), required=True)
+    assert manifest is not None
+    expected = sorted(list(fragments), key=lambda item: item.fragment_id)
+    expected_ids = [item.fragment_id for item in expected]
+    duplicate_expected = sorted(
+        fragment_id
+        for fragment_id, count in Counter(expected_ids).items()
+        if count > 1
+    )
+    actual_ids = [str(entry["fragment_id"]) for entry in entries]
+    duplicate_actual = sorted(
+        fragment_id
+        for fragment_id, count in Counter(actual_ids).items()
+        if count > 1
+    )
+    expected_by_id = {item.fragment_id: item for item in expected}
+    actual_by_id = {str(entry["fragment_id"]): entry for entry in entries}
+    missing = sorted(set(expected_by_id) - set(actual_by_id))
+    orphan = sorted(set(actual_by_id) - set(expected_by_id))
+    mismatched: list[str] = []
+    for fragment_id in sorted(set(expected_by_id).intersection(actual_by_id)):
+        fragment = expected_by_id[fragment_id]
+        entry = actual_by_id[fragment_id]
+        passage_text = build_note_passage_text(fragment)
+        if (
+            entry.get("source_type") != fragment.source_type
+            or entry.get("document_id") != fragment.document_id
+            or entry.get("content_hash") != fragment.content_hash
+            or entry.get("passage_text") != passage_text
+            or entry.get("vector_content_hash")
+            != _vector_content_hash(fragment, passage_text)
+            or entry.get("fragment_snapshot_hash")
+            != _fragment_snapshot_hash(fragment)
+            or entry.get("fragment") != fragment.model_dump(mode="json")
+        ):
+            mismatched.append(fragment_id)
+    ready = not (
+        duplicate_expected
+        or duplicate_actual
+        or missing
+        or orphan
+        or mismatched
+    )
+    return {
+        "status": "ready" if ready else "invalid",
+        "ready": ready,
+        "expected_count": len(expected),
+        "actual_count": len(entries),
+        "missing_count": len(missing),
+        "orphan_count": len(orphan),
+        "duplicate_count": len(duplicate_actual),
+        "authoritative_duplicate_count": len(duplicate_expected),
+        "mismatched_count": len(mismatched),
+        "missing_fragment_ids": missing,
+        "orphan_fragment_ids": orphan,
+        "duplicate_fragment_ids": duplicate_actual,
+        "mismatched_fragment_ids": mismatched,
+        "model": manifest.get("model"),
+        "dimension": manifest.get("dimension"),
+        "normalization": manifest.get("normalization"),
+        "passage_template": manifest.get("passage_template"),
+        "read_only": True,
+    }
+
+
 def inspect_zotero_note_vector_document_impact(
     document_id: int,
     *,
@@ -1101,7 +1295,11 @@ def _file_signature(path: Path) -> tuple[int, int]:
 
 
 def _load_existing(
-    root: Path, *, required: bool
+    root: Path,
+    *,
+    required: bool,
+    validate_embeddings: bool = True,
+    validate_profile: bool = True,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     manifest_path = root / MANIFEST_NAME
     if not manifest_path.is_file():
@@ -1119,6 +1317,13 @@ def _load_existing(
         if cached is not None and cached[0] == manifest_signature:
             cached_index_path = root / cached[1]
             if _file_signature(cached_index_path) == cached[2]:
+                _validate_loaded_index(
+                    cached[3],
+                    {**cached[3], "entries": cached[4]},
+                    cached[4],
+                    validate_embeddings=validate_embeddings,
+                    validate_profile=validate_profile,
+                )
                 return cached[3], cached[4]
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1133,7 +1338,13 @@ def _load_existing(
 
         payload = json.loads(payload_bytes)
         entries = list(payload["entries"])
-        _validate_loaded_index(manifest, payload, entries)
+        _validate_loaded_index(
+            manifest,
+            payload,
+            entries,
+            validate_embeddings=validate_embeddings,
+            validate_profile=validate_profile,
+        )
         index_signature = _file_signature(index_path)
 
         with _INDEX_CACHE_LOCK:
@@ -1158,22 +1369,44 @@ def _validate_loaded_index(
     manifest: dict[str, Any],
     payload: dict[str, Any],
     entries: list[dict[str, Any]],
+    *,
+    validate_embeddings: bool = True,
+    validate_profile: bool = True,
 ) -> None:
     if manifest.get("status") != "ready":
         raise ValueError("manifest is not ready")
     if manifest.get("schema_version") != INDEX_SCHEMA_VERSION:
         raise ValueError("unsupported note index schema")
-    if manifest.get("model") != local_embedding_service.MODEL_NAME:
-        raise ValueError("note index embedding model mismatch")
-    if manifest.get("normalization") is not NORMALIZE_EMBEDDINGS:
-        raise ValueError("note index normalization mismatch")
+    if validate_profile:
+        if manifest.get("model") != local_embedding_service.MODEL_NAME:
+            raise ValueError("note index embedding model mismatch")
+        if manifest.get("normalization") is not NORMALIZE_EMBEDDINGS:
+            raise ValueError("note index normalization mismatch")
+        if manifest.get("batch_size") != ENCODE_BATCH_SIZE:
+            raise ValueError("note index batch size mismatch")
+        if manifest.get("passage_template") != PASSAGE_TEMPLATE_VERSION:
+            raise ValueError("note index passage template mismatch")
+    if manifest.get("source_types") != list(NOTE_SOURCE_TYPES):
+        raise ValueError("note index source type contract mismatch")
     if int(manifest.get("count", -1)) != len(entries):
         raise ValueError("note index count mismatch")
     if payload.get("content_hash") != manifest.get("content_hash"):
         raise ValueError("note index content hash mismatch")
     dimension = int(manifest.get("dimension") or 0)
-    if any(len(entry.get("embedding") or []) != dimension for entry in entries):
+    if validate_embeddings and any(
+        not _embedding_is_valid(entry.get("embedding"), dimension=dimension)
+        for entry in entries
+    ):
         raise ValueError("note index vector dimension mismatch")
+    fragment_ids = [str(entry.get("fragment_id") or "") for entry in entries]
+    if any(not fragment_id for fragment_id in fragment_ids):
+        raise ValueError("note index fragment identity missing")
+    if len(set(fragment_ids)) != len(fragment_ids):
+        raise ValueError("duplicate note index fragment identity")
+    if any(entry.get("source_type") not in NOTE_SOURCE_TYPES for entry in entries):
+        raise ValueError("note index entry source type mismatch")
+    if any(not isinstance(entry.get("passage_text"), str) for entry in entries):
+        raise ValueError("note index passage text missing")
 
     snapshot_version = manifest.get("fragment_snapshot_version")
     if snapshot_version not in {None, FRAGMENT_SNAPSHOT_VERSION}:
@@ -1189,6 +1422,33 @@ def _validate_loaded_index(
                 fragment_payload
             ):
                 raise ValueError("note index fragment snapshot hash mismatch")
+    if payload.get("schema_version") != manifest.get("schema_version"):
+        raise ValueError("note index payload schema mismatch")
+    if payload.get("model") != manifest.get("model"):
+        raise ValueError("note index payload model mismatch")
+    if int(payload.get("dimension") or 0) != dimension:
+        raise ValueError("note index payload dimension mismatch")
+    if payload.get("normalization") is not manifest.get("normalization"):
+        raise ValueError("note index payload normalization mismatch")
+    if payload.get("batch_size") != manifest.get("batch_size"):
+        raise ValueError("note index payload batch size mismatch")
+    if payload.get("passage_template") != manifest.get("passage_template"):
+        raise ValueError("note index payload passage template mismatch")
+    if int(payload.get("count", -1)) != len(entries):
+        raise ValueError("note index payload count mismatch")
+    if _aggregate_content_hash(entries) != manifest.get("content_hash"):
+        raise ValueError("note index aggregate content hash mismatch")
+
+
+def _embedding_is_valid(value: Any, *, dimension: int) -> bool:
+    if not isinstance(value, list) or dimension <= 0 or len(value) != dimension:
+        return False
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return False
+        if not math.isfinite(float(item)):
+            return False
+    return True
 
 
 def _fragment_snapshot_hash(fragment: NotebookFragment | dict[str, Any]) -> str:
@@ -1253,7 +1513,10 @@ def _vector_content_hash(fragment: NotebookFragment, passage_text: str) -> str:
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    # Keep the owned temporary name independent of the content-addressed target
+    # name.  Repeating that long name can exceed the Win32 MAX_PATH boundary in
+    # an otherwise valid candidate generation path.
+    temporary = path.with_name(f".{uuid4().hex}.tmp")
     try:
         with temporary.open("xb") as stream:
             stream.write(data)

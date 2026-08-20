@@ -6,7 +6,7 @@ from threading import RLock
 from typing import Any
 
 from app.core.database import connect_immutable_readonly_sqlite
-from app.core.paths import DEFAULT_DB_PATH, ZOTERO_SNAPSHOT_PATH
+from app.core.paths import DEFAULT_DB_PATH
 from app.domains.retrieval.result_contracts import (
     NOTEBOOK_SOURCE_TYPES,
     NotebookFragment,
@@ -14,7 +14,10 @@ from app.domains.retrieval.result_contracts import (
     OpenTarget,
 )
 from app.schemas.retrieval_fragment import RetrievalFragment, RetrievalSourceType
-from app.services.retrieval.source_registry import RetrievalSourceRegistry
+from app.services.retrieval.source_registry import (
+    RetrievalSourceRegistry,
+    resolve_default_zotero_snapshot_path,
+)
 
 
 _SUPPORT_SOURCE_TYPES: tuple[RetrievalSourceType, ...] = (
@@ -58,7 +61,7 @@ def _notebook_corpus_revision() -> tuple[
 ]:
     return (
         _path_signature(DEFAULT_DB_PATH),
-        _path_signature(ZOTERO_SNAPSHOT_PATH),
+        _path_signature(resolve_default_zotero_snapshot_path()),
     )
 
 

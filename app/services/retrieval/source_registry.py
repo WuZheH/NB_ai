@@ -42,6 +42,23 @@ class RetrievalIdentityCollisionError(RuntimeError):
     pass
 
 
+def resolve_default_zotero_snapshot_path() -> Path:
+    """Resolve the Zotero source pinned to the active retrieval generation.
+
+    Pre-generation and portable/empty-library installations retain the
+    canonical snapshot fallback.  Once a versioned active pointer exists, an
+    invalid generation must fail closed instead of silently reading a different
+    Zotero revision.
+    """
+
+    from app.services import retrieval_generation_service as generations
+
+    if not generations.active_pointer_path().is_file():
+        return Path(DEFAULT_ZOTERO_SNAPSHOT_PATH)
+    generation = generations.current_retrieval_generation()
+    return Path(generation.zotero_snapshot_path or DEFAULT_ZOTERO_SNAPSHOT_PATH)
+
+
 @dataclass(frozen=True)
 class RetrievalRegistryResult:
     fragments: tuple[RetrievalFragment, ...]
@@ -67,12 +84,16 @@ class RetrievalSourceRegistry:
         self,
         *,
         research_db_path: str | Path = DEFAULT_DB_PATH,
-        zotero_snapshot_path: str | Path = DEFAULT_ZOTERO_SNAPSHOT_PATH,
+        zotero_snapshot_path: str | Path | None = None,
         notes_root: str | Path = DEFAULT_NOTES_ROOT,
         project_root: str | Path = DATA_PROJECT_ROOT,
     ) -> None:
         self.research_db_path = Path(research_db_path)
-        self.zotero_snapshot_path = Path(zotero_snapshot_path)
+        self.zotero_snapshot_path = Path(
+            zotero_snapshot_path
+            if zotero_snapshot_path is not None
+            else resolve_default_zotero_snapshot_path()
+        )
         self.notes_root = Path(notes_root)
         self.project_root = Path(project_root)
 

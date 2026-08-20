@@ -36,6 +36,7 @@ test("Windows packaging avoids privileged symlink extraction and applies Search 
   assert.match(extraResources, /notebook_ai_chatgpt_app\/dist\/server\/index\.js/);
   assert.match(extraResources, /configure_search_machine\.py/);
   assert.match(extraResources, /configure_search_machine\.ps1/);
+  assert.match(extraResources, /sync_zotero_retrieval_generation\.py/);
   assert.doesNotMatch(extraResources, /(?:^|[\\/])data(?:[\\/]|$)|model_cache|node_modules/i);
   assert.doesNotMatch(`${packagedFiles}\n${extraResources}`, /desktop-runtime\.json|search-desktop\.local\.json/i);
   assert.match(buildScript, /@\("search-desktop\.local\.json", "desktop-runtime\.json"\)/);
@@ -214,6 +215,7 @@ async function writePackagedFixture(root, {
     ["resources/app/runtime-project/scripts/runtime/notebook_ai_launcher.py", "raise SystemExit(0)"],
     ["resources/app/runtime-project/scripts/index/status_zotero_note_vectors.py", "raise SystemExit(0)"],
     ["resources/app/runtime-project/scripts/index/sync_zotero_note_vectors.py", "raise SystemExit(0)"],
+    ["resources/app/runtime-project/scripts/index/sync_zotero_retrieval_generation.py", "raise SystemExit(0)"],
     ["resources/app/runtime-project/config/retrieval_query_aliases.json", "{}"],
     ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/package.json", "{\"type\":\"module\"}"],
     ["resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/dist/server/index.js", serverSource],

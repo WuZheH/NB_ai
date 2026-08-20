@@ -73,6 +73,10 @@
         "to": "app/runtime-project/scripts/index/sync_zotero_note_vectors.py"
       },
       {
+        "from": "../../scripts/index/sync_zotero_retrieval_generation.py",
+        "to": "app/runtime-project/scripts/index/sync_zotero_retrieval_generation.py"
+      },
+      {
         "from": "../../scripts",
         "to": "app/runtime-project/scripts",
         "filter": [

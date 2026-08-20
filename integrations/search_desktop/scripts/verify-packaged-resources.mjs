@@ -48,6 +48,7 @@ export const PACKAGED_RESOURCE_CONTRACT = Object.freeze([
   "resources/app/runtime-project/scripts/runtime/notebook_ai_launcher.py",
   "resources/app/runtime-project/scripts/index/status_zotero_note_vectors.py",
   "resources/app/runtime-project/scripts/index/sync_zotero_note_vectors.py",
+  "resources/app/runtime-project/scripts/index/sync_zotero_retrieval_generation.py",
   ...PACKAGED_PYTHON_RUNTIME_MODULES.map((path) => `resources/app/runtime-project/${path}`),
   "resources/app/runtime-project/config/retrieval_query_aliases.json",
   "resources/app/runtime-project/integrations/notebook_ai_chatgpt_app/package.json",
@@ -78,6 +79,7 @@ const SOURCE_RESOURCE_CONTRACT = Object.freeze(new Map([
   ["resources/app/runtime-project/scripts/runtime/notebook_ai_launcher.py", resolve(DESKTOP_ROOT, "../../scripts/runtime/notebook_ai_launcher.py")],
   ["resources/app/runtime-project/scripts/index/status_zotero_note_vectors.py", resolve(DESKTOP_ROOT, "../../scripts/index/status_zotero_note_vectors.py")],
   ["resources/app/runtime-project/scripts/index/sync_zotero_note_vectors.py", resolve(DESKTOP_ROOT, "../../scripts/index/sync_zotero_note_vectors.py")],
+  ["resources/app/runtime-project/scripts/index/sync_zotero_retrieval_generation.py", resolve(DESKTOP_ROOT, "../../scripts/index/sync_zotero_retrieval_generation.py")],
   ...PACKAGED_PYTHON_RUNTIME_MODULES.map((path) => [
     `resources/app/runtime-project/${path}`,
     resolve(DESKTOP_ROOT, "../..", path),

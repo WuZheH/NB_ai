@@ -334,6 +334,7 @@ class RuntimeSupervisor:
         if self.config.mode == "remote":
             raise RuntimeStartupError("remote_mode_does_not_start_local_runtime")
         try:
+            self._sync_zotero_retrieval_before_startup()
             self._start_fastapi()
             self._start_mcp()
             # Phase A is deliberately detection-only for ChatGPT tunnels.
@@ -354,6 +355,51 @@ class RuntimeSupervisor:
         except RuntimeStartupError:
             self._rollback()
             raise
+
+    def _sync_zotero_retrieval_before_startup(self) -> None:
+        """Synchronize only while no local retrieval reader is active."""
+
+        if check_fastapi_health(self.config.backend_url).ready:
+            return
+        if port_is_listening(self.config.backend_port) or port_is_listening(
+            self.config.mcp_port
+        ):
+            # The existing component-start paths own deterministic conflict
+            # reporting.  More importantly, never mutate a generation while a
+            # process outside this supervisor may still be reading it.
+            return
+        script = self.config.paths.zotero_retrieval_sync_script
+        if not script.is_file():
+            raise RuntimeStartupError("zotero_retrieval_sync_script_missing")
+        result = self._run_note_index_command(
+            script,
+            timeout_seconds=7200,
+            accept_nonzero_json=True,
+        )
+        if not result:
+            raise RuntimeStartupError("zotero_retrieval_sync_failed")
+        if result.get("status") == "error":
+            error_code = str(
+                result.get("error_code") or "zotero_retrieval_sync_failed"
+            )
+            raise RuntimeStartupError(error_code)
+        safe = bool(
+            result.get("status") in {"ready", "unchanged"}
+            and result.get("production_db_write_performed") is False
+            and result.get("zotero_db_write_performed") is False
+            and result.get("pdf_passage_vector_rebuild") is False
+            and int(result.get("pdf_passage_embedding_inference_count") or 0)
+            == 0
+        )
+        if not safe:
+            raise RuntimeStartupError("zotero_retrieval_sync_contract_failed")
+        self.status.components[ComponentName.ZOTERO_NOTE_INDEX.value] = (
+            ComponentStatus(
+                component=ComponentName.ZOTERO_NOTE_INDEX,
+                state=ComponentState.READY,
+                error_code=None,
+            )
+        )
 
     def stop_components(self) -> bool:
         stopped_all = True
@@ -830,7 +876,14 @@ class RuntimeSupervisor:
         script: Path,
         *,
         timeout_seconds: float,
+        accept_nonzero_json: bool = False,
     ) -> dict[str, Any] | None:
+        environment = os.environ.copy()
+        environment["SEARCH_DATA_DIR"] = str(self.config.paths.data_dir)
+        if self.config.machine_config.path is not None:
+            environment["SEARCH_MACHINE_CONFIG_PATH"] = str(
+                self.config.machine_config.path
+            )
         try:
             process = subprocess.Popen(
                 [str(self.config.python_exe), "-B", str(script)],
@@ -838,6 +891,7 @@ class RuntimeSupervisor:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
+                env=environment,
                 shell=False,
                 **hidden_windows_subprocess_options(),
             )
@@ -917,11 +971,13 @@ class RuntimeSupervisor:
                 current.pid = None
                 current.identity = None
             self._safe_persist(self.status.state, error_code=self.status.error_code)
-        if process.returncode != 0 or stdout_overflow[0] or len(stdout) > 1_048_576:
+        if stdout_overflow[0] or len(stdout) > 1_048_576:
             return None
         try:
             value = json.loads(stdout.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if process.returncode != 0 and not accept_nonzero_json:
             return None
         return value if isinstance(value, dict) else None
 

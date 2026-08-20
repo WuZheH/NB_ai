@@ -118,6 +118,90 @@ def test_successful_session_owns_complete_activation_protocol(
     )
 
 
+def test_unchanged_database_session_pins_revision_without_backup_or_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir, database = _legacy_runtime(tmp_path, monkeypatch)
+    database_before = database.read_bytes()
+
+    def forbidden_backup(_path: Path):
+        raise AssertionError("unchanged database mode attempted a rollback backup")
+
+    def forbidden_restore(_path: Path, _snapshot):
+        raise AssertionError("unchanged database mode attempted a database restore")
+
+    with mutations.ProductionGenerationMutationSession(
+        data_dir=data_dir,
+        db_path=database,
+        generation_id="g-unchanged",
+        database_mode="unchanged",
+        rollback_snapshot_factory=forbidden_backup,
+        rollback_snapshot_restorer=forbidden_restore,
+    ) as session:
+        pinned = session.pin_unchanged_database_revision()
+        assert pinned == generations.sha256_file(database)
+        assert session.rollback_snapshot is None
+        session.mark_candidate_synced()
+        session.validate_candidate(lambda _candidate, _db_sha256: None)
+        finalized = session.finalize_candidate()
+        session.begin_activation()
+        session.publish_active()
+        session.verify_active(
+            lambda snapshot: (
+                snapshot.generation_id == finalized.generation_id
+                or (_ for _ in ()).throw(AssertionError("stale generation"))
+            )
+        )
+        session.clear_activation()
+
+    assert database.read_bytes() == database_before
+    assert session.stage_history == (
+        mutations.MutationStage.PREPARE,
+        mutations.MutationStage.PREPARED,
+        mutations.MutationStage.DATABASE_REVISION_PINNED,
+        mutations.MutationStage.POST_WRITE_SNAPSHOT,
+        mutations.MutationStage.CANDIDATE_SYNCED,
+        mutations.MutationStage.CANDIDATE_VALIDATED,
+        mutations.MutationStage.FINALIZED,
+        mutations.MutationStage.ACTIVATING,
+        mutations.MutationStage.POINTER_SWITCHED,
+        mutations.MutationStage.POST_SWITCH_VERIFIED,
+        mutations.MutationStage.ACTIVATION_CLEARED,
+    )
+
+
+def test_unchanged_database_validation_failure_removes_only_owned_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir, database = _legacy_runtime(tmp_path, monkeypatch)
+    database_before = database.read_bytes()
+
+    with pytest.raises(RuntimeError, match="candidate invalid"):
+        with mutations.ProductionGenerationMutationSession(
+            data_dir=data_dir,
+            db_path=database,
+            generation_id="g-rejected",
+            database_mode="unchanged",
+        ) as session:
+            session.pin_unchanged_database_revision()
+            session.mark_candidate_synced()
+            session.validate_candidate(
+                lambda _candidate, _db_sha256: (_ for _ in ()).throw(
+                    RuntimeError("candidate invalid")
+                )
+            )
+
+    assert database.read_bytes() == database_before
+    assert not (data_dir / generations.GENERATION_ROOT_NAME / "g-rejected").exists()
+    assert not generations.activation_state_path(data_dir).exists()
+    assert generations.resolve_active_retrieval_generation(
+        data_dir=data_dir,
+        db_path=database,
+    ).mode == "legacy"
+
+
 def test_backup_failure_after_candidate_creation_leaves_no_candidate_residue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

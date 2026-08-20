@@ -44,6 +44,7 @@ class RuntimePaths:
     launcher_script: Path
     note_status_script: Path
     note_sync_script: Path
+    zotero_retrieval_sync_script: Path
     mcp_app_dir: Path
     mcp_server_entry: Path
 
@@ -125,6 +126,12 @@ class RuntimePaths:
             launcher_script=root / "scripts" / "runtime" / "notebook_ai_launcher.py",
             note_status_script=root / "scripts" / "index" / "status_zotero_note_vectors.py",
             note_sync_script=root / "scripts" / "index" / "sync_zotero_note_vectors.py",
+            zotero_retrieval_sync_script=(
+                root
+                / "scripts"
+                / "index"
+                / "sync_zotero_retrieval_generation.py"
+            ),
             mcp_app_dir=root / "integrations" / "notebook_ai_chatgpt_app",
             mcp_server_entry=(
                 root

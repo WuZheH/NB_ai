@@ -24,6 +24,7 @@ from app.services.retrieval.source_registry import (
     DEFAULT_NOTES_ROOT,
     DEFAULT_ZOTERO_SNAPSHOT_PATH,
     SOURCE_REGISTRY_VERSION,
+    resolve_default_zotero_snapshot_path,
 )
 from app.services.retrieval.sources.markdown_note_adapter import (
     ADAPTER_VERSION as MARKDOWN_NOTE_ADAPTER_VERSION,
@@ -82,10 +83,11 @@ def get_index_status(
     index_path: str | Path | None = None,
     manifest_path: str | Path | None = None,
     production_db_path: str | Path = DEFAULT_DB_PATH,
-    zotero_snapshot_path: str | Path = DEFAULT_ZOTERO_SNAPSHOT_PATH,
+    zotero_snapshot_path: str | Path | None = None,
     notes_root: str | Path = DEFAULT_NOTES_ROOT,
     query_aliases_path: str | Path = DEFAULT_QUERY_ALIASES_PATH,
 ) -> dict[str, Any]:
+    generation = None
     if index_path is None and manifest_path is None:
         from app.services.retrieval_generation_service import (
             current_retrieval_generation,
@@ -97,6 +99,15 @@ def get_index_status(
     else:
         index = Path(index_path) if index_path is not None else DEFAULT_INDEX_PATH
         manifest_file = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
+    resolved_zotero_snapshot = Path(
+        zotero_snapshot_path
+        if zotero_snapshot_path is not None
+        else (
+            generation.zotero_snapshot_path
+            if generation is not None and generation.zotero_snapshot_path is not None
+            else resolve_default_zotero_snapshot_path()
+        )
+    )
     index_exists = index.is_file()
     manifest_exists = manifest_file.is_file()
     library_database_exists, library_has_documents = _inspect_library_database(
@@ -194,7 +205,7 @@ def get_index_status(
 
     current_sources = source_fingerprints(
         production_db_path=Path(production_db_path),
-        zotero_snapshot_path=Path(zotero_snapshot_path),
+        zotero_snapshot_path=resolved_zotero_snapshot,
         notes_root=Path(notes_root),
     )
     source_reasons = [

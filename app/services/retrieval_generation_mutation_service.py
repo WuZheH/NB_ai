@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import TracebackType
-from typing import Callable
+from typing import Callable, Literal
 from uuid import uuid4
 
 from app.core.paths import DATA_DIR, DEFAULT_DB_PATH
@@ -19,6 +19,7 @@ from app.services import retrieval_generation_service as generations
 class MutationStage(str, Enum):
     PREPARE = "prepare"
     PREPARED = "prepared"
+    DATABASE_REVISION_PINNED = "database_revision_pinned"
     BODY_DB_MUTATED = "body_db_mutated"
     POST_WRITE_SNAPSHOT = "post_write_snapshot"
     CANDIDATE_SYNCED = "candidate_synced"
@@ -182,6 +183,7 @@ class ProductionGenerationMutationSession:
         rollback_snapshot_restorer: RollbackSnapshotRestorer = restore_database_rollback_snapshot,
         pointer_restorer: PointerRestorer = generations.restore_active_pointer,
         owned_tree_remover: OwnedTreeRemover | None = None,
+        database_mode: Literal["mutable", "unchanged"] = "mutable",
     ) -> None:
         self.data_dir = Path(data_dir).resolve(strict=False)
         self.db_path = Path(db_path).resolve(strict=False)
@@ -190,6 +192,9 @@ class ProductionGenerationMutationSession:
         self._rollback_snapshot_restorer = rollback_snapshot_restorer
         self._pointer_restorer = pointer_restorer
         self._owned_tree_remover = owned_tree_remover or shutil.rmtree
+        if database_mode not in {"mutable", "unchanged"}:
+            raise ValueError("database_mode must be 'mutable' or 'unchanged'")
+        self.database_mode = database_mode
 
         self.previous_generation: generations.RetrievalGenerationSnapshot | None = None
         self.previous_pointer_bytes: bytes | None = None
@@ -253,11 +258,12 @@ class ProductionGenerationMutationSession:
                 data_dir=self.data_dir,
                 generation_id=self.generation_id,
             )
-            try:
-                self.rollback_snapshot = self._rollback_snapshot_factory(self.db_path)
-            except BaseException:
-                self._remove_owned_candidate_before_finalize()
-                raise
+            if self.database_mode == "mutable":
+                try:
+                    self.rollback_snapshot = self._rollback_snapshot_factory(self.db_path)
+                except BaseException:
+                    self._remove_owned_candidate_before_finalize()
+                    raise
             self._transition(MutationStage.PREPARED)
             return self
         except BaseException:
@@ -265,6 +271,10 @@ class ProductionGenerationMutationSession:
             raise
 
     def capture_post_write_database(self) -> str:
+        if self.database_mode != "mutable":
+            raise ProductionGenerationProtocolError(
+                "unchanged database sessions must pin the existing revision"
+            )
         if self._stage is MutationStage.PREPARED:
             # Backwards-compatible convenience for existing callers while
             # retaining an explicit, auditable state transition.
@@ -276,8 +286,38 @@ class ProductionGenerationMutationSession:
         return self.post_write_db_sha256
 
     def mark_body_db_mutated(self) -> None:
+        if self.database_mode != "mutable":
+            raise ProductionGenerationProtocolError(
+                "unchanged database sessions cannot mark the body database mutated"
+            )
         self._require_stage(MutationStage.PREPARED)
         self._transition(MutationStage.BODY_DB_MUTATED)
+
+    def pin_unchanged_database_revision(self) -> str:
+        """Prove and pin the existing production DB without ever restoring it.
+
+        Zotero-source synchronization changes only derived candidate artifacts.
+        Treating it as a body DB mutation would create a misleading rollback
+        contract and could overwrite a database the workflow never owned.
+        """
+
+        if self.database_mode != "unchanged":
+            raise ProductionGenerationProtocolError(
+                "mutable database sessions cannot pin an unchanged revision"
+            )
+        self._require_stage(MutationStage.PREPARED)
+        if self.previous_generation is None:
+            raise ProductionGenerationProtocolError("previous generation is missing")
+        current_sha256 = generations.sha256_file(self.db_path).lower()
+        if current_sha256 != self.previous_generation.production_db_sha256.lower():
+            raise ProductionGenerationMutationError(
+                "production database changed before the unchanged revision was pinned"
+            )
+        self.post_write_db_sha256 = current_sha256
+        generations.invalidate_generation_validation_cache()
+        self._transition(MutationStage.DATABASE_REVISION_PINNED)
+        self._transition(MutationStage.POST_WRITE_SNAPSHOT)
+        return current_sha256
 
     def mark_candidate_synced(self) -> None:
         self._require_stage(MutationStage.POST_WRITE_SNAPSHOT)
@@ -460,7 +500,29 @@ class ProductionGenerationMutationSession:
                         cause=cause,
                     )
 
-        if self.rollback_snapshot is not None:
+        if self.database_mode == "unchanged":
+            try:
+                if self.previous_generation is None:
+                    raise ProductionGenerationProtocolError(
+                        "previous generation is missing"
+                    )
+                current_sha256 = generations.sha256_file(self.db_path).lower()
+                if current_sha256 != self.previous_generation.production_db_sha256.lower():
+                    raise ProductionGenerationMutationError(
+                        "unchanged production database revision was modified"
+                    )
+            except BaseException as cause:
+                self._mark_degraded(
+                    error_code="production_db_unexpected_write",
+                    publish_substage="production_db_unchanged_verification",
+                )
+                return ProductionGenerationRollbackError(
+                    "production database changed during an unchanged-database transaction",
+                    stage=MutationStage.DEGRADED,
+                    rollback_substage="production_db_unchanged_verification",
+                    cause=cause,
+                )
+        elif self.rollback_snapshot is not None:
             try:
                 self._rollback_snapshot_restorer(
                     self.db_path,
