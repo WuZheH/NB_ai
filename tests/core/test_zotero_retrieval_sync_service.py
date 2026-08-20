@@ -369,6 +369,85 @@ def test_note_embedding_failure_keeps_old_pointer_and_generation(
     assert not generations.activation_state_path(fixture["data"]).exists()
 
 
+def test_pdf_bibliographic_metadata_refresh_does_not_change_frozen_corpus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _seed_runtime(tmp_path)
+    original = fixture["new_fragments"][0]
+    fixture["new_fragments"][0] = original.model_copy(
+        update={
+            "zotero_library_id": 1,
+            "authors": ["Updated Author"],
+            "year": 2026,
+            "collections": ["Current Library"],
+            "tags": ["fresh-metadata"],
+        }
+    )
+    _install_pinned_registry(monkeypatch, fixture)
+
+    result = service.sync_zotero_retrieval_generation(
+        data_dir=fixture["data"],
+        db_path=fixture["database"],
+        notes_root=fixture["notes"],
+        project_root=tmp_path,
+        capture=fixture["capture"],
+        encode_text=lambda _value: [0.0, 1.0, 0.0],
+        generation_id="g-metadata-refresh",
+    )
+
+    assert result["pdf_corpus_invariant_ok"] is True
+    assert result["changed_by_source_type"]["pdf_chunk"] == 1
+    assert result["production_db_write_performed"] is False
+    assert result["pdf_passage_embedding_inference_count"] == 0
+
+
+def test_pdf_passage_content_change_is_rejected_and_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _seed_runtime(tmp_path)
+    original = fixture["new_fragments"][0]
+    changed_text = "rewritten PDF passage"
+    fixture["new_fragments"][0] = original.model_copy(
+        update={
+            "text": changed_text,
+            "index_text": changed_text,
+            "content_hash": _sha(changed_text),
+        }
+    )
+    _install_pinned_registry(monkeypatch, fixture)
+    pointer_before = generations.read_active_pointer_bytes(data_dir=fixture["data"])
+    old_generation_tree = generations.tree_fingerprint(
+        fixture["active"].generation_dir
+    )
+
+    with pytest.raises(service.ZoteroRetrievalSyncError) as caught:
+        service.sync_zotero_retrieval_generation(
+            data_dir=fixture["data"],
+            db_path=fixture["database"],
+            notes_root=fixture["notes"],
+            project_root=tmp_path,
+            capture=fixture["capture"],
+            encode_text=lambda _value: [0.0, 1.0, 0.0],
+            generation_id="g-pdf-regression",
+        )
+
+    assert caught.value.code == "zotero_sync_pdf_corpus_regression"
+    assert caught.value.details["changed_count"] == 1
+    assert caught.value.details["changed_fields"] == {
+        "content_hash": 1,
+        "text": 1,
+    }
+    assert generations.read_active_pointer_bytes(
+        data_dir=fixture["data"]
+    ) == pointer_before
+    assert generations.tree_fingerprint(
+        fixture["active"].generation_dir
+    ) == old_generation_tree
+    assert not generations.activation_state_path(fixture["data"]).exists()
+
+
 @pytest.mark.parametrize(
     ("status", "allowed"),
     [

@@ -44,6 +44,35 @@ SUPPORTED_ZOTERO_DRIFT_REASONS = frozenset(
     {"zotero_snapshot_sha256_changed"}
 )
 
+# A Zotero source refresh is allowed to enrich the bibliographic projection of
+# an already-imported PDF (authors, collections, tags, source binding, and the
+# derived search text).  It must never alter the canonical PDF passage corpus
+# itself.  Keep this contract explicit so candidate validation distinguishes a
+# legitimate source-metadata refresh from a lost, moved, or rewritten chunk.
+PDF_CORPUS_IMMUTABLE_FIELDS = (
+    "display_id",
+    "source_type",
+    "origin_kind",
+    "document_id",
+    "parent_fragment_id",
+    "duplicate_group_id",
+    "duplicate_candidate",
+    "page_number",
+    "page_label",
+    "section",
+    "heading_path_json",
+    "text",
+    "note_comment",
+    "context_before",
+    "context_after",
+    "context_text",
+    "original_file_path",
+    "content_hash",
+    "source_order",
+    "has_note_comment",
+    "adapter_version",
+)
+
 
 class ZoteroRetrievalSyncError(RuntimeError):
     def __init__(
@@ -426,6 +455,12 @@ def sync_zotero_retrieval_generation(
         "changed_by_source_type": diff["changed_by_source_type"],
         "source_diff_accounted": bool(diff["accounted"]),
         "pdf_corpus_invariant_ok": bool(validation_result["pdf_corpus_invariant_ok"]),
+        "pdf_metadata_changed_count": int(
+            validation_result["pdf_metadata_changed_count"]
+        ),
+        "pdf_metadata_changed_fields": validation_result[
+            "pdf_metadata_changed_fields"
+        ],
         "required_pdf_documents": validation_result["required_pdf_documents"],
         "forbidden_pdf_pages": validation_result["forbidden_pdf_pages"],
         "post_activation_fts_ready": True,
@@ -639,7 +674,7 @@ def _validate_combined_candidate(
         for fragment_id, row in new_rows.items()
         if row.get("source_type") == "pdf_chunk"
     }
-    pdf_diff = _projection_diff(pdf_before, pdf_after)
+    pdf_diff = _pdf_corpus_diff(pdf_before, pdf_after)
     pdf_invariant_ok = not (
         pdf_diff["added_count"]
         or pdf_diff["removed_count"]
@@ -709,6 +744,8 @@ def _validate_combined_candidate(
         "fts_diff": _projection_diff(old_rows, new_rows),
         "note_validation": note_validation,
         "pdf_corpus_invariant_ok": pdf_invariant_ok,
+        "pdf_metadata_changed_count": pdf_diff["metadata_changed_count"],
+        "pdf_metadata_changed_fields": pdf_diff["metadata_changed_fields"],
         "required_pdf_documents": required_results,
         "forbidden_pdf_pages": forbidden_results,
     }
@@ -800,6 +837,67 @@ def _projection_diff(
         "added_by_source_type": dict(sorted(added_by_type.items())),
         "removed_by_source_type": dict(sorted(removed_by_type.items())),
         "changed_by_source_type": dict(sorted(changed_by_type.items())),
+        "accounted": (
+            len(before_ids) + len(added) - len(removed) == len(after_ids)
+        ),
+    }
+
+
+def _pdf_corpus_diff(
+    before: Mapping[str, Mapping[str, Any]],
+    after: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Compare the frozen PDF passage corpus while accounting for metadata.
+
+    Fragment membership and every field that locates or materializes the PDF
+    passage are immutable.  Other fields are Zotero-derived retrieval metadata;
+    their changes are expected during a source refresh and remain visible in
+    the ordinary source-diff receipt instead of being silently discarded.
+    """
+
+    before_ids = set(before)
+    after_ids = set(after)
+    added = sorted(after_ids - before_ids)
+    removed = sorted(before_ids - after_ids)
+    changed: list[str] = []
+    changed_fields: Counter[str] = Counter()
+    metadata_changed: list[str] = []
+    metadata_changed_fields: Counter[str] = Counter()
+
+    for fragment_id in sorted(before_ids.intersection(after_ids)):
+        previous = before[fragment_id]
+        current = after[fragment_id]
+        immutable_changes = [
+            field
+            for field in PDF_CORPUS_IMMUTABLE_FIELDS
+            if previous.get(field) != current.get(field)
+        ]
+        if immutable_changes:
+            changed.append(fragment_id)
+            changed_fields.update(immutable_changes)
+        metadata_changes = [
+            field
+            for field in set(previous).union(current)
+            if field not in PDF_CORPUS_IMMUTABLE_FIELDS
+            and field != "fragment_id"
+            and previous.get(field) != current.get(field)
+        ]
+        if metadata_changes:
+            metadata_changed.append(fragment_id)
+            metadata_changed_fields.update(metadata_changes)
+
+    return {
+        "added_count": len(added),
+        "removed_count": len(removed),
+        "changed_count": len(changed),
+        "retained_count": len(before_ids.intersection(after_ids)) - len(changed),
+        "added_fragment_ids": added,
+        "removed_fragment_ids": removed,
+        "changed_fragment_ids": changed,
+        "changed_fields": dict(sorted(changed_fields.items())),
+        "metadata_changed_count": len(metadata_changed),
+        "metadata_changed_fragment_ids": metadata_changed,
+        "metadata_changed_fields": dict(sorted(metadata_changed_fields.items())),
         "accounted": (
             len(before_ids) + len(added) - len(removed) == len(after_ids)
         ),
